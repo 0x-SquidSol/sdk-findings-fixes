@@ -135,10 +135,21 @@ export function validateSlabTierMatch(dataSize: number, programSlabLen: number):
   return dataSize === programSlabLen;
 }
 
-/** All known slab data sizes for discovery (current V1 + legacy V0 tiers) */
+/**
+ * V2 slab sizes — BPF intermediate layout (CONFIG=496, ENGINE_OFF=600, BITMAP_REL=432).
+ * Slabs initialized with the BPF program before CONFIG grew to 536.
+ * Empirically verified: 65_088 (256-acct) and 1_025_568 (4096-acct).
+ */
+export const SLAB_TIERS_V2 = {
+  small:  { maxAccounts: 256,  dataSize: 65_088,    label: "Small-V2",  description: "256 slots · BPF intermediate" },
+  large:  { maxAccounts: 4096, dataSize: 1_025_568, label: "Large-V2",  description: "4,096 slots · BPF intermediate" },
+} as const;
+
+/** All known slab data sizes for discovery (current V1 + legacy V0 + BPF intermediate V2) */
 const ALL_SLAB_SIZES = [
   ...Object.values(SLAB_TIERS).map(t => t.dataSize),
   ...Object.values(SLAB_TIERS_V0).map(t => t.dataSize),
+  ...Object.values(SLAB_TIERS_V2).map(t => t.dataSize),
 ];
 
 /** Legacy constant for backward compat */
