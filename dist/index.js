@@ -966,6 +966,63 @@ var V1_ENGINE_EMERGENCY_OI_MODE_OFF = 632;
 var V1_ENGINE_EMERGENCY_START_SLOT_OFF = 640;
 var V1_ENGINE_LAST_BREAKER_SLOT_OFF = 648;
 var V1_ENGINE_BITMAP_OFF = 656;
+var V3_HEADER_LEN = 104;
+var V3_CONFIG_LEN = 520;
+var V3_ENGINE_OFF = 624;
+var V3_ACCOUNT_SIZE = 248;
+var V3_RESERVED_OFF = 80;
+var V3_ENGINE_PARAMS_OFF = 64;
+var V3_ENGINE_CURRENT_SLOT_OFF = 352;
+var V3_ENGINE_FUNDING_INDEX_OFF = 360;
+var V3_ENGINE_LAST_FUNDING_SLOT_OFF = 376;
+var V3_ENGINE_FUNDING_RATE_BPS_OFF = 384;
+var V3_ENGINE_LAST_CRANK_SLOT_OFF = 392;
+var V3_ENGINE_MAX_CRANK_STALENESS_OFF = 400;
+var V3_ENGINE_TOTAL_OI_OFF = 408;
+var V3_ENGINE_C_TOT_OFF = 424;
+var V3_ENGINE_PNL_POS_TOT_OFF = 440;
+var V3_ENGINE_LIQ_CURSOR_OFF = 456;
+var V3_ENGINE_GC_CURSOR_OFF = 458;
+var V3_ENGINE_LAST_SWEEP_START_OFF = 464;
+var V3_ENGINE_LAST_SWEEP_COMPLETE_OFF = 472;
+var V3_ENGINE_CRANK_CURSOR_OFF = 480;
+var V3_ENGINE_SWEEP_START_IDX_OFF = 482;
+var V3_ENGINE_LIFETIME_LIQUIDATIONS_OFF = 488;
+var V3_ENGINE_LIFETIME_FORCE_CLOSES_OFF = 496;
+var V3_ENGINE_NET_LP_POS_OFF = 504;
+var V3_ENGINE_LP_SUM_ABS_OFF = 520;
+var V3_ENGINE_LP_MAX_ABS_OFF = 536;
+var V3_ENGINE_LP_MAX_ABS_SWEEP_OFF = 552;
+var V3_ENGINE_BITMAP_OFF = 430;
+var V4_HEADER_LEN = 72;
+var V4_CONFIG_LEN = 408;
+var V4_ENGINE_OFF = 480;
+var V4_ACCOUNT_SIZE = 240;
+var V4_RESERVED_OFF = 48;
+var V4_ENGINE_PARAMS_OFF = 48;
+var V4_PARAMS_SIZE = 56;
+var V4_ENGINE_CURRENT_SLOT_OFF = 104;
+var V4_ENGINE_FUNDING_INDEX_OFF = 112;
+var V4_ENGINE_LAST_FUNDING_SLOT_OFF = 128;
+var V4_ENGINE_FUNDING_RATE_BPS_OFF = 136;
+var V4_ENGINE_LAST_CRANK_SLOT_OFF = 144;
+var V4_ENGINE_MAX_CRANK_STALENESS_OFF = 152;
+var V4_ENGINE_TOTAL_OI_OFF = 160;
+var V4_ENGINE_C_TOT_OFF = 176;
+var V4_ENGINE_PNL_POS_TOT_OFF = 192;
+var V4_ENGINE_LIQ_CURSOR_OFF = 208;
+var V4_ENGINE_GC_CURSOR_OFF = 210;
+var V4_ENGINE_LAST_SWEEP_START_OFF = 216;
+var V4_ENGINE_LAST_SWEEP_COMPLETE_OFF = 224;
+var V4_ENGINE_CRANK_CURSOR_OFF = 232;
+var V4_ENGINE_SWEEP_START_IDX_OFF = 234;
+var V4_ENGINE_LIFETIME_LIQUIDATIONS_OFF = 240;
+var V4_ENGINE_LIFETIME_FORCE_CLOSES_OFF = 248;
+var V4_ENGINE_NET_LP_POS_OFF = 256;
+var V4_ENGINE_LP_SUM_ABS_OFF = 272;
+var V4_ENGINE_LP_MAX_ABS_OFF = 288;
+var V4_ENGINE_LP_MAX_ABS_SWEEP_OFF = 304;
+var V4_ENGINE_BITMAP_OFF = 312;
 var ENGINE_OFF = V1_ENGINE_OFF;
 var ENGINE_MARK_PRICE_OFF = V1_ENGINE_MARK_PRICE_OFF;
 function computeSlabSize(engineOff, bitmapOff, accountSize, maxAccounts) {
@@ -981,17 +1038,25 @@ var TIERS = [64, 256, 1024, 4096];
 var V0_SIZES = /* @__PURE__ */ new Map();
 var V1_SIZES = /* @__PURE__ */ new Map();
 var V2_SIZES = /* @__PURE__ */ new Map();
+var V3_SIZES = /* @__PURE__ */ new Map();
+var V4_SIZES = /* @__PURE__ */ new Map();
 for (const n of TIERS) {
   V0_SIZES.set(computeSlabSize(V0_ENGINE_OFF, V0_ENGINE_BITMAP_OFF, V0_ACCOUNT_SIZE, n), n);
   V1_SIZES.set(computeSlabSize(V1_ENGINE_OFF, V1_ENGINE_BITMAP_OFF, V1_ACCOUNT_SIZE, n), n);
   V2_SIZES.set(computeSlabSize(V2_ENGINE_OFF, V2_ENGINE_BITMAP_OFF, V2_ACCOUNT_SIZE, n), n);
+  V3_SIZES.set(computeSlabSize(V3_ENGINE_OFF, V3_ENGINE_BITMAP_OFF, V3_ACCOUNT_SIZE, n), n);
+  V4_SIZES.set(computeSlabSize(V4_ENGINE_OFF, V4_ENGINE_BITMAP_OFF, V4_ACCOUNT_SIZE, n), n);
 }
 function buildLayout(version, maxAccounts) {
   const isV0 = version === 0;
+  const isV1 = version === 1;
   const isV2 = version === 2;
-  const engineOff = isV0 ? V0_ENGINE_OFF : isV2 ? V2_ENGINE_OFF : V1_ENGINE_OFF;
-  const bitmapOff = isV0 ? V0_ENGINE_BITMAP_OFF : isV2 ? V2_ENGINE_BITMAP_OFF : V1_ENGINE_BITMAP_OFF;
-  const accountSize = isV0 ? V0_ACCOUNT_SIZE : V2_ACCOUNT_SIZE;
+  const isV3 = version === 3;
+  const isV4 = version === 4;
+  const isV0Like = isV0 || isV4;
+  const engineOff = isV0 ? V0_ENGINE_OFF : isV2 ? V2_ENGINE_OFF : isV3 ? V3_ENGINE_OFF : isV4 ? V4_ENGINE_OFF : V1_ENGINE_OFF;
+  const bitmapOff = isV0 ? V0_ENGINE_BITMAP_OFF : isV2 ? V2_ENGINE_BITMAP_OFF : isV3 ? V3_ENGINE_BITMAP_OFF : isV4 ? V4_ENGINE_BITMAP_OFF : V1_ENGINE_BITMAP_OFF;
+  const accountSize = isV0Like ? isV4 ? V4_ACCOUNT_SIZE : V0_ACCOUNT_SIZE : V2_ACCOUNT_SIZE;
   const bitmapWords = Math.ceil(maxAccounts / 64);
   const bitmapBytes = bitmapWords * 8;
   const postBitmap = 18;
@@ -1000,57 +1065,61 @@ function buildLayout(version, maxAccounts) {
   const accountsOffRel = Math.ceil(preAccountsLen / 8) * 8;
   return {
     version,
-    headerLen: isV0 ? V0_HEADER_LEN : isV2 ? V2_HEADER_LEN : V1_HEADER_LEN,
-    configOffset: isV0 ? V0_HEADER_LEN : isV2 ? V2_HEADER_LEN : V1_HEADER_LEN,
-    configLen: isV0 ? V0_CONFIG_LEN : isV2 ? V2_CONFIG_LEN : V1_CONFIG_LEN,
-    reservedOff: isV0 ? V0_RESERVED_OFF : isV2 ? V2_RESERVED_OFF : V1_RESERVED_OFF,
+    headerLen: isV0Like ? isV4 ? V4_HEADER_LEN : V0_HEADER_LEN : isV2 ? V2_HEADER_LEN : isV3 ? V3_HEADER_LEN : V1_HEADER_LEN,
+    configOffset: isV0Like ? isV4 ? V4_HEADER_LEN : V0_HEADER_LEN : isV2 ? V2_HEADER_LEN : isV3 ? V3_HEADER_LEN : V1_HEADER_LEN,
+    configLen: isV0Like ? isV4 ? V4_CONFIG_LEN : V0_CONFIG_LEN : isV2 ? V2_CONFIG_LEN : isV3 ? V3_CONFIG_LEN : V1_CONFIG_LEN,
+    reservedOff: isV0Like ? isV4 ? V4_RESERVED_OFF : V0_RESERVED_OFF : isV2 ? V2_RESERVED_OFF : isV3 ? V3_RESERVED_OFF : V1_RESERVED_OFF,
     engineOff,
     accountSize,
     maxAccounts,
     bitmapWords,
     accountsOff: engineOff + accountsOffRel,
     engineInsuranceOff: 16,
-    engineParamsOff: isV0 ? V0_ENGINE_PARAMS_OFF : isV2 ? V2_ENGINE_PARAMS_OFF : V1_ENGINE_PARAMS_OFF,
-    paramsSize: isV0 ? V0_PARAMS_SIZE : V2_PARAMS_SIZE,
-    // V1 and V2 share extended params size
-    engineCurrentSlotOff: isV0 ? V0_ENGINE_CURRENT_SLOT_OFF : isV2 ? V2_ENGINE_CURRENT_SLOT_OFF : V1_ENGINE_CURRENT_SLOT_OFF,
-    engineFundingIndexOff: isV0 ? V0_ENGINE_FUNDING_INDEX_OFF : isV2 ? V2_ENGINE_FUNDING_INDEX_OFF : V1_ENGINE_FUNDING_INDEX_OFF,
-    engineLastFundingSlotOff: isV0 ? V0_ENGINE_LAST_FUNDING_SLOT_OFF : isV2 ? V2_ENGINE_LAST_FUNDING_SLOT_OFF : V1_ENGINE_LAST_FUNDING_SLOT_OFF,
-    engineFundingRateBpsOff: isV0 ? V0_ENGINE_FUNDING_RATE_BPS_OFF : isV2 ? V2_ENGINE_FUNDING_RATE_BPS_OFF : V1_ENGINE_FUNDING_RATE_BPS_OFF,
-    engineMarkPriceOff: isV0 || isV2 ? -1 : V1_ENGINE_MARK_PRICE_OFF,
-    engineLastCrankSlotOff: isV0 ? V0_ENGINE_LAST_CRANK_SLOT_OFF : isV2 ? V2_ENGINE_LAST_CRANK_SLOT_OFF : V1_ENGINE_LAST_CRANK_SLOT_OFF,
-    engineMaxCrankStalenessOff: isV0 ? V0_ENGINE_MAX_CRANK_STALENESS_OFF : isV2 ? V2_ENGINE_MAX_CRANK_STALENESS_OFF : V1_ENGINE_MAX_CRANK_STALENESS_OFF,
-    engineTotalOiOff: isV0 ? V0_ENGINE_TOTAL_OI_OFF : isV2 ? V2_ENGINE_TOTAL_OI_OFF : V1_ENGINE_TOTAL_OI_OFF,
-    engineLongOiOff: isV0 || isV2 ? -1 : V1_ENGINE_LONG_OI_OFF,
-    engineShortOiOff: isV0 || isV2 ? -1 : V1_ENGINE_SHORT_OI_OFF,
-    engineCTotOff: isV0 ? V0_ENGINE_C_TOT_OFF : isV2 ? V2_ENGINE_C_TOT_OFF : V1_ENGINE_C_TOT_OFF,
-    enginePnlPosTotOff: isV0 ? V0_ENGINE_PNL_POS_TOT_OFF : isV2 ? V2_ENGINE_PNL_POS_TOT_OFF : V1_ENGINE_PNL_POS_TOT_OFF,
-    engineLiqCursorOff: isV0 ? V0_ENGINE_LIQ_CURSOR_OFF : isV2 ? V2_ENGINE_LIQ_CURSOR_OFF : V1_ENGINE_LIQ_CURSOR_OFF,
-    engineGcCursorOff: isV0 ? V0_ENGINE_GC_CURSOR_OFF : isV2 ? V2_ENGINE_GC_CURSOR_OFF : V1_ENGINE_GC_CURSOR_OFF,
-    engineLastSweepStartOff: isV0 ? V0_ENGINE_LAST_SWEEP_START_OFF : isV2 ? V2_ENGINE_LAST_SWEEP_START_OFF : V1_ENGINE_LAST_SWEEP_START_OFF,
-    engineLastSweepCompleteOff: isV0 ? V0_ENGINE_LAST_SWEEP_COMPLETE_OFF : isV2 ? V2_ENGINE_LAST_SWEEP_COMPLETE_OFF : V1_ENGINE_LAST_SWEEP_COMPLETE_OFF,
-    engineCrankCursorOff: isV0 ? V0_ENGINE_CRANK_CURSOR_OFF : isV2 ? V2_ENGINE_CRANK_CURSOR_OFF : V1_ENGINE_CRANK_CURSOR_OFF,
-    engineSweepStartIdxOff: isV0 ? V0_ENGINE_SWEEP_START_IDX_OFF : isV2 ? V2_ENGINE_SWEEP_START_IDX_OFF : V1_ENGINE_SWEEP_START_IDX_OFF,
-    engineLifetimeLiquidationsOff: isV0 ? V0_ENGINE_LIFETIME_LIQUIDATIONS_OFF : isV2 ? V2_ENGINE_LIFETIME_LIQUIDATIONS_OFF : V1_ENGINE_LIFETIME_LIQUIDATIONS_OFF,
-    engineLifetimeForceClosesOff: isV0 ? V0_ENGINE_LIFETIME_FORCE_CLOSES_OFF : isV2 ? V2_ENGINE_LIFETIME_FORCE_CLOSES_OFF : V1_ENGINE_LIFETIME_FORCE_CLOSES_OFF,
-    engineNetLpPosOff: isV0 ? V0_ENGINE_NET_LP_POS_OFF : isV2 ? V2_ENGINE_NET_LP_POS_OFF : V1_ENGINE_NET_LP_POS_OFF,
-    engineLpSumAbsOff: isV0 ? V0_ENGINE_LP_SUM_ABS_OFF : isV2 ? V2_ENGINE_LP_SUM_ABS_OFF : V1_ENGINE_LP_SUM_ABS_OFF,
-    engineLpMaxAbsOff: isV0 ? V0_ENGINE_LP_MAX_ABS_OFF : isV2 ? V2_ENGINE_LP_MAX_ABS_OFF : V1_ENGINE_LP_MAX_ABS_OFF,
-    engineLpMaxAbsSweepOff: isV0 ? V0_ENGINE_LP_MAX_ABS_SWEEP_OFF : isV2 ? V2_ENGINE_LP_MAX_ABS_SWEEP_OFF : V1_ENGINE_LP_MAX_ABS_SWEEP_OFF,
-    // No emergency OI fields in V0 or V2
-    engineEmergencyOiModeOff: !isV0 && !isV2 ? V1_ENGINE_EMERGENCY_OI_MODE_OFF : -1,
-    engineEmergencyStartSlotOff: !isV0 && !isV2 ? V1_ENGINE_EMERGENCY_START_SLOT_OFF : -1,
-    engineLastBreakerSlotOff: !isV0 && !isV2 ? V1_ENGINE_LAST_BREAKER_SLOT_OFF : -1,
+    engineParamsOff: isV0 ? V0_ENGINE_PARAMS_OFF : isV2 ? V2_ENGINE_PARAMS_OFF : isV3 ? V3_ENGINE_PARAMS_OFF : isV4 ? V4_ENGINE_PARAMS_OFF : V1_ENGINE_PARAMS_OFF,
+    paramsSize: isV0Like ? isV4 ? V4_PARAMS_SIZE : V0_PARAMS_SIZE : V2_PARAMS_SIZE,
+    // V1/V2/V3 share extended params size
+    engineCurrentSlotOff: isV0 ? V0_ENGINE_CURRENT_SLOT_OFF : isV2 ? V2_ENGINE_CURRENT_SLOT_OFF : isV3 ? V3_ENGINE_CURRENT_SLOT_OFF : isV4 ? V4_ENGINE_CURRENT_SLOT_OFF : V1_ENGINE_CURRENT_SLOT_OFF,
+    engineFundingIndexOff: isV0 ? V0_ENGINE_FUNDING_INDEX_OFF : isV2 ? V2_ENGINE_FUNDING_INDEX_OFF : isV3 ? V3_ENGINE_FUNDING_INDEX_OFF : isV4 ? V4_ENGINE_FUNDING_INDEX_OFF : V1_ENGINE_FUNDING_INDEX_OFF,
+    engineLastFundingSlotOff: isV0 ? V0_ENGINE_LAST_FUNDING_SLOT_OFF : isV2 ? V2_ENGINE_LAST_FUNDING_SLOT_OFF : isV3 ? V3_ENGINE_LAST_FUNDING_SLOT_OFF : isV4 ? V4_ENGINE_LAST_FUNDING_SLOT_OFF : V1_ENGINE_LAST_FUNDING_SLOT_OFF,
+    engineFundingRateBpsOff: isV0 ? V0_ENGINE_FUNDING_RATE_BPS_OFF : isV2 ? V2_ENGINE_FUNDING_RATE_BPS_OFF : isV3 ? V3_ENGINE_FUNDING_RATE_BPS_OFF : isV4 ? V4_ENGINE_FUNDING_RATE_BPS_OFF : V1_ENGINE_FUNDING_RATE_BPS_OFF,
+    engineMarkPriceOff: isV0Like || isV2 || isV3 ? -1 : V1_ENGINE_MARK_PRICE_OFF,
+    engineLastCrankSlotOff: isV0 ? V0_ENGINE_LAST_CRANK_SLOT_OFF : isV2 ? V2_ENGINE_LAST_CRANK_SLOT_OFF : isV3 ? V3_ENGINE_LAST_CRANK_SLOT_OFF : isV4 ? V4_ENGINE_LAST_CRANK_SLOT_OFF : V1_ENGINE_LAST_CRANK_SLOT_OFF,
+    engineMaxCrankStalenessOff: isV0 ? V0_ENGINE_MAX_CRANK_STALENESS_OFF : isV2 ? V2_ENGINE_MAX_CRANK_STALENESS_OFF : isV3 ? V3_ENGINE_MAX_CRANK_STALENESS_OFF : isV4 ? V4_ENGINE_MAX_CRANK_STALENESS_OFF : V1_ENGINE_MAX_CRANK_STALENESS_OFF,
+    engineTotalOiOff: isV0 ? V0_ENGINE_TOTAL_OI_OFF : isV2 ? V2_ENGINE_TOTAL_OI_OFF : isV3 ? V3_ENGINE_TOTAL_OI_OFF : isV4 ? V4_ENGINE_TOTAL_OI_OFF : V1_ENGINE_TOTAL_OI_OFF,
+    engineLongOiOff: isV0Like || isV2 || isV3 ? -1 : V1_ENGINE_LONG_OI_OFF,
+    engineShortOiOff: isV0Like || isV2 || isV3 ? -1 : V1_ENGINE_SHORT_OI_OFF,
+    engineCTotOff: isV0 ? V0_ENGINE_C_TOT_OFF : isV2 ? V2_ENGINE_C_TOT_OFF : isV3 ? V3_ENGINE_C_TOT_OFF : isV4 ? V4_ENGINE_C_TOT_OFF : V1_ENGINE_C_TOT_OFF,
+    enginePnlPosTotOff: isV0 ? V0_ENGINE_PNL_POS_TOT_OFF : isV2 ? V2_ENGINE_PNL_POS_TOT_OFF : isV3 ? V3_ENGINE_PNL_POS_TOT_OFF : isV4 ? V4_ENGINE_PNL_POS_TOT_OFF : V1_ENGINE_PNL_POS_TOT_OFF,
+    engineLiqCursorOff: isV0 ? V0_ENGINE_LIQ_CURSOR_OFF : isV2 ? V2_ENGINE_LIQ_CURSOR_OFF : isV3 ? V3_ENGINE_LIQ_CURSOR_OFF : isV4 ? V4_ENGINE_LIQ_CURSOR_OFF : V1_ENGINE_LIQ_CURSOR_OFF,
+    engineGcCursorOff: isV0 ? V0_ENGINE_GC_CURSOR_OFF : isV2 ? V2_ENGINE_GC_CURSOR_OFF : isV3 ? V3_ENGINE_GC_CURSOR_OFF : isV4 ? V4_ENGINE_GC_CURSOR_OFF : V1_ENGINE_GC_CURSOR_OFF,
+    engineLastSweepStartOff: isV0 ? V0_ENGINE_LAST_SWEEP_START_OFF : isV2 ? V2_ENGINE_LAST_SWEEP_START_OFF : isV3 ? V3_ENGINE_LAST_SWEEP_START_OFF : isV4 ? V4_ENGINE_LAST_SWEEP_START_OFF : V1_ENGINE_LAST_SWEEP_START_OFF,
+    engineLastSweepCompleteOff: isV0 ? V0_ENGINE_LAST_SWEEP_COMPLETE_OFF : isV2 ? V2_ENGINE_LAST_SWEEP_COMPLETE_OFF : isV3 ? V3_ENGINE_LAST_SWEEP_COMPLETE_OFF : isV4 ? V4_ENGINE_LAST_SWEEP_COMPLETE_OFF : V1_ENGINE_LAST_SWEEP_COMPLETE_OFF,
+    engineCrankCursorOff: isV0 ? V0_ENGINE_CRANK_CURSOR_OFF : isV2 ? V2_ENGINE_CRANK_CURSOR_OFF : isV3 ? V3_ENGINE_CRANK_CURSOR_OFF : isV4 ? V4_ENGINE_CRANK_CURSOR_OFF : V1_ENGINE_CRANK_CURSOR_OFF,
+    engineSweepStartIdxOff: isV0 ? V0_ENGINE_SWEEP_START_IDX_OFF : isV2 ? V2_ENGINE_SWEEP_START_IDX_OFF : isV3 ? V3_ENGINE_SWEEP_START_IDX_OFF : isV4 ? V4_ENGINE_SWEEP_START_IDX_OFF : V1_ENGINE_SWEEP_START_IDX_OFF,
+    engineLifetimeLiquidationsOff: isV0 ? V0_ENGINE_LIFETIME_LIQUIDATIONS_OFF : isV2 ? V2_ENGINE_LIFETIME_LIQUIDATIONS_OFF : isV3 ? V3_ENGINE_LIFETIME_LIQUIDATIONS_OFF : isV4 ? V4_ENGINE_LIFETIME_LIQUIDATIONS_OFF : V1_ENGINE_LIFETIME_LIQUIDATIONS_OFF,
+    engineLifetimeForceClosesOff: isV0 ? V0_ENGINE_LIFETIME_FORCE_CLOSES_OFF : isV2 ? V2_ENGINE_LIFETIME_FORCE_CLOSES_OFF : isV3 ? V3_ENGINE_LIFETIME_FORCE_CLOSES_OFF : isV4 ? V4_ENGINE_LIFETIME_FORCE_CLOSES_OFF : V1_ENGINE_LIFETIME_FORCE_CLOSES_OFF,
+    engineNetLpPosOff: isV0 ? V0_ENGINE_NET_LP_POS_OFF : isV2 ? V2_ENGINE_NET_LP_POS_OFF : isV3 ? V3_ENGINE_NET_LP_POS_OFF : isV4 ? V4_ENGINE_NET_LP_POS_OFF : V1_ENGINE_NET_LP_POS_OFF,
+    engineLpSumAbsOff: isV0 ? V0_ENGINE_LP_SUM_ABS_OFF : isV2 ? V2_ENGINE_LP_SUM_ABS_OFF : isV3 ? V3_ENGINE_LP_SUM_ABS_OFF : isV4 ? V4_ENGINE_LP_SUM_ABS_OFF : V1_ENGINE_LP_SUM_ABS_OFF,
+    engineLpMaxAbsOff: isV0 ? V0_ENGINE_LP_MAX_ABS_OFF : isV2 ? V2_ENGINE_LP_MAX_ABS_OFF : isV3 ? V3_ENGINE_LP_MAX_ABS_OFF : isV4 ? V4_ENGINE_LP_MAX_ABS_OFF : V1_ENGINE_LP_MAX_ABS_OFF,
+    engineLpMaxAbsSweepOff: isV0 ? V0_ENGINE_LP_MAX_ABS_SWEEP_OFF : isV2 ? V2_ENGINE_LP_MAX_ABS_SWEEP_OFF : isV3 ? V3_ENGINE_LP_MAX_ABS_SWEEP_OFF : isV4 ? V4_ENGINE_LP_MAX_ABS_SWEEP_OFF : V1_ENGINE_LP_MAX_ABS_SWEEP_OFF,
+    // No emergency OI fields in V0/V2/V3/V4 — only V1
+    engineEmergencyOiModeOff: isV1 ? V1_ENGINE_EMERGENCY_OI_MODE_OFF : -1,
+    engineEmergencyStartSlotOff: isV1 ? V1_ENGINE_EMERGENCY_START_SLOT_OFF : -1,
+    engineLastBreakerSlotOff: isV1 ? V1_ENGINE_LAST_BREAKER_SLOT_OFF : -1,
     engineBitmapOff: bitmapOff,
-    hasInsuranceIsolation: !isV0,
-    // V2 has isolation fields in insurance struct
-    engineInsuranceIsolatedOff: isV0 ? -1 : 48,
-    engineInsuranceIsolationBpsOff: isV0 ? -1 : 64
+    hasInsuranceIsolation: !isV0Like,
+    // V1/V2/V3 have isolation fields in insurance struct; V0/V4 do not
+    engineInsuranceIsolatedOff: isV0Like ? -1 : 48,
+    engineInsuranceIsolationBpsOff: isV0Like ? -1 : 64
   };
 }
 function detectSlabLayout(dataLen) {
   const v0n = V0_SIZES.get(dataLen);
   if (v0n !== void 0) return buildLayout(0, v0n);
+  const v4n = V4_SIZES.get(dataLen);
+  if (v4n !== void 0) return buildLayout(4, v4n);
+  const v3n = V3_SIZES.get(dataLen);
+  if (v3n !== void 0) return buildLayout(3, v3n);
   const v2n = V2_SIZES.get(dataLen);
   if (v2n !== void 0) return buildLayout(2, v2n);
   const v1n = V1_SIZES.get(dataLen);
@@ -1609,14 +1678,17 @@ function readI128LE2(buf, offset) {
   if (unsigned >= SIGN_BIT) return unsigned - (1n << 128n);
   return unsigned;
 }
-function parseEngineLight(data, maxAccounts = 4096) {
-  const base = ENGINE_OFF2;
-  const minLen = base + ENGINE_BITMAP_OFF;
+function parseEngineLight(data, maxAccounts = 4096, slabDataLen) {
+  const layout = slabDataLen !== void 0 ? detectSlabLayout(slabDataLen) : null;
+  const base = layout ? layout.engineOff : ENGINE_OFF2;
+  const bitmapRelOff = layout ? layout.engineBitmapOff : ENGINE_BITMAP_OFF;
+  const markPriceRelOff = layout ? layout.engineMarkPriceOff : ENGINE_MARK_PRICE_OFF;
+  const minLen = base + bitmapRelOff;
   if (data.length < minLen) {
     throw new Error(`Slab data too short for engine light parse: ${data.length} < ${minLen}`);
   }
   const bitmapWords = Math.ceil(maxAccounts / 64);
-  const numUsedOff = ENGINE_BITMAP_OFF + bitmapWords * 8;
+  const numUsedOff = bitmapRelOff + bitmapWords * 8;
   const nextAccountIdOff = Math.ceil((numUsedOff + 2) / 8) * 8;
   const canReadNumUsed = data.length >= base + numUsedOff + 2;
   const canReadNextId = data.length >= base + nextAccountIdOff + 8;
@@ -1656,13 +1728,14 @@ function parseEngineLight(data, maxAccounts = 4096) {
     lastBreakerSlot: readU64LE2(data, base + 648),
     numUsedAccounts: canReadNumUsed ? readU16LE2(data, base + numUsedOff) : 0,
     nextAccountId: canReadNextId ? readU64LE2(data, base + nextAccountIdOff) : 0n,
-    markPriceE6: data.length >= base + ENGINE_MARK_PRICE_OFF + 8 ? readU64LE2(data, base + ENGINE_MARK_PRICE_OFF) : 0n
+    markPriceE6: markPriceRelOff >= 0 && data.length >= base + markPriceRelOff + 8 ? readU64LE2(data, base + markPriceRelOff) : 0n
   };
 }
 async function discoverMarkets(connection, programId) {
   const ALL_TIERS = [
     ...Object.values(SLAB_TIERS),
-    ...Object.values(SLAB_TIERS_V0)
+    ...Object.values(SLAB_TIERS_V0),
+    ...Object.values(SLAB_TIERS_V2)
   ].filter((t, i, arr) => arr.findIndex((u) => u.dataSize === t.dataSize) === i);
   let rawAccounts = [];
   try {
@@ -1670,7 +1743,7 @@ async function discoverMarkets(connection, programId) {
       (tier) => connection.getProgramAccounts(programId, {
         filters: [{ dataSize: tier.dataSize }],
         dataSlice: { offset: 0, length: HEADER_SLICE_LENGTH }
-      }).then((results2) => results2.map((entry) => ({ ...entry, maxAccounts: tier.maxAccounts })))
+      }).then((results2) => results2.map((entry) => ({ ...entry, maxAccounts: tier.maxAccounts, slabDataSize: tier.dataSize })))
     );
     const results = await Promise.allSettled(queries);
     let hadRejection = false;
@@ -1701,7 +1774,7 @@ async function discoverMarkets(connection, programId) {
         ],
         dataSlice: { offset: 0, length: HEADER_SLICE_LENGTH }
       });
-      rawAccounts = [...fallback].map((e) => ({ ...e, maxAccounts: 4096 }));
+      rawAccounts = [...fallback].map((e) => ({ ...e, maxAccounts: 4096, slabDataSize: 0 }));
     }
   } catch (err) {
     console.warn(
@@ -1720,11 +1793,11 @@ async function discoverMarkets(connection, programId) {
       ],
       dataSlice: { offset: 0, length: HEADER_SLICE_LENGTH }
     });
-    rawAccounts = [...fallback].map((e) => ({ ...e, maxAccounts: 4096 }));
+    rawAccounts = [...fallback].map((e) => ({ ...e, maxAccounts: 4096, slabDataSize: 0 }));
   }
   const accounts = rawAccounts;
   const markets = [];
-  for (const { pubkey, account, maxAccounts } of accounts) {
+  for (const { pubkey, account, maxAccounts, slabDataSize: slabDataSize2 } of accounts) {
     const data = new Uint8Array(account.data);
     let valid = true;
     for (let i = 0; i < MAGIC_BYTES.length; i++) {
@@ -1737,7 +1810,7 @@ async function discoverMarkets(connection, programId) {
     try {
       const header = parseHeader(data);
       const config = parseConfig(data);
-      const engine = parseEngineLight(data, maxAccounts);
+      const engine = parseEngineLight(data, maxAccounts, slabDataSize2 || void 0);
       const params = parseParams(data);
       markets.push({ slabAddress: pubkey, programId, header, config, engine, params });
     } catch (err) {

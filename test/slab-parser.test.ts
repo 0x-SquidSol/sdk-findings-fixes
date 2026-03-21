@@ -80,8 +80,60 @@ describe("detectSlabLayout", () => {
     expect(layout!.accountSize).toBe(240);
   });
 
+  it("detects V2 small tier (65088 bytes)", () => {
+    const layout = detectSlabLayout(65_088);
+    expect(layout).not.toBeNull();
+    expect(layout!.version).toBe(2);
+    expect(layout!.maxAccounts).toBe(256);
+    expect(layout!.engineOff).toBe(600);
+    expect(layout!.accountSize).toBe(248);
+  });
+
+  it("detects V2 large tier (1025568 bytes)", () => {
+    const layout = detectSlabLayout(1_025_568);
+    expect(layout).not.toBeNull();
+    expect(layout!.version).toBe(2);
+    expect(layout!.maxAccounts).toBe(4096);
+    expect(layout!.engineOff).toBe(600);
+    expect(layout!.accountSize).toBe(248);
+  });
+
+  it("detects V3 medium tier (257200 bytes)", () => {
+    const layout = detectSlabLayout(257_200);
+    expect(layout).not.toBeNull();
+    expect(layout!.version).toBe(3);
+    expect(layout!.maxAccounts).toBe(1024);
+    expect(layout!.engineOff).toBe(624);
+    expect(layout!.accountSize).toBe(248);
+    expect(layout!.engineBitmapOff).toBe(430);
+    expect(layout!.headerLen).toBe(104);
+  });
+
+  it("detects V4 large tier (992560 bytes)", () => {
+    const layout = detectSlabLayout(992_560);
+    expect(layout).not.toBeNull();
+    expect(layout!.version).toBe(4);
+    expect(layout!.maxAccounts).toBe(4096);
+    expect(layout!.engineOff).toBe(480);
+    expect(layout!.accountSize).toBe(240);
+    expect(layout!.engineBitmapOff).toBe(312);
+    expect(layout!.headerLen).toBe(72);
+  });
+
   it("returns null for unknown size", () => {
     expect(detectSlabLayout(12345)).toBeNull();
+  });
+
+  it("V3 layout has no emergency OI fields", () => {
+    const layout = detectSlabLayout(257_200)!;
+    expect(layout.engineEmergencyOiModeOff).toBe(-1);
+    expect(layout.engineLongOiOff).toBe(-1);
+  });
+
+  it("V4 layout has no insurance isolation", () => {
+    const layout = detectSlabLayout(992_560)!;
+    expect(layout.hasInsuranceIsolation).toBe(false);
+    expect(layout.engineInsuranceIsolatedOff).toBe(-1);
   });
 });
 
