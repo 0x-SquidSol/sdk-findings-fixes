@@ -4,7 +4,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
  * All engine field offsets are relative to engineOff.
  */
 export interface SlabLayout {
-    version: 0 | 1 | 2;
+    version: 0 | 1 | 2 | 3 | 4;
     headerLen: number;
     configOffset: number;
     configLen: number;
@@ -54,6 +54,13 @@ export declare const ENGINE_MARK_PRICE_OFF = 400;
 /**
  * Detect slab layout version from data length.
  * Returns a full SlabLayout descriptor or null if unrecognized.
+ *
+ * Known layout families (all empirically verified from on-chain accounts):
+ *   V0  — HEADER=72,  CONFIG=408, ENGINE_OFF=480, BITMAP_OFF=320, ACCT=240 (deployed devnet V0)
+ *   V2  — HEADER=104, CONFIG=496, ENGINE_OFF=600, BITMAP_OFF=432, ACCT=248 (BPF intermediate, e.g. 65088/1025568)
+ *   V1  — HEADER=104, CONFIG=536, ENGINE_OFF=640, BITMAP_OFF=656, ACCT=248 (fully upgraded, e.g. 65352/1025832)
+ *   V3  — HEADER=104, CONFIG=520, ENGINE_OFF=624, BITMAP_OFF=430, ACCT=248 (BPF intermediate, e.g. 257200)
+ *   V4  — HEADER=72,  CONFIG=408, ENGINE_OFF=480, BITMAP_OFF=312, ACCT=240 (V0-variant, e.g. 992560)
  */
 export declare function detectSlabLayout(dataLen: number): SlabLayout | null;
 /**
