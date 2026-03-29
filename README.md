@@ -123,6 +123,7 @@ Delegates the `PushOraclePrice` right to a specific keypair (e.g. a crank bot).
 Pass `PublicKey.default` (all zeros) to revoke — the program then falls back to Pyth/Chainlink.
 
 ```typescript
+import { PublicKey } from "@solana/web3.js";
 import {
   encodeSetOracleAuthority,
   ACCOUNTS_SET_ORACLE_AUTHORITY,
@@ -134,7 +135,7 @@ import {
 // Delegate to a crank bot
 const data = encodeSetOracleAuthority({ newAuthority: crankBot.publicKey });
 const keys = buildAccountMetas(ACCOUNTS_SET_ORACLE_AUTHORITY, [
-  adminPublicKey,  // [signer]
+  adminPublicKey,  // [signer, writable]
   slabPublicKey,   // [writable]
 ]);
 const ix = buildIx({ programId, keys, data });
