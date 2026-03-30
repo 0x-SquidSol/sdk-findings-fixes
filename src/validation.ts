@@ -14,6 +14,24 @@ const U128_MAX = (1n << 128n) - 1n;
 const I128_MIN = -(1n << 127n);
 const I128_MAX = (1n << 127n) - 1n;
 
+/**
+ * Non-empty trimmed string of decimal digits only: `"0"` or `[1-9]\\d*` (no leading zeros
+ * except a single zero). Rejects fractions, scientific notation, hex prefixes, and trailing junk.
+ */
+function requireDecimalUIntString(value: string, field: string): string {
+  const t = value.trim();
+  if (t === "") {
+    throw new ValidationError(field, `"${value}" is not a valid number`);
+  }
+  if (!/^(0|[1-9]\d*)$/.test(t)) {
+    throw new ValidationError(
+      field,
+      `"${value}" is not a valid non-negative integer (use decimal digits only, e.g. 123).`
+    );
+  }
+  return t;
+}
+
 export class ValidationError extends Error {
   constructor(
     public readonly field: string,
@@ -43,20 +61,15 @@ export function validatePublicKey(value: string, field: string): PublicKey {
  * Validate a non-negative integer index (u16 range for accounts).
  */
 export function validateIndex(value: string, field: string): number {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > U16_MAX) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > BigInt(U16_MAX)) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX} (u16 max), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }
 
 /**
@@ -169,20 +182,15 @@ export function validateI128(value: string, field: string): bigint {
  * Validate a basis points value (0-10000).
  */
 export function validateBps(value: string, field: string): number {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > 10000) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > 10000n) {
     throw new ValidationError(
       field,
-      `must be <= 10000 (100%), got ${num}`
+      `must be <= 10000 (100%), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }
 
 /**
@@ -196,18 +204,13 @@ export function validateU64(value: string, field: string): bigint {
  * Validate a u16 value.
  */
 export function validateU16(value: string, field: string): number {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > U16_MAX) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > BigInt(U16_MAX)) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX} (u16 max), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }

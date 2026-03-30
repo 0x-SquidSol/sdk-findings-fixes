@@ -3353,6 +3353,19 @@ var I64_MAX = BigInt("9223372036854775807");
 var U128_MAX = (1n << 128n) - 1n;
 var I128_MIN = -(1n << 127n);
 var I128_MAX = (1n << 127n) - 1n;
+function requireDecimalUIntString(value, field) {
+  const t = value.trim();
+  if (t === "") {
+    throw new ValidationError(field, `"${value}" is not a valid number`);
+  }
+  if (!/^(0|[1-9]\d*)$/.test(t)) {
+    throw new ValidationError(
+      field,
+      `"${value}" is not a valid non-negative integer (use decimal digits only, e.g. 123).`
+    );
+  }
+  return t;
+}
 var ValidationError = class extends Error {
   constructor(field, message) {
     super(`Invalid ${field}: ${message}`);
@@ -3371,20 +3384,15 @@ function validatePublicKey(value, field) {
   }
 }
 function validateIndex(value, field) {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > U16_MAX) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > BigInt(U16_MAX)) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX} (u16 max), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }
 function validateAmount(value, field) {
   let num;
@@ -3477,39 +3485,29 @@ function validateI128(value, field) {
   return num;
 }
 function validateBps(value, field) {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > 1e4) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > 10000n) {
     throw new ValidationError(
       field,
-      `must be <= 10000 (100%), got ${num}`
+      `must be <= 10000 (100%), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }
 function validateU64(value, field) {
   return validateAmount(value, field);
 }
 function validateU16(value, field) {
-  const num = parseInt(value, 10);
-  if (isNaN(num)) {
-    throw new ValidationError(field, `"${value}" is not a valid number`);
-  }
-  if (num < 0) {
-    throw new ValidationError(field, `must be non-negative, got ${num}`);
-  }
-  if (num > U16_MAX) {
+  const t = requireDecimalUIntString(value, field);
+  const bi = BigInt(t);
+  if (bi > BigInt(U16_MAX)) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX} (u16 max), got ${t}`
     );
   }
-  return num;
+  return Number(bi);
 }
 
 // src/oracle/price-router.ts

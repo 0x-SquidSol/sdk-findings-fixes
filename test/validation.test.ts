@@ -64,11 +64,24 @@ console.log("Testing validation functions...\n");
   assert(validateIndex("123", "--idx") === 123, "accepts positive");
   assert(validateIndex("65535", "--idx") === 65535, "accepts u16 max");
 
-  assertThrows(() => validateIndex("-1", "--idx"), "non-negative", "rejects negative");
+  assertThrows(() => validateIndex("-1", "--idx"), "not a valid non-negative integer", "rejects negative");
   assertThrows(() => validateIndex("65536", "--idx"), "65535", "rejects above u16 max");
-  assertThrows(() => validateIndex("abc", "--idx"), "not a valid number", "rejects non-numeric");
+  assertThrows(() => validateIndex("abc", "--idx"), "not a valid non-negative integer", "rejects non-numeric");
+  assertThrows(() => validateIndex("12.5", "--idx"), "not a valid non-negative integer", "rejects decimal");
+  assertThrows(() => validateIndex("12abc", "--idx"), "not a valid non-negative integer", "rejects trailing junk");
 
   console.log("✓ validateIndex");
+}
+
+// validateU16 tests
+{
+  assert(validateU16("0", "--u") === 0, "accepts zero");
+  assert(validateU16("65535", "--u") === 65535, "accepts u16 max");
+  assertThrows(() => validateU16("65536", "--u"), "65535", "rejects above u16 max");
+  assertThrows(() => validateU16("1.5", "--u"), "not a valid non-negative integer", "rejects decimal");
+  assertThrows(() => validateU16("1a", "--u"), "not a valid non-negative integer", "rejects junk");
+
+  console.log("✓ validateU16");
 }
 
 // validateAmount tests
@@ -134,8 +147,10 @@ console.log("Testing validation functions...\n");
   assert(validateBps("10000", "--bps") === 10000, "accepts 100%");
   assert(validateBps("5000", "--bps") === 5000, "accepts 50%");
 
-  assertThrows(() => validateBps("-1", "--bps"), "non-negative", "rejects negative");
+  assertThrows(() => validateBps("-1", "--bps"), "not a valid non-negative integer", "rejects negative");
   assertThrows(() => validateBps("10001", "--bps"), "10000", "rejects above 100%");
+  assertThrows(() => validateBps("50.5", "--bps"), "not a valid non-negative integer", "rejects decimal");
+  assertThrows(() => validateBps("50bps", "--bps"), "not a valid non-negative integer", "rejects trailing junk");
 
   console.log("✓ validateBps");
 }
