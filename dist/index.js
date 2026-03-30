@@ -2297,7 +2297,13 @@ function deriveInsuranceLpMint(programId, slab) {
     programId
   );
 }
+var LP_INDEX_U16_MAX = 65535;
 function deriveLpPda(programId, slab, lpIdx) {
+  if (typeof lpIdx !== "number" || !Number.isInteger(lpIdx) || lpIdx < 0 || lpIdx > LP_INDEX_U16_MAX) {
+    throw new Error(
+      `deriveLpPda: lpIdx must be an integer in [0, ${LP_INDEX_U16_MAX}], got ${lpIdx}`
+    );
+  }
   const idxBuf = new Uint8Array(2);
   new DataView(idxBuf.buffer).setUint16(0, lpIdx, true);
   return PublicKey4.findProgramAddressSync(
@@ -2330,10 +2336,29 @@ function deriveCreatorLockPda(programId, slab) {
     programId
   );
 }
+var PYTH_FEED_ID_HEX_LEN = 64;
+function normalizePythFeedIdHex(feedIdHex) {
+  let s = feedIdHex.trim();
+  if (s.startsWith("0x") || s.startsWith("0X")) {
+    s = s.slice(2);
+  }
+  return s;
+}
 function derivePythPushOraclePDA(feedIdHex) {
+  const normalized = normalizePythFeedIdHex(feedIdHex);
+  if (normalized.length !== PYTH_FEED_ID_HEX_LEN) {
+    throw new Error(
+      `derivePythPushOraclePDA: feedIdHex must be ${PYTH_FEED_ID_HEX_LEN} hex digits (32 bytes); got length ${normalized.length}`
+    );
+  }
+  if (!/^[0-9a-fA-F]+$/.test(normalized)) {
+    throw new Error(
+      "derivePythPushOraclePDA: feedIdHex must contain only hexadecimal digits"
+    );
+  }
   const feedId = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    feedId[i] = parseInt(feedIdHex.substring(i * 2, i * 2 + 2), 16);
+    feedId[i] = parseInt(normalized.substring(i * 2, i * 2 + 2), 16);
   }
   const shardBuf = new Uint8Array(2);
   return PublicKey4.findProgramAddressSync(
@@ -3456,8 +3481,16 @@ function buildIx(params) {
     data: params.data
   });
 }
+var MAX_COMPUTE_UNIT_LIMIT = 14e5;
 async function simulateOrSend(params) {
   const { connection, ix, signers, simulate, commitment = "confirmed", computeUnitLimit } = params;
+  if (computeUnitLimit !== void 0) {
+    if (typeof computeUnitLimit !== "number" || !Number.isInteger(computeUnitLimit) || computeUnitLimit < 1 || computeUnitLimit > MAX_COMPUTE_UNIT_LIMIT) {
+      throw new Error(
+        `computeUnitLimit must be an integer in [1, ${MAX_COMPUTE_UNIT_LIMIT}]`
+      );
+    }
+  }
   const tx = new Transaction();
   if (computeUnitLimit !== void 0) {
     tx.add(
@@ -3846,6 +3879,89 @@ function validateU16(value, field) {
 }
 
 // src/oracle/price-router.ts
+var DEFAULT_RESOLVE_TIMEOUT_MS = 15e3;
+function isRecord(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function combineAbortSignals(signals) {
+  const already = signals.find((s) => s.aborted);
+  if (already) {
+    const c = new AbortController();
+    c.abort(already.reason);
+    return c.signal;
+  }
+  const active = signals.filter((s) => !s.aborted);
+  if (active.length === 0) {
+    const c = new AbortController();
+    c.abort();
+    return c.signal;
+  }
+  if (active.length === 1) return active[0];
+  const ctrl = new AbortController();
+  for (const s of active) {
+    s.addEventListener("abort", () => ctrl.abort(s.reason), { once: true });
+  }
+  return ctrl.signal;
+}
+var SUPPORTED_DEX_IDS = /* @__PURE__ */ new Set(["pumpswap", "raydium", "meteora"]);
+function parseDexScreenerPairs(json) {
+  if (!isRecord(json)) return [];
+  const rawPairs = json.pairs;
+  if (!Array.isArray(rawPairs)) return [];
+  const sources = [];
+  for (const pair of rawPairs) {
+    if (!isRecord(pair)) continue;
+    if (pair.chainId !== "solana") continue;
+    const dexId = String(pair.dexId || "").toLowerCase();
+    if (!SUPPORTED_DEX_IDS.has(dexId)) continue;
+    let liquidity = 0;
+    if (isRecord(pair.liquidity) && typeof pair.liquidity.usd === "number") {
+      liquidity = pair.liquidity.usd;
+    }
+    if (liquidity < 100) continue;
+    let confidence = 30;
+    if (liquidity > 1e6) confidence = 90;
+    else if (liquidity > 1e5) confidence = 75;
+    else if (liquidity > 1e4) confidence = 60;
+    else if (liquidity > 1e3) confidence = 45;
+    const priceUsd = pair.priceUsd;
+    const price = typeof priceUsd === "string" || typeof priceUsd === "number" ? parseFloat(String(priceUsd)) || 0 : 0;
+    let baseSym = "?";
+    let quoteSym = "?";
+    if (isRecord(pair.baseToken) && typeof pair.baseToken.symbol === "string") {
+      baseSym = pair.baseToken.symbol;
+    }
+    if (isRecord(pair.quoteToken) && typeof pair.quoteToken.symbol === "string") {
+      quoteSym = pair.quoteToken.symbol;
+    }
+    const addr = pair.pairAddress;
+    sources.push({
+      type: "dex",
+      address: typeof addr === "string" ? addr : "",
+      dexId,
+      pairLabel: `${baseSym} / ${quoteSym}`,
+      liquidity,
+      price,
+      confidence
+    });
+  }
+  sources.sort((a, b) => b.liquidity - a.liquidity);
+  return sources.slice(0, 10);
+}
+function parseJupiterMintEntry(json, mint) {
+  if (!isRecord(json)) return null;
+  const data = json.data;
+  if (!isRecord(data)) return null;
+  const row = data[mint];
+  if (!isRecord(row)) return null;
+  const rawPrice = row.price;
+  if (rawPrice === void 0 || rawPrice === null) return null;
+  const price = parseFloat(String(rawPrice)) || 0;
+  if (price <= 0) return null;
+  let mintSymbol = "?";
+  if (typeof row.mintSymbol === "string") mintSymbol = row.mintSymbol;
+  return { price, mintSymbol };
+}
 var PYTH_SOLANA_FEEDS = {
   // SOL
   "ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d": { symbol: "SOL", mint: "So11111111111111111111111111111111111111112" },
@@ -3894,7 +4010,6 @@ var MINT_TO_PYTH_FEED = /* @__PURE__ */ new Map();
 for (const [feedId, info] of Object.entries(PYTH_SOLANA_FEEDS)) {
   MINT_TO_PYTH_FEED.set(info.mint, { feedId, symbol: info.symbol });
 }
-var SUPPORTED_DEX_IDS = /* @__PURE__ */ new Set(["pumpswap", "raydium", "meteora"]);
 async function fetchDexSources(mint, signal) {
   try {
     const resp = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
@@ -3902,31 +4017,7 @@ async function fetchDexSources(mint, signal) {
       headers: { "User-Agent": "percolator/1.0" }
     });
     const json = await resp.json();
-    const pairs = json.pairs || [];
-    const sources = [];
-    for (const pair of pairs) {
-      if (pair.chainId !== "solana") continue;
-      const dexId = (pair.dexId || "").toLowerCase();
-      if (!SUPPORTED_DEX_IDS.has(dexId)) continue;
-      const liquidity = pair.liquidity?.usd || 0;
-      if (liquidity < 100) continue;
-      let confidence = 30;
-      if (liquidity > 1e6) confidence = 90;
-      else if (liquidity > 1e5) confidence = 75;
-      else if (liquidity > 1e4) confidence = 60;
-      else if (liquidity > 1e3) confidence = 45;
-      sources.push({
-        type: "dex",
-        address: pair.pairAddress,
-        dexId,
-        pairLabel: `${pair.baseToken?.symbol || "?"} / ${pair.quoteToken?.symbol || "?"}`,
-        liquidity,
-        price: parseFloat(pair.priceUsd) || 0,
-        confidence
-      });
-    }
-    sources.sort((a, b) => b.liquidity - a.liquidity);
-    return sources.slice(0, 10);
+    return parseDexScreenerPairs(json);
   } catch {
     return [];
   }
@@ -3953,15 +4044,15 @@ async function fetchJupiterSource(mint, signal) {
       headers: { "User-Agent": "percolator/1.0" }
     });
     const json = await resp.json();
-    const data = json.data?.[mint];
-    if (!data || !data.price) return null;
+    const row = parseJupiterMintEntry(json, mint);
+    if (!row) return null;
     return {
       type: "jupiter",
       address: mint,
-      pairLabel: `${data.mintSymbol || "?"} / USD (Jupiter)`,
+      pairLabel: `${row.mintSymbol} / USD (Jupiter)`,
       liquidity: 0,
       // Jupiter aggregator — no single pool liquidity
-      price: parseFloat(data.price) || 0,
+      price: row.price,
       confidence: 40
       // Fallback — lower confidence
     };
@@ -3969,10 +4060,13 @@ async function fetchJupiterSource(mint, signal) {
     return null;
   }
 }
-async function resolvePrice(mint, signal) {
+async function resolvePrice(mint, signal, options) {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const effectiveSignal = signal ? combineAbortSignals([signal, timeoutSignal]) : timeoutSignal;
   const [dexSources, jupiterSource] = await Promise.all([
-    fetchDexSources(mint, signal),
-    fetchJupiterSource(mint, signal)
+    fetchDexSources(mint, effectiveSignal),
+    fetchJupiterSource(mint, effectiveSignal)
   ]);
   const pythSource = lookupPythSource(mint);
   const allSources = [];
