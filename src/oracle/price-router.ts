@@ -91,6 +91,33 @@ for (const [feedId, info] of Object.entries(PYTH_SOLANA_FEEDS)) {
 }
 
 // ---------------------------------------------------------------------------
+// Abort / timeout helpers (prompt 27: hung clients if fetch ignores caller signal)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_RESOLVE_TIMEOUT_MS = 15_000;
+
+/** Fire when either signal aborts; forwards the abort reason from whichever fired first. */
+function combineAbortSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  const c = new AbortController();
+  const forward = (sig: AbortSignal) => {
+    if (!c.signal.aborted) c.abort(sig.reason);
+  };
+  a.addEventListener("abort", () => forward(a), { once: true });
+  b.addEventListener("abort", () => forward(b), { once: true });
+  return c.signal;
+}
+
+function resolveEffectiveSignal(
+  userSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  return userSignal ? combineAbortSignals(userSignal, timeoutSig) : timeoutSig;
+}
+
+// ---------------------------------------------------------------------------
 // DexScreener fetcher
 // ---------------------------------------------------------------------------
 
@@ -186,11 +213,27 @@ async function fetchJupiterSource(mint: string, signal?: AbortSignal): Promise<P
 // Main resolver
 // ---------------------------------------------------------------------------
 
-export async function resolvePrice(mint: string, signal?: AbortSignal): Promise<PriceRouterResult> {
+export interface ResolvePriceOptions {
+  /** Max time for outbound HTTP (DexScreener + Jupiter). Default 15000 ms. */
+  timeoutMs?: number;
+}
+
+/**
+ * Resolve best price sources for a mint. Applies a **default timeout** on outbound
+ * `fetch` calls so missing or slow `signal` from callers cannot hang indefinitely.
+ */
+export async function resolvePrice(
+  mint: string,
+  signal?: AbortSignal,
+  options?: ResolvePriceOptions,
+): Promise<PriceRouterResult> {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  const effective = resolveEffectiveSignal(signal, timeoutMs);
+
   // Run all lookups in parallel
   const [dexSources, jupiterSource] = await Promise.all([
-    fetchDexSources(mint, signal),
-    fetchJupiterSource(mint, signal),
+    fetchDexSources(mint, effective),
+    fetchJupiterSource(mint, effective),
   ]);
 
   const pythSource = lookupPythSource(mint);

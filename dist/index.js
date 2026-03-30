@@ -3561,6 +3561,22 @@ var MINT_TO_PYTH_FEED = /* @__PURE__ */ new Map();
 for (const [feedId, info] of Object.entries(PYTH_SOLANA_FEEDS)) {
   MINT_TO_PYTH_FEED.set(info.mint, { feedId, symbol: info.symbol });
 }
+var DEFAULT_RESOLVE_TIMEOUT_MS = 15e3;
+function combineAbortSignals(a, b) {
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  const c = new AbortController();
+  const forward = (sig) => {
+    if (!c.signal.aborted) c.abort(sig.reason);
+  };
+  a.addEventListener("abort", () => forward(a), { once: true });
+  b.addEventListener("abort", () => forward(b), { once: true });
+  return c.signal;
+}
+function resolveEffectiveSignal(userSignal, timeoutMs) {
+  const timeoutSig = AbortSignal.timeout(timeoutMs);
+  return userSignal ? combineAbortSignals(userSignal, timeoutSig) : timeoutSig;
+}
 var SUPPORTED_DEX_IDS = /* @__PURE__ */ new Set(["pumpswap", "raydium", "meteora"]);
 async function fetchDexSources(mint, signal) {
   try {
@@ -3636,10 +3652,12 @@ async function fetchJupiterSource(mint, signal) {
     return null;
   }
 }
-async function resolvePrice(mint, signal) {
+async function resolvePrice(mint, signal, options) {
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_RESOLVE_TIMEOUT_MS;
+  const effective = resolveEffectiveSignal(signal, timeoutMs);
   const [dexSources, jupiterSource] = await Promise.all([
-    fetchDexSources(mint, signal),
-    fetchJupiterSource(mint, signal)
+    fetchDexSources(mint, effective),
+    fetchJupiterSource(mint, effective)
   ]);
   const pythSource = lookupPythSource(mint);
   const allSources = [];

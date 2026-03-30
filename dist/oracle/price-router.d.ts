@@ -31,4 +31,12 @@ export declare const PYTH_SOLANA_FEEDS: Record<string, {
     symbol: string;
     mint: string;
 }>;
-export declare function resolvePrice(mint: string, signal?: AbortSignal): Promise<PriceRouterResult>;
+export interface ResolvePriceOptions {
+    /** Max time for outbound HTTP (DexScreener + Jupiter). Default 15000 ms. */
+    timeoutMs?: number;
+}
+/**
+ * Resolve best price sources for a mint. Applies a **default timeout** on outbound
+ * `fetch` calls so missing or slow `signal` from callers cannot hang indefinitely.
+ */
+export declare function resolvePrice(mint: string, signal?: AbortSignal, options?: ResolvePriceOptions): Promise<PriceRouterResult>;
