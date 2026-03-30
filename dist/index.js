@@ -1,14 +1,26 @@
 // src/abi/encode.ts
 import { PublicKey } from "@solana/web3.js";
+var U8_MAX = 255;
+var U16_MAX = 65535;
+var U32_MAX = 4294967295;
 function encU8(val) {
-  return new Uint8Array([val & 255]);
+  if (!Number.isInteger(val) || val < 0 || val > U8_MAX) {
+    throw new Error("encU8: value must be an integer in [0, 255]");
+  }
+  return new Uint8Array([val]);
 }
 function encU16(val) {
+  if (!Number.isInteger(val) || val < 0 || val > U16_MAX) {
+    throw new Error("encU16: value must be an integer in [0, 65535]");
+  }
   const buf = new Uint8Array(2);
   new DataView(buf.buffer).setUint16(0, val, true);
   return buf;
 }
 function encU32(val) {
+  if (!Number.isInteger(val) || val < 0 || val > U32_MAX) {
+    throw new Error("encU32: value must be an integer in [0, 4294967295]");
+  }
   const buf = new Uint8Array(4);
   new DataView(buf.buffer).setUint32(0, val, true);
   return buf;
@@ -3346,7 +3358,7 @@ function computeWarmupMaxPositionSize(initialMarginBps, totalCapital, currentSlo
 
 // src/validation.ts
 import { PublicKey as PublicKey9 } from "@solana/web3.js";
-var U16_MAX = 65535;
+var U16_MAX2 = 65535;
 var U64_MAX = BigInt("18446744073709551615");
 var I64_MIN = BigInt("-9223372036854775808");
 var I64_MAX = BigInt("9223372036854775807");
@@ -3378,10 +3390,10 @@ function validateIndex(value, field) {
   if (num < 0) {
     throw new ValidationError(field, `must be non-negative, got ${num}`);
   }
-  if (num > U16_MAX) {
+  if (num > U16_MAX2) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX2} (u16 max), got ${num}`
     );
   }
   return num;
@@ -3503,10 +3515,10 @@ function validateU16(value, field) {
   if (num < 0) {
     throw new ValidationError(field, `must be non-negative, got ${num}`);
   }
-  if (num > U16_MAX) {
+  if (num > U16_MAX2) {
     throw new ValidationError(
       field,
-      `must be <= ${U16_MAX} (u16 max), got ${num}`
+      `must be <= ${U16_MAX2} (u16 max), got ${num}`
     );
   }
   return num;

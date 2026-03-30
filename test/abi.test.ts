@@ -2,6 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import {
   encU8,
   encU16,
+  encU32,
   encU64,
   encI64,
   encU128,
@@ -72,6 +73,28 @@ console.log("Testing encode functions...\n");
   assertBuf(encU16(0xabcd), [0xcd, 0xab], "encU16(0xabcd)");
   assertBuf(encU16(65535), [255, 255], "encU16(65535)");
   console.log("✓ encU16");
+}
+
+// encU8 / encU16 / encU32: reject out-of-range values (DataView would modulo-wrap; u8 used to mask)
+{
+  const mustThrow = (fn: () => void, label: string): void => {
+    let threw = false;
+    try {
+      fn();
+    } catch {
+      threw = true;
+    }
+    assert(threw, `${label} must throw`);
+  };
+  mustThrow(() => encU8(256), "encU8(256)");
+  mustThrow(() => encU8(-1), "encU8(-1)");
+  mustThrow(() => encU8(1.5), "encU8(1.5)");
+  mustThrow(() => encU16(65536), "encU16(65536)");
+  mustThrow(() => encU16(-1), "encU16(-1)");
+  mustThrow(() => encU32(4_294_967_296), "encU32(2^32)");
+  mustThrow(() => encU32(-1), "encU32(-1)");
+  assertBuf(encU32(4_294_967_295), [255, 255, 255, 255], "encU32(max)");
+  console.log("✓ encU8/encU16/encU32 range checks");
 }
 
 // Test encU64
