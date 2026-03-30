@@ -54,12 +54,25 @@ const MAGIC_BYTES = new Uint8Array([0x54, 0x41, 0x4c, 0x4f, 0x43, 0x52, 0x45, 0x
  * History: Small was V0 (62_808) until 2026-03-13 program upgrade. V0 values preserved
  *          in SLAB_TIERS_V0 for discovery of legacy on-chain accounts.
  */
+/**
+ * V1 slab tier sizes — devnet builds (percolator rev before cf35789).
+ * Engine header is 64 bytes smaller than mainnet builds.
+ */
 export const SLAB_TIERS = {
   small:  { maxAccounts: 256,  dataSize: 65_352,    label: "Small",  description: "256 slots · ~0.45 SOL" },
   medium: { maxAccounts: 1024, dataSize: 257_448,   label: "Medium", description: "1,024 slots · ~1.79 SOL" },
-  /** Mainnet medium tier — Account struct is 8 bytes larger (cf35789 warmup fields) */
-  medium_mainnet: { maxAccounts: 1024, dataSize: 257_512, label: "Medium", description: "1,024 slots · ~1.79 SOL (mainnet)" },
   large:  { maxAccounts: 4096, dataSize: 1_025_832, label: "Large",  description: "4,096 slots · ~7.14 SOL" },
+} as const;
+
+/**
+ * Mainnet slab tier sizes — percolator rev cf35789+ (GH#1731 warmup validation adds 64 bytes to engine header).
+ * Verified: medium = 257,512 from on-chain error log (0x3ede8).
+ * Small and large extrapolated (+64 bytes from devnet sizes).
+ */
+export const SLAB_TIERS_MAINNET = {
+  small:  { maxAccounts: 256,  dataSize: 65_416,    label: "Small",  description: "256 slots · ~0.46 SOL (mainnet)" },
+  medium: { maxAccounts: 1024, dataSize: 257_512,   label: "Medium", description: "1,024 slots · ~1.79 SOL (mainnet)" },
+  large:  { maxAccounts: 4096, dataSize: 1_025_896, label: "Large",  description: "4,096 slots · ~7.14 SOL (mainnet)" },
 } as const;
 
 /** @deprecated V0 slab sizes — kept for backward compatibility with old on-chain slabs */
@@ -176,6 +189,7 @@ export function validateSlabTierMatch(dataSize: number, programSlabLen: number):
 /** All known slab data sizes for discovery (V0 + V1 + V1D + V1D legacy tiers) */
 const ALL_SLAB_SIZES = [
   ...Object.values(SLAB_TIERS).map(t => t.dataSize),
+  ...Object.values(SLAB_TIERS_MAINNET).map(t => t.dataSize),
   ...Object.values(SLAB_TIERS_V0).map(t => t.dataSize),
   ...Object.values(SLAB_TIERS_V1D).map(t => t.dataSize),
   ...Object.values(SLAB_TIERS_V1D_LEGACY).map(t => t.dataSize),
@@ -453,6 +467,7 @@ export async function discoverMarkets(
   // dataSize filter queries and fall through to memcmp with wrong maxAccounts hint.
   const ALL_TIERS = [
     ...Object.values(SLAB_TIERS),
+    ...Object.values(SLAB_TIERS_MAINNET),
     ...Object.values(SLAB_TIERS_V0),
     ...Object.values(SLAB_TIERS_V1D),
     ...Object.values(SLAB_TIERS_V1D_LEGACY),
