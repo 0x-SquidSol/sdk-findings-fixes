@@ -6,6 +6,11 @@ import {
 describe("encU8", () => {
   it("encodes 0", () => expect(encU8(0)).toEqual(new Uint8Array([0])));
   it("encodes 255", () => expect(encU8(255)).toEqual(new Uint8Array([255])));
+  it("throws on out-of-range instead of wrapping", () => {
+    expect(() => encU8(256)).toThrow(/encU8/);
+    expect(() => encU8(-1)).toThrow(/encU8/);
+    expect(() => encU8(1.5)).toThrow(/encU8/);
+  });
 });
 
 describe("encU16", () => {
@@ -13,12 +18,22 @@ describe("encU16", () => {
   it("encodes 256 LE", () => expect(encU16(256)).toEqual(new Uint8Array([0, 1])));
   it("encodes 0xabcd LE", () => expect(encU16(0xabcd)).toEqual(new Uint8Array([0xcd, 0xab])));
   it("encodes 65535", () => expect(encU16(65535)).toEqual(new Uint8Array([255, 255])));
+  it("throws on out-of-range instead of DataView modulo wrap", () => {
+    expect(() => encU16(65536)).toThrow(/encU16/);
+    expect(() => encU16(-1)).toThrow(/encU16/);
+    expect(() => encU16(1.5)).toThrow(/encU16/);
+  });
 });
 
 describe("encU32", () => {
   it("encodes 0", () => expect(encU32(0)).toEqual(new Uint8Array([0, 0, 0, 0])));
   it("encodes 1", () => expect(encU32(1)).toEqual(new Uint8Array([1, 0, 0, 0])));
   it("encodes 0x01020304", () => expect(encU32(0x01020304)).toEqual(new Uint8Array([4, 3, 2, 1])));
+  it("throws on out-of-range instead of DataView modulo wrap", () => {
+    expect(() => encU32(4_294_967_296)).toThrow(/encU32/);
+    expect(() => encU32(-1)).toThrow(/encU32/);
+    expect(() => encU32(1.5)).toThrow(/encU32/);
+  });
 });
 
 describe("encU64", () => {
