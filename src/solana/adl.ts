@@ -281,7 +281,7 @@ export function buildAdlInstruction(
   targetIdx: number,
   backupOracles: PublicKey[] = []
 ): TransactionInstruction {
-  const data = Buffer.from(encodeExecuteAdl({ targetIdx }));
+  const data = encodeExecuteAdl({ targetIdx });
 
   const keys: AccountMeta[] = [
     { pubkey: caller, isSigner: true, isWritable: false },
