@@ -158,6 +158,14 @@ describe("parseHeader", () => {
   it("throws on too-short data", () => {
     expect(() => parseHeader(new Uint8Array(10))).toThrow("too short");
   });
+
+  it("throws on empty buffer", () => {
+    expect(() => parseHeader(new Uint8Array(0))).toThrow("too short");
+  });
+
+  it("throws when buffer is one byte shorter than minimum header (72)", () => {
+    expect(() => parseHeader(new Uint8Array(71))).toThrow("too short");
+  });
 });
 
 describe("parseConfig", () => {

@@ -52,10 +52,26 @@ export interface SimulateOrSendParams {
  * Simulate or send a transaction.
  * Returns consistent output for both modes.
  */
+/** Solana per-transaction compute unit ceiling (Compute Budget program). */
+const MAX_COMPUTE_UNIT_LIMIT = 1_400_000;
+
 export async function simulateOrSend(
   params: SimulateOrSendParams
 ): Promise<TxResult> {
   const { connection, ix, signers, simulate, commitment = "confirmed", computeUnitLimit } = params;
+
+  if (computeUnitLimit !== undefined) {
+    if (
+      typeof computeUnitLimit !== "number" ||
+      !Number.isInteger(computeUnitLimit) ||
+      computeUnitLimit < 1 ||
+      computeUnitLimit > MAX_COMPUTE_UNIT_LIMIT
+    ) {
+      throw new Error(
+        `computeUnitLimit must be an integer in [1, ${MAX_COMPUTE_UNIT_LIMIT}]`,
+      );
+    }
+  }
 
   const tx = new Transaction();
 
