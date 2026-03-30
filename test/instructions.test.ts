@@ -3,7 +3,7 @@ import { PublicKey } from "@solana/web3.js";
 import {
   encodeInitMarket, encodeInitUser, encodeInitLP,
   encodeDepositCollateral, encodeWithdrawCollateral,
-  encodeKeeperCrank, encodeTradeNoCpi, encodeTradeCpi,
+  encodeKeeperCrank, encodeTradeNoCpi, encodeTradeCpi, encodeTradeCpiV2,
   encodeLiquidateAtOracle, encodeCloseAccount,
   encodeTopUpInsurance, encodeSetRiskThreshold, encodeUpdateAdmin,
   encodeCloseSlab, encodeUpdateConfig, encodeSetMaintenanceFee,
@@ -11,6 +11,26 @@ import {
   encodeResolveMarket, encodeWithdrawInsurance,
   IX_TAG,
 } from "../src/abi/instructions.js";
+
+/**
+ * Any decoder that reads the full instruction payload in order will hit
+ * DataView OOB (RangeError) when the on-chain buffer is shorter than the
+ * layout this encoder produces.
+ */
+function assertTruncatedPayloadThrowsOnSequentialRead(full: Uint8Array): void {
+  expect(full.length).toBeGreaterThan(0);
+  for (let truncLen = 0; truncLen < full.length; truncLen++) {
+    const dv = new DataView(full.buffer, full.byteOffset, truncLen);
+    expect(
+      () => {
+        for (let i = 0; i < full.length; i++) {
+          dv.getUint8(i);
+        }
+      },
+      `truncLen=${truncLen} fullLen=${full.length}`,
+    ).toThrow(RangeError);
+  }
+}
 
 describe("IX_TAG values", () => {
   it("has correct tags", () => {
@@ -140,4 +160,84 @@ describe("instruction encoders", () => {
   it("encodeWithdrawInsurance produces 1 byte", () => {
     expect(encodeWithdrawInsurance()[0]).toBe(IX_TAG.WithdrawInsurance);
   });
+});
+
+describe("truncated instruction payloads", () => {
+  const initMarketArgs = {
+    admin: PublicKey.unique(),
+    collateralMint: PublicKey.unique(),
+    indexFeedId: "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+    maxStalenessSecs: "60",
+    confFilterBps: 50,
+    invert: 0,
+    unitScale: 0,
+    initialMarkPriceE6: "0",
+    warmupPeriodSlots: "1000",
+    maintenanceMarginBps: "500",
+    initialMarginBps: "1000",
+    tradingFeeBps: "10",
+    maxAccounts: "1000",
+    newAccountFee: "1000000",
+    riskReductionThreshold: "1000000000",
+    maintenanceFeePerSlot: "100",
+    maxCrankStalenessSlots: "50",
+    liquidationFeeBps: "100",
+    liquidationFeeCap: "10000000",
+    liquidationBufferBps: "50",
+    minLiquidationAbs: "1000000",
+  } as const;
+
+  const updateConfigArgs = {
+    fundingHorizonSlots: "0",
+    fundingKBps: "0",
+    fundingInvScaleNotionalE6: "0",
+    fundingMaxPremiumBps: "0",
+    fundingMaxBpsPerSlot: "0",
+    threshFloor: "0",
+    threshRiskBps: "0",
+    threshUpdateIntervalSlots: "0",
+    threshStepBps: "0",
+    threshAlphaBps: "0",
+    threshMin: "0",
+    threshMax: "0",
+    threshMinStep: "0",
+  } as const;
+
+  const cases: [string, () => Uint8Array][] = [
+    ["InitUser", () => encodeInitUser({ feePayment: "1000000" })],
+    ["DepositCollateral", () => encodeDepositCollateral({ userIdx: 5, amount: "1000000" })],
+    ["WithdrawCollateral", () => encodeWithdrawCollateral({ userIdx: 10, amount: "500000" })],
+    ["KeeperCrank", () => encodeKeeperCrank({ callerIdx: 1, allowPanic: true })],
+    ["TradeNoCpi", () => encodeTradeNoCpi({ lpIdx: 0, userIdx: 1, size: "1000000" })],
+    ["TradeCpi", () => encodeTradeCpi({ lpIdx: 2, userIdx: 3, size: "-500" })],
+    ["TradeCpiV2", () => encodeTradeCpiV2({ lpIdx: 2, userIdx: 3, size: "1000000", bump: 254 })],
+    ["LiquidateAtOracle", () => encodeLiquidateAtOracle({ targetIdx: 42 })],
+    ["CloseAccount", () => encodeCloseAccount({ userIdx: 100 })],
+    ["TopUpInsurance", () => encodeTopUpInsurance({ amount: "5000000" })],
+    ["SetRiskThreshold", () => encodeSetRiskThreshold({ newThreshold: "1000000000000" })],
+    ["UpdateAdmin", () => encodeUpdateAdmin({ newAdmin: new PublicKey("11111111111111111111111111111111") })],
+    ["InitLP", () =>
+      encodeInitLP({
+        matcherProgram: PublicKey.unique(),
+        matcherContext: PublicKey.unique(),
+        feePayment: "1000000",
+      }),
+    ],
+    ["InitMarket", () => encodeInitMarket(initMarketArgs)],
+    ["CloseSlab", () => encodeCloseSlab()],
+    ["UpdateConfig", () => encodeUpdateConfig(updateConfigArgs)],
+    ["SetMaintenanceFee", () => encodeSetMaintenanceFee({ newFee: "0" })],
+    ["SetOracleAuthority", () => encodeSetOracleAuthority({ newAuthority: new PublicKey("11111111111111111111111111111111") })],
+    ["PushOraclePrice", () => encodePushOraclePrice({ priceE6: "50000000", timestamp: "1700000000" })],
+    ["SetOraclePriceCap", () => encodeSetOraclePriceCap({ maxChangeE2bps: "1000" })],
+    ["ResolveMarket", () => encodeResolveMarket()],
+    ["WithdrawInsurance", () => encodeWithdrawInsurance()],
+  ];
+
+  it.each(cases)(
+    "%s: sequential byte read throws RangeError when ix data is shorter than encoded length",
+    (_name, encode) => {
+      assertTruncatedPayloadThrowsOnSequentialRead(encode());
+    },
+  );
 });
