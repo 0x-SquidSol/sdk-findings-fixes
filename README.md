@@ -315,17 +315,22 @@ const result = await fetchAdlRankings(
   "https://api.percolatorlaunch.com",
   slabAddress,
 );
-// result.slabAddress         — slab public key (base58)
-// result.adlNeeded           — true if ADL is triggered
-// result.capExceeded         — true if pnlPosTot > maxPnlCap
-// result.insuranceDepleted   — true if insurance fund balance == 0
-// result.pnlPosTot           — aggregate profitable PnL (decimal string)
-// result.rankings            — AdlApiRanking[] sorted by rank (1 = first to deleverage)
-//   .rank           — rank (1 = highest PnL%, deleveraged first)
-//   .idx            — slab account index (pass as targetIdx to buildAdlInstruction)
-//   .side           — "long" | "short"
-//   .pnlAbs         — absolute PnL in lamports (decimal string)
-//   .capital        — capital at entry in lamports (decimal string)
+// result.slabAddress              — slab public key (base58)
+// result.adlNeeded                — true if ADL is triggered (capExceeded or utilizationTriggered)
+// result.capExceeded              — true if pnlPosTot > maxPnlCap
+// result.insuranceDepleted        — true if insurance fund balance == 0
+// result.utilizationTriggered     — true if utilization BPS exceeds the configured ADL threshold
+// result.pnlPosTot                — aggregate profitable PnL (decimal string)
+// result.maxPnlCap                — max PnL cap from market config (decimal string, "0" if unconfigured)
+// result.excess                   — excess PnL above cap (decimal string)
+// result.insuranceFundBalance     — insurance fund balance (decimal string)
+// result.insuranceFundFeeRevenue  — insurance fund lifetime fee revenue (decimal string)
+// result.insuranceUtilizationBps  — insurance utilization in basis points (0–10000)
+// result.rankings                 — AdlApiRanking[] sorted by rank (1 = first to deleverage)
+//   .rank             — rank (1 = highest PnL%, deleveraged first)
+//   .idx              — slab account index (pass as targetIdx to buildAdlInstruction)
+//   .pnlAbs           — absolute PnL in lamports (decimal string)
+//   .capital          — capital at entry in lamports (decimal string)
 //   .pnlPctMillionths — pnl * 1_000_000 / capital (decimal string)
 ```
 
