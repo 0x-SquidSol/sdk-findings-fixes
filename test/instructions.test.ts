@@ -122,6 +122,48 @@ describe("instruction encoders", () => {
     expect(data[0]).toBe(IX_TAG.InitMarket);
   });
 
+  it("encodeInitMarket rejects non-hex feed ID", () => {
+    const args = {
+      admin: PublicKey.unique(), collateralMint: PublicKey.unique(),
+      indexFeedId: "g".repeat(64),
+      maxStalenessSecs: "60", confFilterBps: 50, invert: 0, unitScale: 0, initialMarkPriceE6: "0",
+      warmupPeriodSlots: "1000", maintenanceMarginBps: "500", initialMarginBps: "1000",
+      tradingFeeBps: "10", maxAccounts: "1000", newAccountFee: "1000000",
+      riskReductionThreshold: "1000000000", maintenanceFeePerSlot: "100",
+      maxCrankStalenessSlots: "50", liquidationFeeBps: "100", liquidationFeeCap: "10000000",
+      liquidationBufferBps: "50", minLiquidationAbs: "1000000",
+    };
+    expect(() => encodeInitMarket(args)).toThrow("non-hex");
+  });
+
+  it("encodeInitMarket rejects wrong-length feed ID", () => {
+    const args = {
+      admin: PublicKey.unique(), collateralMint: PublicKey.unique(),
+      indexFeedId: "abcd",
+      maxStalenessSecs: "60", confFilterBps: 50, invert: 0, unitScale: 0, initialMarkPriceE6: "0",
+      warmupPeriodSlots: "1000", maintenanceMarginBps: "500", initialMarginBps: "1000",
+      tradingFeeBps: "10", maxAccounts: "1000", newAccountFee: "1000000",
+      riskReductionThreshold: "1000000000", maintenanceFeePerSlot: "100",
+      maxCrankStalenessSlots: "50", liquidationFeeBps: "100", liquidationFeeCap: "10000000",
+      liquidationBufferBps: "50", minLiquidationAbs: "1000000",
+    };
+    expect(() => encodeInitMarket(args)).toThrow("4 chars");
+  });
+
+  it("encodeInitMarket accepts 0x-prefixed feed ID", () => {
+    const data = encodeInitMarket({
+      admin: PublicKey.unique(), collateralMint: PublicKey.unique(),
+      indexFeedId: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+      maxStalenessSecs: "60", confFilterBps: 50, invert: 0, unitScale: 0, initialMarkPriceE6: "0",
+      warmupPeriodSlots: "1000", maintenanceMarginBps: "500", initialMarginBps: "1000",
+      tradingFeeBps: "10", maxAccounts: "1000", newAccountFee: "1000000",
+      riskReductionThreshold: "1000000000", maintenanceFeePerSlot: "100",
+      maxCrankStalenessSlots: "50", liquidationFeeBps: "100", liquidationFeeCap: "10000000",
+      liquidationBufferBps: "50", minLiquidationAbs: "1000000",
+    });
+    expect(data.length).toBe(264);
+  });
+
   it("encodeCloseSlab produces 1 byte", () => {
     expect(encodeCloseSlab().length).toBe(1);
     expect(encodeCloseSlab()[0]).toBe(IX_TAG.CloseSlab);

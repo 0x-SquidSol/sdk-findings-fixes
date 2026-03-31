@@ -94,10 +94,18 @@ export const PYTH_PUSH_ORACLE_PROGRAM_ID = new PublicKey(
  * Seeds: [shard_id(u16 LE, always 0), feed_id(32 bytes)]
  * Program: pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT
  */
+const FEED_HEX_RE = /^[0-9a-fA-F]{64}$/;
+
 export function derivePythPushOraclePDA(feedIdHex: string): [PublicKey, number] {
+  const hex = feedIdHex.startsWith("0x") ? feedIdHex.slice(2) : feedIdHex;
+  if (!FEED_HEX_RE.test(hex)) {
+    throw new Error(
+      `derivePythPushOraclePDA: expected 64 hex chars, got "${hex.length === 64 ? "non-hex characters" : hex.length + " chars"}"`,
+    );
+  }
   const feedId = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    feedId[i] = parseInt(feedIdHex.substring(i * 2, i * 2 + 2), 16);
+    feedId[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
   }
   const shardBuf = new Uint8Array(2); // shard_id = 0 (u16 LE)
   return PublicKey.findProgramAddressSync(
