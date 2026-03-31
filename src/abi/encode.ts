@@ -4,13 +4,19 @@ import { PublicKey } from "@solana/web3.js";
  * Encode u8 (1 byte)
  */
 export function encU8(val: number): Uint8Array {
-  return new Uint8Array([val & 0xff]);
+  if (!Number.isInteger(val) || val < 0 || val > 0xFF) {
+    throw new Error(`encU8: value out of range (0..255), got ${val}`);
+  }
+  return new Uint8Array([val]);
 }
 
 /**
  * Encode u16 little-endian (2 bytes)
  */
 export function encU16(val: number): Uint8Array {
+  if (!Number.isInteger(val) || val < 0 || val > 0xFFFF) {
+    throw new Error(`encU16: value out of range (0..65535), got ${val}`);
+  }
   const buf = new Uint8Array(2);
   new DataView(buf.buffer).setUint16(0, val, true);
   return buf;
@@ -20,6 +26,9 @@ export function encU16(val: number): Uint8Array {
  * Encode u32 little-endian (4 bytes)
  */
 export function encU32(val: number): Uint8Array {
+  if (!Number.isInteger(val) || val < 0 || val > 0xFFFFFFFF) {
+    throw new Error(`encU32: value out of range (0..4294967295), got ${val}`);
+  }
   const buf = new Uint8Array(4);
   new DataView(buf.buffer).setUint32(0, val, true);
   return buf;
