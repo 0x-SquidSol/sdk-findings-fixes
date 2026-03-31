@@ -253,6 +253,30 @@ assertThrows(
   "raydium data too short"
 );
 
+// Reject decimals > 24 (resource exhaustion prevention)
+assertThrows(
+  () => computeDexSpotPriceE6("raydium-clmm", makeRaydiumClmmData(255, 6, 1n << 64n)),
+  "decimals out of range",
+  "raydium reject decimals0=255"
+);
+assertThrows(
+  () => computeDexSpotPriceE6("raydium-clmm", makeRaydiumClmmData(6, 255, 1n << 64n)),
+  "decimals out of range",
+  "raydium reject decimals1=255"
+);
+assertThrows(
+  () => computeDexSpotPriceE6("raydium-clmm", makeRaydiumClmmData(25, 6, 1n << 64n)),
+  "decimals out of range",
+  "raydium reject decimals0=25"
+);
+
+// Accept decimals at boundary (24)
+{
+  const data = makeRaydiumClmmData(24, 24, 1n << 64n);
+  const price = computeDexSpotPriceE6("raydium-clmm", data);
+  assert(price === 1_000_000n, `raydium decimals=24,24 should work, got ${price}`);
+}
+
 console.log("  ✓ Raydium CLMM");
 
 // ===========================================================================
@@ -327,6 +351,42 @@ assertThrows(
   "too short",
   "meteora data too short"
 );
+
+// Reject binStep > 10000 (resource exhaustion prevention)
+assertThrows(
+  () => computeDexSpotPriceE6("meteora-dlmm", makeMeteoraData(10001, 100)),
+  "binStep",
+  "meteora reject binStep=10001"
+);
+assertThrows(
+  () => computeDexSpotPriceE6("meteora-dlmm", makeMeteoraData(65535, 100)),
+  "binStep",
+  "meteora reject binStep=65535"
+);
+
+// Reject |activeId| > 500000 (resource exhaustion prevention)
+assertThrows(
+  () => computeDexSpotPriceE6("meteora-dlmm", makeMeteoraData(10, 500001)),
+  "activeId",
+  "meteora reject activeId=500001"
+);
+assertThrows(
+  () => computeDexSpotPriceE6("meteora-dlmm", makeMeteoraData(10, -500001)),
+  "activeId",
+  "meteora reject activeId=-500001"
+);
+assertThrows(
+  () => computeDexSpotPriceE6("meteora-dlmm", makeMeteoraData(10, 2_000_000_000)),
+  "activeId",
+  "meteora reject activeId=2B"
+);
+
+// Accept boundary values
+{
+  const data = makeMeteoraData(10000, 0);
+  const price = computeDexSpotPriceE6("meteora-dlmm", data);
+  assert(price === 1_000_000n, `meteora binStep=10000 activeId=0 should work, got ${price}`);
+}
 
 console.log("  ✓ Meteora DLMM");
 
