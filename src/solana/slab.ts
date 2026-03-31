@@ -1700,6 +1700,13 @@ export function parseAllAccounts(data: Uint8Array): { idx: number; account: Acco
   const indices = parseUsedIndices(data);
   const maxIdx = maxAccountIndex(data.length);
   const validIndices = indices.filter(idx => idx < maxIdx);
+  const droppedCount = indices.length - validIndices.length;
+  if (droppedCount > 0) {
+    console.warn(
+      `[parseAllAccounts] bitmap claims ${indices.length} used accounts but only ${maxIdx} fit ` +
+      `in the slab — ${droppedCount} out-of-bounds indices dropped (possible bitmap corruption)`,
+    );
+  }
   return validIndices.map(idx => ({
     idx,
     account: parseAccount(data, idx),
