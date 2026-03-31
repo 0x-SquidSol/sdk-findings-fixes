@@ -161,7 +161,7 @@ export function derivePythPushOraclePDA(feedIdHex: string): [PublicKey, number] 
   const normalized = normalizePythFeedIdHex(feedIdHex);
   if (!FEED_HEX_RE.test(normalized)) {
     throw new Error(
-      `derivePythPushOraclePDA: expected 64 hex chars, got "${normalized.length === 64 ? "non-hex characters" : normalized.length + " chars"}"`,
+      `derivePythPushOraclePDA: feedIdHex must be 64 hex digits (32 bytes); got ${normalized.length === 64 ? "non-hexadecimal characters" : normalized.length + " chars"}`,
     );
   }
   const feedId = new Uint8Array(32);
