@@ -3,6 +3,17 @@ node_modules/
 .env
 .env.*
 
+# Private keys, certificates, and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials.json
+keypair.json
+*-keypair.json
+
 # Local-only prompts and notes (not for upstream)
 .private/
 
