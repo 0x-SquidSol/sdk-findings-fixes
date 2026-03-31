@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PublicKey, Keypair } from '@solana/web3.js';
+
 import {
   STAKE_PROGRAM_ID,
   STAKE_IX,

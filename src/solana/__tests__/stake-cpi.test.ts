@@ -325,7 +325,7 @@ describe('Stake CPI Integration — Full Lifecycle', () => {
       const newAuth = Keypair.generate().publicKey;
       const data = encodeStakeAdminSetOracleAuthority(newAuth);
       expect(data[0]).toBe(STAKE_IX.AdminSetOracleAuthority);
-      expect(Buffer.from(data.subarray(1, 33))).toEqual(newAuth.toBuffer());
+      expect(new PublicKey(data.subarray(1, 33)).equals(newAuth)).toBe(true);
       expect(data.length).toBe(33); // 1 tag + 32 pubkey
     });
 
@@ -366,7 +366,7 @@ describe('Stake CPI Integration — Full Lifecycle', () => {
       expect(data[0]).toBe(STAKE_IX.AdminSetInsurancePolicy);
       // 1 tag + 32 pubkey + 8 minWithdrawBase + 2 maxWithdrawBps + 8 cooldownSlots = 51
       expect(data.length).toBe(51);
-      expect(Buffer.from(data.subarray(1, 33))).toEqual(authority.toBuffer());
+      expect(new PublicKey(data.subarray(1, 33)).equals(authority)).toBe(true);
       expect(readU64LE(data, 33)).toBe(100_000n);
       expect(readU16LE(data, 41)).toBe(500);
       expect(readU64LE(data, 43)).toBe(100n);
