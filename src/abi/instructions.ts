@@ -159,11 +159,14 @@ export interface InitMarketArgs {
 /**
  * Encode a Pyth feed ID (hex string) to 32-byte Uint8Array.
  */
+const HEX_RE = /^[0-9a-fA-F]{64}$/;
+
 function encodeFeedId(feedId: string): Uint8Array {
-  // Remove 0x prefix if present
   const hex = feedId.startsWith("0x") ? feedId.slice(2) : feedId;
-  if (hex.length !== 64) {
-    throw new Error(`Invalid feed ID length: expected 64 hex chars, got ${hex.length}`);
+  if (!HEX_RE.test(hex)) {
+    throw new Error(
+      `Invalid feed ID: expected 64 hex chars, got "${hex.length === 64 ? "non-hex characters" : hex.length + " chars"}"`,
+    );
   }
   const bytes = new Uint8Array(32);
   for (let i = 0; i < 64; i += 2) {
