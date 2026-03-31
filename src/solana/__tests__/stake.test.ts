@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PublicKey, Keypair } from '@solana/web3.js';
+
 import {
   STAKE_PROGRAM_ID,
   STAKE_IX,
@@ -18,6 +19,7 @@ import {
   encodeStakeAdminResolveMarket,
   encodeStakeAdminWithdrawInsurance,
   encodeStakeAdminSetInsurancePolicy,
+  encodeStakeAdminSetHwmConfig,
   initPoolAccounts,
   depositAccounts,
   withdrawAccounts,
@@ -320,5 +322,38 @@ describe('Account builders', () => {
     expect(accounts).toHaveLength(8);
     expect(accounts[4].pubkey.equals(slab)).toBe(true);
     expect(accounts[4].isWritable).toBe(true);
+  });
+});
+
+describe('negative value guards', () => {
+  it('encodeStakeDeposit rejects negative amounts', () => {
+    expect(() => encodeStakeDeposit(-1n)).toThrow('non-negative');
+    expect(() => encodeStakeDeposit(-100n)).toThrow('non-negative');
+  });
+
+  it('encodeStakeWithdraw rejects negative amounts', () => {
+    expect(() => encodeStakeWithdraw(-1n)).toThrow('non-negative');
+  });
+
+  it('encodeStakeAdminSetRiskThreshold rejects negative values', () => {
+    expect(() => encodeStakeAdminSetRiskThreshold(-1n)).toThrow('non-negative');
+  });
+
+  it('encodeStakeAdminSetMaintenanceFee rejects negative values', () => {
+    expect(() => encodeStakeAdminSetMaintenanceFee(-1n)).toThrow('non-negative');
+  });
+
+  it('encodeStakeInitPool rejects negative cooldownSlots', () => {
+    expect(() => encodeStakeInitPool(-1n, 100n)).toThrow('non-negative');
+  });
+
+  it('encodeStakeAdminSetHwmConfig rejects out-of-range bps', () => {
+    expect(() => encodeStakeAdminSetHwmConfig(true, 70000)).toThrow('u16 range');
+    expect(() => encodeStakeAdminSetHwmConfig(true, -1)).toThrow('u16 range');
+  });
+
+  it('encodeStakeDeposit accepts valid amounts', () => {
+    expect(() => encodeStakeDeposit(0n)).not.toThrow();
+    expect(() => encodeStakeDeposit(1_000_000n)).not.toThrow();
   });
 });

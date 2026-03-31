@@ -1,14 +1,18 @@
 import { PublicKey } from "@solana/web3.js";
 
 /**
- * Browser-safe env read — returns `undefined` when `process` is not defined
- * (e.g. in bundled browser builds without a Node polyfill).
+ * Read an environment variable safely. Returns `undefined` in browser
+ * environments where `process` is not defined, avoiding a
+ * `ReferenceError` crash at import time.
  */
 export function safeEnv(key: string): string | undefined {
-  if (typeof process !== "undefined" && process.env) {
-    return process.env[key];
+  try {
+    return typeof process !== "undefined" && process?.env
+      ? process.env[key]
+      : undefined;
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
 /**
@@ -42,6 +46,9 @@ export type Network = "devnet" | "mainnet";
 export function getProgramId(network?: Network): PublicKey {
   const override = safeEnv("PROGRAM_ID");
   if (override) {
+    console.warn(
+      `[percolator-sdk] PROGRAM_ID env override active: ${override} — ensure this points to a trusted program`,
+    );
     return new PublicKey(override);
   }
 
@@ -59,6 +66,9 @@ export function getProgramId(network?: Network): PublicKey {
 export function getMatcherProgramId(network?: Network): PublicKey {
   const override = safeEnv("MATCHER_PROGRAM_ID");
   if (override) {
+    console.warn(
+      `[percolator-sdk] MATCHER_PROGRAM_ID env override active: ${override} — ensure this points to a trusted program`,
+    );
     return new PublicKey(override);
   }
 

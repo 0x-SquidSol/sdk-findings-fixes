@@ -60,6 +60,10 @@ export async function simulateOrSend(
 ): Promise<TxResult> {
   const { connection, ix, signers, simulate, commitment = "confirmed", computeUnitLimit } = params;
 
+  if (!signers.length) {
+    throw new Error("simulateOrSend: at least one signer is required");
+  }
+
   if (computeUnitLimit !== undefined) {
     if (
       typeof computeUnitLimit !== "number" ||
@@ -90,30 +94,40 @@ export async function simulateOrSend(
   tx.feePayer = signers[0].publicKey;
 
   if (simulate) {
-    tx.sign(...signers);
-    const result = await connection.simulateTransaction(tx, signers);
-    const logs = result.value.logs ?? [];
-    let err: string | null = null;
-    let hint: string | undefined;
+    try {
+      tx.sign(...signers);
+      const result = await connection.simulateTransaction(tx, signers);
+      const logs = result.value.logs ?? [];
+      let err: string | null = null;
+      let hint: string | undefined;
 
-    if (result.value.err) {
-      const parsed = parseErrorFromLogs(logs);
-      if (parsed) {
-        err = `${parsed.name} (0x${parsed.code.toString(16)})`;
-        hint = parsed.hint;
-      } else {
-        err = JSON.stringify(result.value.err);
+      if (result.value.err) {
+        const parsed = parseErrorFromLogs(logs);
+        if (parsed) {
+          err = `${parsed.name} (0x${parsed.code.toString(16)})`;
+          hint = parsed.hint;
+        } else {
+          err = JSON.stringify(result.value.err);
+        }
       }
-    }
 
-    return {
-      signature: "(simulated)",
-      slot: result.context.slot,
-      err,
-      hint,
-      logs,
-      unitsConsumed: result.value.unitsConsumed ?? undefined,
-    };
+      return {
+        signature: "(simulated)",
+        slot: result.context.slot,
+        err,
+        hint,
+        logs,
+        unitsConsumed: result.value.unitsConsumed ?? undefined,
+      };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        signature: "(simulated)",
+        slot: 0,
+        err: message,
+        logs: [],
+      };
+    }
   }
 
   // Send

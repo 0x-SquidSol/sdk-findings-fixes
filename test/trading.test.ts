@@ -120,6 +120,15 @@ assert(computePnlPercent(10000n, 10000n) === 100, "100% profit");
   const result = computePnlPercent(500_000_000_000_000n, 10_000_000_000_000_000n);
   assert(result === 5, "large values → 5% (no truncation)");
 }
+{
+  // Extreme PnL that would exceed MAX_SAFE_INTEGER after scaling
+  try {
+    computePnlPercent(1n << 100n, 1n);
+    assert(false, "should have thrown for extreme PnL");
+  } catch (e: any) {
+    assert(e.message.includes("MAX_SAFE_INTEGER"), "throws precision-loss error for extreme PnL");
+  }
+}
 
 // --- computeEstimatedEntryPrice ---
 console.log("--- computeEstimatedEntryPrice ---");
@@ -152,7 +161,12 @@ assert(computeRequiredMargin(1_000_000n, 10000n) === 1_000_000n, "100% margin");
 // --- computeMaxLeverage ---
 console.log("--- computeMaxLeverage ---");
 
-assert(computeMaxLeverage(0n) === 1, "zero bps → 1x");
+try {
+  computeMaxLeverage(0n);
+  assert(false, "zero bps should throw");
+} catch (e: any) {
+  assert(e.message.includes("positive"), "zero bps throws with 'positive' message");
+}
 assert(computeMaxLeverage(1000n) === 10, "1000 bps → 10x");
 assert(computeMaxLeverage(500n) === 20, "500 bps → 20x");
 assert(computeMaxLeverage(10000n) === 1, "10000 bps → 1x");

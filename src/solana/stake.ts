@@ -10,9 +10,7 @@
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { safeEnv } from '../config/program-ids.js';
-import { concatBytes } from '../abi/encode.js';
-
-// ═══════════════════════════════════════════════════════════════
+import { concatBytes } from '../abi/encode.js';// ═══════════════════════════════════════════════════════════════
 // Program ID — network-conditional (mirrors program-ids.ts pattern)
 // ═══════════════════════════════════════════════════════════════
 
@@ -35,6 +33,9 @@ export const STAKE_PROGRAM_IDS = {
 export function getStakeProgramId(network?: 'devnet' | 'mainnet'): PublicKey {
   const override = safeEnv('STAKE_PROGRAM_ID');
   if (override) {
+    console.warn(
+      `[percolator-sdk] STAKE_PROGRAM_ID env override active: ${override} — ensure this points to a trusted program`,
+    );
     return new PublicKey(override);
   }
 
@@ -104,30 +105,23 @@ const TEXT = new TextEncoder();
 /** Derive the stake pool PDA for a given slab (market). */
 export function deriveStakePool(slab: PublicKey, programId?: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [TEXT.encode('stake_pool'), slab.toBytes()],
-    programId ?? getStakeProgramId(),
-  );
+    [TEXT.encode('stake_pool'), slab.toBytes()],    programId ?? getStakeProgramId(),  );
 }
 
 /** Derive the vault authority PDA (signs CPI, owns LP mint + vault). */
 export function deriveStakeVaultAuth(pool: PublicKey, programId?: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [TEXT.encode('vault_auth'), pool.toBytes()],
-    programId ?? getStakeProgramId(),
-  );
+    [TEXT.encode('vault_auth'), pool.toBytes()],    programId ?? getStakeProgramId(),  );
 }
 
 /** Derive the per-user deposit PDA (tracks cooldown, deposit time). */
 export function deriveDepositPda(pool: PublicKey, user: PublicKey, programId?: PublicKey) {
   return PublicKey.findProgramAddressSync(
-    [TEXT.encode('deposit'), pool.toBytes(), user.toBytes()],
-    programId ?? getStakeProgramId(),
-  );
+    [TEXT.encode('deposit'), pool.toBytes(), user.toBytes()],    programId ?? getStakeProgramId(),  );
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Browser-safe binary helpers (DataView, no Node.js Buffer dependency)
-// ═══════════════════════════════════════════════════════════════
+// Browser-safe binary helpers (DataView, no Node.js Buffer dependency)// ═══════════════════════════════════════════════════════════════
 
 /** Read a u64 little-endian from a Uint8Array at the given offset. */
 function readU64LE(data: Uint8Array, off: number): bigint {
@@ -146,23 +140,25 @@ function readU16LE(data: Uint8Array, off: number): number {
 // ═══════════════════════════════════════════════════════════════
 
 function u64Le(v: bigint | number): Uint8Array {
+  const big = BigInt(v);
+  if (big < 0n) throw new Error(`u64Le: value must be non-negative, got ${big}`);
+  if (big > 0xFFFF_FFFF_FFFF_FFFFn) throw new Error(`u64Le: value exceeds u64 max`);
   const arr = new Uint8Array(8);
-  new DataView(arr.buffer).setBigUint64(0, BigInt(v), true);
-  return arr;
+  new DataView(arr.buffer).setBigUint64(0, big, true);  return arr;
 }
 
 function u128Le(v: bigint | number): Uint8Array {
-  const arr = new Uint8Array(16);
-  const view = new DataView(arr.buffer);
   const big = BigInt(v);
-  view.setBigUint64(0, big & 0xFFFFFFFFFFFFFFFFn, true);
+  if (big < 0n) throw new Error(`u128Le: value must be non-negative, got ${big}`);
+  if (big > (1n << 128n) - 1n) throw new Error(`u128Le: value exceeds u128 max`);
+  const arr = new Uint8Array(16);
+  const view = new DataView(arr.buffer);  view.setBigUint64(0, big & 0xFFFFFFFFFFFFFFFFn, true);
   view.setBigUint64(8, big >> 64n, true);
   return arr;
 }
 
 function u16Le(v: number): Uint8Array {
-  const arr = new Uint8Array(2);
-  new DataView(arr.buffer).setUint16(0, v, true);
+  if (v < 0 || v > 0xFFFF) throw new Error(`u16Le: value out of u16 range (0..65535), got ${v}`);  const arr = new Uint8Array(2);  new DataView(arr.buffer).setUint16(0, v, true);
   return arr;
 }
 
@@ -360,16 +356,13 @@ export interface StakePoolState {
 export const STAKE_POOL_SIZE = 352;
 
 /**
- * Decode a StakePool account from raw data buffer.
- * Uses DataView for all u64/u16 reads — browser-safe.
+ * Decode a StakePool account from raw data buffer. * Uses DataView for all u64/u16 reads — browser-safe.
  */
 export function decodeStakePool(data: Uint8Array): StakePoolState {
   if (data.length < STAKE_POOL_SIZE) {
     throw new Error(`StakePool data too short: ${data.length} < ${STAKE_POOL_SIZE}`);
   }
-  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  let off = 0;
-
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);  let off = 0;
   const isInitialized = bytes[off] === 1; off += 1;
   const bump = bytes[off]; off += 1;
   const vaultAuthorityBump = bytes[off]; off += 1;
@@ -407,7 +400,7 @@ export function decodeStakePool(data: Uint8Array): StakePoolState {
   // Read u128 as two u64 parts
   const hwmTvlLow = readU64LE(bytes, reservedStart + 10);
   const hwmTvlHigh = readU64LE(bytes, reservedStart + 18);
-  const epochHighWaterTvl = hwmTvlLow + (hwmTvlHigh << 64n);
+  const epochHighWaterTvl = hwmTvlLow | (hwmTvlHigh << 64n);
   const hwmFloorBps = readU16LE(bytes, reservedStart + 26);
 
   // PERC-303: _reserved[32] = tranche_enabled, [33..41] = junior_balance, [41..49] = junior_total_lp, [49..51] = junior_fee_mult_bps

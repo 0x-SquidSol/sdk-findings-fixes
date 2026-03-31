@@ -32,7 +32,7 @@ describe("buildAdlInstruction", () => {
 
     // tag=50, targetIdx=7 → [50, 7, 0]
     const expected = encodeExecuteAdl({ targetIdx });
-    expect(ix.data).toEqual(Buffer.from(expected));
+    expect(new Uint8Array(ix.data)).toEqual(expected);
   });
 
   it("uses the correct programId", () => {
@@ -253,5 +253,31 @@ describe("parseAdlEvent", () => {
     const event = parseAdlEvent(logs);
     expect(event).not.toBeNull();
     expect(event!.targetIdx).toBe(5);
+  });
+});
+
+// Tests for buildAdlInstruction targetIdx validation
+// ---------------------------------------------------------------------------
+
+describe("buildAdlInstruction validation", () => {
+  it("rejects negative targetIdx", () => {
+    const key = PublicKey.default;
+    expect(() => buildAdlInstruction(key, key, key, key, -1)).toThrow("non-negative integer");
+  });
+
+  it("rejects NaN targetIdx", () => {
+    const key = PublicKey.default;
+    expect(() => buildAdlInstruction(key, key, key, key, NaN)).toThrow("non-negative integer");
+  });
+
+  it("rejects fractional targetIdx", () => {
+    const key = PublicKey.default;
+    expect(() => buildAdlInstruction(key, key, key, key, 1.5)).toThrow("non-negative integer");
+  });
+
+  it("accepts valid targetIdx", () => {
+    const key = PublicKey.default;
+    expect(() => buildAdlInstruction(key, key, key, key, 0)).not.toThrow();
+    expect(() => buildAdlInstruction(key, key, key, key, 255)).not.toThrow();
   });
 });

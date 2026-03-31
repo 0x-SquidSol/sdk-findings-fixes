@@ -138,7 +138,6 @@ export function deriveCreatorLockPda(
     programId
   );
 }
-
 /** 32-byte feed id as 64 hex digits (optional `0x` prefix after trim). */
 const PYTH_FEED_ID_HEX_LEN = 64;
 
@@ -155,17 +154,13 @@ function normalizePythFeedIdHex(feedIdHex: string): string {
  * Seeds: [shard_id(u16 LE, always 0), feed_id(32 bytes)]
  * Program: pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT
  */
+const FEED_HEX_RE = /^[0-9a-fA-F]{64}$/;
+
 export function derivePythPushOraclePDA(feedIdHex: string): [PublicKey, number] {
   const normalized = normalizePythFeedIdHex(feedIdHex);
-  if (normalized.length !== PYTH_FEED_ID_HEX_LEN) {
+  if (!FEED_HEX_RE.test(normalized)) {
     throw new Error(
-      `derivePythPushOraclePDA: feedIdHex must be ${PYTH_FEED_ID_HEX_LEN} hex digits (32 bytes); got length ${normalized.length}`,
-    );
-  }
-  if (!/^[0-9a-fA-F]+$/.test(normalized)) {
-    throw new Error(
-      "derivePythPushOraclePDA: feedIdHex must contain only hexadecimal digits",
-    );
+      `derivePythPushOraclePDA: feedIdHex must be 64 hex digits (32 bytes); got ${normalized.length === 64 ? "non-hexadecimal characters" : normalized.length + " chars"}`,    );
   }
   const feedId = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  encU8, encU16, encU32, encU64, encI64, encU128, encI128, concatBytes,
+  encU8, encU16, encU32, encU64, encI64, encU128, encI128, encPubkey, concatBytes,
 } from "../src/abi/encode.js";
 
 describe("encU8", () => {
@@ -77,11 +77,100 @@ describe("encI128", () => {
   it("encodes -1000000n", () => {
     expect(encI128(-1000000n)).toEqual(new Uint8Array([192, 189, 240, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]));
   });
+
+  const I128_MIN = -(1n << 127n);
+  const I128_MAX = (1n << 127n) - 1n;
+
+  it("encodes i128 MIN boundary correctly", () => {
+    const encoded = encI128(I128_MIN);
+    expect(encoded.length).toBe(16);
+    // MIN = -2^127 → two's complement = 0x80000000000000000000000000000000
+    expect(encoded[15]).toBe(0x80);
+    for (let i = 0; i < 15; i++) expect(encoded[i]).toBe(0);
+  });
+
+  it("encodes i128 MAX boundary correctly", () => {
+    const encoded = encI128(I128_MAX);
+    expect(encoded.length).toBe(16);
+    // MAX = 2^127 - 1 → 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+    expect(encoded[15]).toBe(0x7f);
+    for (let i = 0; i < 15; i++) expect(encoded[i]).toBe(0xff);
+  });
+
+  it("rejects values outside i128 range", () => {
+    expect(() => encI128(I128_MIN - 1n)).toThrow("out of range");
+    expect(() => encI128(I128_MAX + 1n)).toThrow("out of range");
+  });
+
+  it("encI128 roundtrips correctly at boundaries via readI128LE", () => {
+    function readI128LE(buf: Uint8Array): bigint {
+      const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      const lo = dv.getBigUint64(0, true);
+      const hi = dv.getBigUint64(8, true);
+      const unsigned = (hi << 64n) | lo;
+      const SIGN_BIT = 1n << 127n;
+      if (unsigned >= SIGN_BIT) return unsigned - (1n << 128n);
+      return unsigned;
+    }
+
+    expect(readI128LE(encI128(0n))).toBe(0n);
+    expect(readI128LE(encI128(-1n))).toBe(-1n);
+    expect(readI128LE(encI128(1n))).toBe(1n);
+    expect(readI128LE(encI128(I128_MIN))).toBe(I128_MIN);
+    expect(readI128LE(encI128(I128_MAX))).toBe(I128_MAX);
+    expect(readI128LE(encI128(-1000000n))).toBe(-1000000n);
+    expect(readI128LE(encI128(1000000n))).toBe(1000000n);
+  });
+});
+
+describe("encPubkey", () => {
+  it("rejects invalid base58 with descriptive error", () => {
+    expect(() => encPubkey("not-a-valid-base58!!!")).toThrow(/encPubkey.*invalid public key/i);
+  });
+  it("includes the bad value in the error message", () => {
+    expect(() => encPubkey("$$$bad$$$")).toThrow("$$$bad$$$");
+  });
+  it("accepts a valid base58 public key string", () => {
+    const bytes = encPubkey("11111111111111111111111111111111");
+    expect(bytes.length).toBe(32);
+  });
 });
 
 describe("concatBytes", () => {
   it("concatenates empty", () => expect(concatBytes()).toEqual(new Uint8Array(0)));
   it("concatenates multiple", () => {
     expect(concatBytes(new Uint8Array([1, 2]), new Uint8Array([3]))).toEqual(new Uint8Array([1, 2, 3]));
+  });
+});
+
+describe("encU8 range validation", () => {
+  it("rejects negative values", () => expect(() => encU8(-1)).toThrow("out of range"));
+  it("rejects values > 255", () => expect(() => encU8(256)).toThrow("out of range"));
+  it("rejects 300 (was silently truncated to 44)", () => expect(() => encU8(300)).toThrow("out of range"));
+  it("rejects NaN", () => expect(() => encU8(NaN)).toThrow("out of range"));
+  it("rejects floats", () => expect(() => encU8(1.5)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU8(0)).toEqual(new Uint8Array([0])));
+  it("accepts boundary 255", () => expect(encU8(255)).toEqual(new Uint8Array([255])));
+});
+
+describe("encU16 range validation", () => {
+  it("rejects negative values", () => expect(() => encU16(-1)).toThrow("out of range"));
+  it("rejects values > 65535", () => expect(() => encU16(65536)).toThrow("out of range"));
+  it("rejects 70000 (was silently truncated to 4464)", () => expect(() => encU16(70000)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU16(0)[0]).toBe(0));
+  it("accepts boundary 65535", () => {
+    const buf = encU16(65535);
+    expect(buf[0]).toBe(255);
+    expect(buf[1]).toBe(255);
+  });
+});
+
+describe("encU32 range validation", () => {
+  it("rejects negative values", () => expect(() => encU32(-1)).toThrow("out of range"));
+  it("rejects values > 2^32-1", () => expect(() => encU32(2 ** 32)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU32(0)[0]).toBe(0));
+  it("accepts boundary 2^32-1", () => {
+    const buf = encU32(0xFFFFFFFF);
+    expect(buf.every(b => b === 255)).toBe(true);
   });
 });

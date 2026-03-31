@@ -13,9 +13,7 @@ import {
 
 describe("PERCOLATOR_ERRORS table", () => {
   it("has contiguous error codes from 0 to 65", () => {
-    for (let i = 0; i <= 65; i++) {
-      expect(PERCOLATOR_ERRORS[i]).toBeDefined();
-      expect(PERCOLATOR_ERRORS[i].name).toBeTruthy();
+    for (let i = 0; i <= 65; i++) {      expect(PERCOLATOR_ERRORS[i]).toBeDefined();      expect(PERCOLATOR_ERRORS[i].name).toBeTruthy();
       expect(PERCOLATOR_ERRORS[i].hint).toBeTruthy();
     }
   });
@@ -80,23 +78,14 @@ describe("decodeError", () => {
   it("returns error info for code 45 (SafetyValveDominantSideBlocked)", () => {
     const info = decodeError(45);
     expect(info).toBeDefined();
-    expect(info!.name).toBe("SafetyValveDominantSideBlocked");
-  });
-
+    expect(info!.name).toBe("SafetyValveDominantSideBlocked");  });
   it("returns undefined for unknown code", () => {
     expect(decodeError(10_000)).toBeUndefined();
     expect(decodeError(-1)).toBeUndefined();
-    expect(decodeError(66)).toBeUndefined();
-  });
-
+    expect(decodeError(66)).toBeUndefined();  });
   it("returns error info for PERC extension codes 45 and 59", () => {
     expect(decodeError(45)!.name).toBe("SafetyValveDominantSideBlocked");
-    expect(decodeError(59)!.name).toBe("OiImbalanceHardBlock");
-  });
-});
-
-// ============================================================================
-// getErrorName
+    expect(decodeError(59)!.name).toBe("OiImbalanceHardBlock");  });});// ============================================================================// getErrorName
 // ============================================================================
 
 describe("getErrorName", () => {
