@@ -46,6 +46,9 @@ export type Network = "devnet" | "mainnet";
 export function getProgramId(network?: Network): PublicKey {
   const override = safeEnv("PROGRAM_ID");
   if (override) {
+    console.warn(
+      `[percolator-sdk] PROGRAM_ID env override active: ${override} — ensure this points to a trusted program`,
+    );
     return new PublicKey(override);
   }
 
@@ -63,6 +66,9 @@ export function getProgramId(network?: Network): PublicKey {
 export function getMatcherProgramId(network?: Network): PublicKey {
   const override = safeEnv("MATCHER_PROGRAM_ID");
   if (override) {
+    console.warn(
+      `[percolator-sdk] MATCHER_PROGRAM_ID env override active: ${override} — ensure this points to a trusted program`,
+    );
     return new PublicKey(override);
   }
 
