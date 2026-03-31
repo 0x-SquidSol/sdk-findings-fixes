@@ -1,0 +1,150 @@
+# Changelog
+
+All notable changes to `@percolator/sdk` are documented here.
+
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versioning follows [Semantic Versioning](https://semver.org/).
+
+---
+
+## [1.0.0-rc.1] — 2026-03-31
+
+This is the first release-candidate for `@percolator/sdk` v1. It targets the Percolator V_ADL
+on-chain program (mainnet + devnet) and includes every breaking change and new API introduced
+since the `0.2.0` baseline.
+
+### Breaking Changes
+
+- **`parseSlab` / `detectSlabLayout` now throw on unrecognized slab sizes.**
+  Previously, unrecognized sizes silently returned a null layout or fell back to a best-guess
+  parse. Now `detectSlabLayout` returns `null` and callers (including `parseEngine`) throw
+  a descriptive error. Update any catch logic that expected a silent fallback.
+
+- **`readNonce` / `readLastThrUpdateSlot` throw on null layout.**
+  Both functions now throw `Error("slab layout is null — cannot read nonce/slot")` when
+  called with a buffer that has no recognized layout, instead of returning `0n` silently.
+
+- **`computePnlPercent` now throws on BigInt-to-Number precision loss.**
+  When `capital` exceeds `Number.MAX_SAFE_INTEGER` the function now throws rather than
+  silently returning an inaccurate float. Use the BigInt-based path or scale inputs down.
+
+- **`encodeExecuteAdl` validates `targetIdx` range.**
+  Passing a `targetIdx < 0` or `targetIdx > 65535` now throws immediately with a clear message
+  instead of silently encoding a truncated u16.
+
+- **`buildIx` / `simulateOrSend` validate `signers` array.**
+  Passing an empty signers array now throws before hitting the RPC, rather than causing an
+  opaque "missing signature" RPC error.
+
+- **`getProgramId` / `getMatcherProgramId` / `getCurrentNetwork` default to `"mainnet"`.**
+  Previously they defaulted to `"devnet"`. Pass `"devnet"` explicitly if needed, or set
+  `NETWORK=devnet` in the environment.
+
+- **`encodeSetOiImbalanceHardBlock` / `encodeSetOracleAuthority` tag slots changed.**
+  These were emitted with incorrect tags in `0.1.x`. Tags are now correct:
+  `SetOiImbalanceHardBlock = 71`, `SetOracleAuthority = 16`.
+
+### New Exports
+
+The following symbols are now part of the public API (all re-exported from the root index):
+
+#### ADL types and functions (PERC-8278 / PERC-8312)
+
+| Export | Description |
+|--------|-------------|
+| `AdlRankedPosition` | Ranked position record (idx, pnl, pnlPct, side, adl_rank) |
+| `AdlRankingResult` | Full ranking snapshot: `ranked[]`, top `longs`/`shorts`, `isTriggered` |
+| `AdlEvent` | Decoded on-chain `ExecuteAdl` event log entry |
+| `AdlApiRanking` | Single ranked position from `/api/adl/rankings` HTTP endpoint |
+| `AdlApiResult` | Full HTTP API response including trigger flags and insurance state |
+| `AdlSide` | `"long" \| "short"` |
+| `fetchAdlRankedPositions` | Fetch slab, rank all open positions by PnL% (requires RPC) |
+| `rankAdlPositions` | Pure (no-RPC) ranking of already-fetched slab bytes |
+| `isAdlTriggered` | Check if slab's `pnl_pos_tot` exceeds `max_pnl_cap` |
+| `buildAdlInstruction` | Build a single `ExecuteAdl` `TransactionInstruction` |
+| `buildAdlTransaction` | Fetch + rank + pick top target + return instruction |
+| `parseAdlEvent` | Decode `AdlEvent` from transaction log lines |
+| `fetchAdlRankings` | Fetch ADL rankings from `/api/adl/rankings` HTTP endpoint |
+
+#### Error codes 61–65
+
+| Code | Name | Trigger |
+|------|------|---------|
+| 61 | `EngineSideBlocked` | Trade blocked — dominant side in DrainOnly/ResetPending mode |
+| 62 | `EngineCorruptState` | Critical: slab state invariant violated |
+| 63 | `InsuranceFundNotDepleted` | ADL rejected — insurance fund still has balance > 0 |
+| 64 | `NoAdlCandidates` | ADL rejected — no eligible positions to deleverage |
+| 65 | `BankruptPositionAlreadyClosed` | ADL rejected — target position already closed |
+
+All five codes are included in `PERCOLATOR_ERRORS`, returned by `decodeError(code)`,
+and parsed automatically by `parseErrorFromLogs(logs)`.
+
+#### Admin instruction helpers (PERC-8110 / PERC-8180)
+
+| Export | Description |
+|--------|-------------|
+| `encodeSetOiImbalanceHardBlock` | Encode `SetOiImbalanceHardBlock` instruction data (tag=71) |
+| `ACCOUNTS_SET_OI_IMBALANCE_HARD_BLOCK` | Account descriptor for the instruction |
+| `encodeSetOracleAuthority` | Encode `SetOracleAuthority` instruction data (tag=16) |
+| `ACCOUNTS_SET_ORACLE_AUTHORITY` | Account descriptor for the instruction |
+| `IX_TAG` | Instruction tag enum — all 65+ instruction tags |
+
+#### Shared vault instructions (PERC-628)
+
+`QueueWithdrawalSV`, `ClaimEpochWithdrawal`, `AdvanceEpoch` are now exported instruction tags.
+
+#### Slab layout constants (PERC-8271)
+
+| Export | Description |
+|--------|-------------|
+| `SLAB_TIERS_V_ADL` | ADL-upgraded slab tier sizes (SLAB_LEN = 1,288,304 bytes) |
+| `ALL_TIERS` | All known slab tier sizes for multi-tier market discovery |
+| `validateSlabDataSize` | Returns true if size matches a known tier |
+
+### Fixed
+
+- **Security audit (0x-SquidSol, PR#82):** 20 hardening fixes merged from independent audit:
+  - `encU8` / `encU16` / `encU32`: range-check before encode — prevents silent truncation
+  - `encPubkey`: descriptive error for invalid inputs (null, wrong length, non-base58)
+  - `computePnlPercent`: BigInt-to-Number precision guard
+  - `parseErrorFromLogs`: hex string bounded to 8 chars to prevent ReDoS
+  - `buildAdlInstruction`: signer array and `targetIdx` validation
+  - `stake.ts`: Buffer removed — fully browser-compatible via `DataView`
+  - `price-router`: removed `as any` casts; added URL-encode for token mint; default fetch timeout
+  - `dex-oracle`: `decimals` and `binStep` validated to prevent arithmetic DoS
+  - `config`: `process.env` reads guarded for browser environments
+  - `slab`: `postBitmap` guard to prevent misreading V1D engine fields
+  - `slab`: bitmap–capacity mismatch warning logged when `usedAccounts > slabCapacity`
+  - `discovery`: unrecognized slab layouts skipped with warning instead of fallback parse
+  - `simulateOrSend`: non-ok HTTP response handled before null-deref
+
+- **RPC concurrency cap** (PR#50): `discoverMarkets()` now caps parallel tier queries at 6
+  (configurable via `maxParallelTiers`). This prevents accidental RPC storms when using public
+  or free-tier endpoints. On a Helius Starter plan, pass `sequential: true` to serialize
+  tier queries with exponential backoff.
+
+- **Market discovery memcmp fallback** (PR#9): If the primary `getProgramAccounts` with
+  `dataSize` filter returns empty, the SDK now retries with a memcmp magic-byte filter.
+
+- **V1 slab layout** (PR#12): `SLAB_TIERS` updated to match deployed V1 on-chain values.
+
+- **V_ADL slab SLAB_LEN** (PERC-8271): Updated from 1,025,880 to 1,288,304 bytes after
+  `Account` and `RiskEngine` struct additions for ADL state fields.
+
+- **Mainnet program IDs** (GH#1689): `getProgramId("mainnet")` and `getMatcherProgramId("mainnet")`
+  now return the correct deployed mainnet addresses.
+
+- **`parseEngine` exception handling:** Wrapped in try/catch — malformed slab data logs a
+  warning and returns `null` instead of crashing the caller.
+
+### Deprecated
+
+- `discoverMarkets()` called without `maxParallelTiers` on public RPC endpoints may return
+  partial results or 429 errors. Pass `{ sequential: true }` or use a Helius paid-tier key.
+  This behaviour will be enforced in `1.0.0` final.
+
+---
+
+## [0.2.0] — 2026-01-10
+
+Initial public release. See git history for full commit log.

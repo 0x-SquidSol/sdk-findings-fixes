@@ -2,7 +2,7 @@
 
 TypeScript SDK for building clients, bots, and UIs on top of the [Percolator](https://github.com/dcccrypto/percolator) perpetual futures protocol on Solana.
 
-> **⚠️ DISCLAIMER: FOR EDUCATIONAL PURPOSES ONLY** — This code has NOT been audited. Do NOT use in production or with real funds.
+> **⚠️ RELEASE CANDIDATE** — `1.0.0-rc.1`. Security audit (0x-SquidSol) complete. Pending final mainnet program verification before `1.0.0` stable. Use at your own risk.
 
 [![npm](https://img.shields.io/npm/v/@percolator/sdk?color=14F195)](https://www.npmjs.com/package/@percolator/sdk)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
@@ -379,6 +379,66 @@ if (errors.length > 0) {
   console.error("Invalid risk params:", errors);
 }
 ```
+
+---
+
+## Mainnet vs Devnet
+
+By default the SDK targets **mainnet**. The `NETWORK` environment variable and the `network`
+parameter to `getProgramId()` / `discoverMarkets()` control which program IDs and RPC
+endpoints are used.
+
+```typescript
+import { getProgramId, discoverMarkets } from "@percolator/sdk";
+
+// Mainnet (default)
+const programId = getProgramId("mainnet");
+
+// Devnet — set env or pass explicitly
+// NETWORK=devnet
+const devProgramId = getProgramId("devnet");
+
+// Market discovery — uses network from NETWORK env by default
+const markets = await discoverMarkets(connection);
+```
+
+### Program Addresses
+
+| Program | Network | Address |
+|---------|---------|---------|
+| Percolator | Mainnet | `FxfD37s1AZTeWfFQps9Zpebi2dNQ9QSSDtfMKdbsfKrD` |
+| Matcher | Mainnet | see `getMatcherProgramId("mainnet")` |
+| Percolator | Devnet | `FxfD37s1AZTeWfFQps9Zpebi2dNQ9QSSDtfMKdbsfKrD` |
+
+> Use `PROGRAM_ID` / `MATCHER_PROGRAM_ID` env vars to override for local test validators.
+
+---
+
+## RPC Concurrency
+
+`discoverMarkets()` fires one `getProgramAccounts` request per known slab tier size.
+There are ~15 known tier sizes. To avoid hitting rate limits on public or free-tier endpoints,
+the SDK caps parallel in-flight requests at **6** by default.
+
+For production use a [Helius](https://helius.dev) paid-tier key. On the free tier,
+pass `sequential: true` to serialize requests with exponential backoff:
+
+```typescript
+import { discoverMarkets } from "@percolator/sdk";
+
+// Helius paid tier — parallel (default, fast)
+const markets = await discoverMarkets(connection, { maxParallelTiers: 6 });
+
+// Free-tier or public RPC — sequential with 429 backoff
+const marketsSafe = await discoverMarkets(connection, { sequential: true });
+
+// Custom concurrency
+const marketsCustom = await discoverMarkets(connection, { maxParallelTiers: 3 });
+```
+
+> **Note:** Public mainnet-beta RPC (`api.mainnet-beta.solana.com`) rejects
+> `getProgramAccounts` calls entirely. A Helius or QuickNode endpoint is required for
+> `discoverMarkets()` in production.
 
 ---
 
