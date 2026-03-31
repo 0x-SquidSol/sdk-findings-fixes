@@ -85,3 +85,35 @@ describe("concatBytes", () => {
     expect(concatBytes(new Uint8Array([1, 2]), new Uint8Array([3]))).toEqual(new Uint8Array([1, 2, 3]));
   });
 });
+
+describe("encU8 range validation", () => {
+  it("rejects negative values", () => expect(() => encU8(-1)).toThrow("out of range"));
+  it("rejects values > 255", () => expect(() => encU8(256)).toThrow("out of range"));
+  it("rejects 300 (was silently truncated to 44)", () => expect(() => encU8(300)).toThrow("out of range"));
+  it("rejects NaN", () => expect(() => encU8(NaN)).toThrow("out of range"));
+  it("rejects floats", () => expect(() => encU8(1.5)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU8(0)).toEqual(new Uint8Array([0])));
+  it("accepts boundary 255", () => expect(encU8(255)).toEqual(new Uint8Array([255])));
+});
+
+describe("encU16 range validation", () => {
+  it("rejects negative values", () => expect(() => encU16(-1)).toThrow("out of range"));
+  it("rejects values > 65535", () => expect(() => encU16(65536)).toThrow("out of range"));
+  it("rejects 70000 (was silently truncated to 4464)", () => expect(() => encU16(70000)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU16(0)[0]).toBe(0));
+  it("accepts boundary 65535", () => {
+    const buf = encU16(65535);
+    expect(buf[0]).toBe(255);
+    expect(buf[1]).toBe(255);
+  });
+});
+
+describe("encU32 range validation", () => {
+  it("rejects negative values", () => expect(() => encU32(-1)).toThrow("out of range"));
+  it("rejects values > 2^32-1", () => expect(() => encU32(2 ** 32)).toThrow("out of range"));
+  it("accepts boundary 0", () => expect(encU32(0)[0]).toBe(0));
+  it("accepts boundary 2^32-1", () => {
+    const buf = encU32(0xFFFFFFFF);
+    expect(buf.every(b => b === 255)).toBe(true);
+  });
+});
