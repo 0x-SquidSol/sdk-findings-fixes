@@ -29,8 +29,11 @@ export type Network = "devnet" | "mainnet";
  * 3. Devnet default (safest fallback — bug bounty PERC-697)
  */
 export function getProgramId(network?: Network): PublicKey {
-  // Explicit override takes precedence
   if (process.env.PROGRAM_ID) {
+    console.warn(
+      `[percolator-sdk] PROGRAM_ID env override active: ${process.env.PROGRAM_ID} — ` +
+      `ensure this points to a trusted program`,
+    );
     return new PublicKey(process.env.PROGRAM_ID);
   }
 
@@ -46,8 +49,11 @@ export function getProgramId(network?: Network): PublicKey {
  * Get the Matcher program ID for the current network
  */
 export function getMatcherProgramId(network?: Network): PublicKey {
-  // Explicit override takes precedence
   if (process.env.MATCHER_PROGRAM_ID) {
+    console.warn(
+      `[percolator-sdk] MATCHER_PROGRAM_ID env override active: ${process.env.MATCHER_PROGRAM_ID} — ` +
+      `ensure this points to a trusted program`,
+    );
     return new PublicKey(process.env.MATCHER_PROGRAM_ID);
   }
 

@@ -32,6 +32,10 @@ export const STAKE_PROGRAM_IDS = {
  */
 export function getStakeProgramId(network?: 'devnet' | 'mainnet'): PublicKey {
   if (process.env.STAKE_PROGRAM_ID) {
+    console.warn(
+      `[percolator-sdk] STAKE_PROGRAM_ID env override active: ${process.env.STAKE_PROGRAM_ID} — ` +
+      `ensure this points to a trusted program`,
+    );
     return new PublicKey(process.env.STAKE_PROGRAM_ID);
   }
 
