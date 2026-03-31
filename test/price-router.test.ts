@@ -105,6 +105,7 @@ describe("resolvePrice", () => {
       if (url.includes("dexscreener.com")) {
         if (opts?.dexFail) throw new Error("Network error");
         return {
+          ok: true,
           json: async () => ({
             pairs: opts?.dexPairs ?? [],
           }),
@@ -115,6 +116,7 @@ describe("resolvePrice", () => {
         const mint = new URL(url).searchParams.get("ids") || "";
         const price = opts?.jupiterPrice;
         return {
+          ok: true,
           json: async () => ({
             data:
               price != null
