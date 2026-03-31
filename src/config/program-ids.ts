@@ -1,6 +1,21 @@
 import { PublicKey } from "@solana/web3.js";
 
 /**
+ * Read an environment variable safely. Returns `undefined` in browser
+ * environments where `process` is not defined, avoiding a
+ * `ReferenceError` crash at import time.
+ */
+export function safeEnv(key: string): string | undefined {
+  try {
+    return typeof process !== "undefined" && process?.env
+      ? process.env[key]
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Centralized PROGRAM_ID configuration
  * 
  * Default to environment variable, then fall back to network-specific defaults.
@@ -29,9 +44,9 @@ export type Network = "devnet" | "mainnet";
  * 3. Devnet default (safest fallback — bug bounty PERC-697)
  */
 export function getProgramId(network?: Network): PublicKey {
-  // Explicit override takes precedence
-  if (process.env.PROGRAM_ID) {
-    return new PublicKey(process.env.PROGRAM_ID);
+  const override = safeEnv("PROGRAM_ID");
+  if (override) {
+    return new PublicKey(override);
   }
 
   // Use provided network or detect from env — default to devnet (never mainnet silently)
@@ -46,9 +61,9 @@ export function getProgramId(network?: Network): PublicKey {
  * Get the Matcher program ID for the current network
  */
 export function getMatcherProgramId(network?: Network): PublicKey {
-  // Explicit override takes precedence
-  if (process.env.MATCHER_PROGRAM_ID) {
-    return new PublicKey(process.env.MATCHER_PROGRAM_ID);
+  const override = safeEnv("MATCHER_PROGRAM_ID");
+  if (override) {
+    return new PublicKey(override);
   }
 
   // Use provided network or detect from env — default to devnet (never mainnet silently)
@@ -76,7 +91,7 @@ export function getMatcherProgramId(network?: Network): PublicKey {
  * enforces FORCE_MAINNET=1.
  */
 export function getCurrentNetwork(): Network {
-  const network = process.env.NETWORK?.toLowerCase();
+  const network = safeEnv("NETWORK")?.toLowerCase();
   if (network === "mainnet" || network === "mainnet-beta") {
     return "mainnet";
   }
