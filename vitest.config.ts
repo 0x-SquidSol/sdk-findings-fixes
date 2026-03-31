@@ -14,6 +14,7 @@ export default defineConfig({
       "test/accounts.test.ts",
       "test/program-ids.test.ts",
       "test/stake.test.ts",
+      "test/tx.test.ts",
     ],
   },
 });
