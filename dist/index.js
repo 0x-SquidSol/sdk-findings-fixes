@@ -3099,21 +3099,22 @@ var STAKE_IX = {
   /** PERC-303: Deposit into junior (first-loss) tranche */
   DepositJunior: 16
 };
+var TEXT = new TextEncoder();
 function deriveStakePool(slab, programId) {
   return PublicKey7.findProgramAddressSync(
-    [Buffer.from("stake_pool"), slab.toBuffer()],
+    [TEXT.encode("stake_pool"), slab.toBytes()],
     programId ?? getStakeProgramId()
   );
 }
 function deriveStakeVaultAuth(pool, programId) {
   return PublicKey7.findProgramAddressSync(
-    [Buffer.from("vault_auth"), pool.toBuffer()],
+    [TEXT.encode("vault_auth"), pool.toBytes()],
     programId ?? getStakeProgramId()
   );
 }
 function deriveDepositPda(pool, user, programId) {
   return PublicKey7.findProgramAddressSync(
-    [Buffer.from("deposit"), pool.toBuffer(), user.toBuffer()],
+    [TEXT.encode("deposit"), pool.toBytes(), user.toBytes()],
     programId ?? getStakeProgramId()
   );
 }
@@ -3135,131 +3136,111 @@ function readU16LE3(data, off) {
 }
 function u64Le(v) {
   const arr = new Uint8Array(8);
-  new DataView(arr.buffer).setBigUint64(
-    0,
-    BigInt(v),
-    /* littleEndian= */
-    true
-  );
-  return Buffer.from(arr);
+  new DataView(arr.buffer).setBigUint64(0, BigInt(v), true);
+  return arr;
 }
 function u128Le(v) {
   const arr = new Uint8Array(16);
   const view = new DataView(arr.buffer);
   const big = BigInt(v);
-  view.setBigUint64(
-    0,
-    big & 0xFFFFFFFFFFFFFFFFn,
-    /* littleEndian= */
-    true
-  );
-  view.setBigUint64(
-    8,
-    big >> 64n,
-    /* littleEndian= */
-    true
-  );
-  return Buffer.from(arr);
+  view.setBigUint64(0, big & 0xFFFFFFFFFFFFFFFFn, true);
+  view.setBigUint64(8, big >> 64n, true);
+  return arr;
 }
 function u16Le(v) {
   const arr = new Uint8Array(2);
-  new DataView(arr.buffer).setUint16(
-    0,
-    v,
-    /* littleEndian= */
-    true
-  );
-  return Buffer.from(arr);
+  new DataView(arr.buffer).setUint16(0, v, true);
+  return arr;
 }
 function encodeStakeInitPool(cooldownSlots, depositCap) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.InitPool]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.InitPool]),
     u64Le(cooldownSlots),
     u64Le(depositCap)
-  ]);
+  );
 }
 function encodeStakeDeposit(amount) {
-  return Buffer.concat([Buffer.from([STAKE_IX.Deposit]), u64Le(amount)]);
+  return concatBytes(new Uint8Array([STAKE_IX.Deposit]), u64Le(amount));
 }
 function encodeStakeWithdraw(lpAmount) {
-  return Buffer.concat([Buffer.from([STAKE_IX.Withdraw]), u64Le(lpAmount)]);
+  return concatBytes(new Uint8Array([STAKE_IX.Withdraw]), u64Le(lpAmount));
 }
 function encodeStakeFlushToInsurance(amount) {
-  return Buffer.concat([Buffer.from([STAKE_IX.FlushToInsurance]), u64Le(amount)]);
+  return concatBytes(new Uint8Array([STAKE_IX.FlushToInsurance]), u64Le(amount));
 }
 function encodeStakeUpdateConfig(newCooldownSlots, newDepositCap) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.UpdateConfig]),
-    Buffer.from([newCooldownSlots != null ? 1 : 0]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.UpdateConfig]),
+    new Uint8Array([newCooldownSlots != null ? 1 : 0]),
     u64Le(newCooldownSlots ?? 0n),
-    Buffer.from([newDepositCap != null ? 1 : 0]),
+    new Uint8Array([newDepositCap != null ? 1 : 0]),
     u64Le(newDepositCap ?? 0n)
-  ]);
+  );
 }
 function encodeStakeTransferAdmin() {
-  return Buffer.from([STAKE_IX.TransferAdmin]);
+  return new Uint8Array([STAKE_IX.TransferAdmin]);
 }
 function encodeStakeAdminSetOracleAuthority(newAuthority) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetOracleAuthority]),
-    newAuthority.toBuffer()
-  ]);
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetOracleAuthority]),
+    newAuthority.toBytes()
+  );
 }
 function encodeStakeAdminSetRiskThreshold(newThreshold) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetRiskThreshold]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetRiskThreshold]),
     u128Le(newThreshold)
-  ]);
+  );
 }
 function encodeStakeAdminSetMaintenanceFee(newFee) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetMaintenanceFee]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetMaintenanceFee]),
     u128Le(newFee)
-  ]);
+  );
 }
 function encodeStakeAdminResolveMarket() {
-  return Buffer.from([STAKE_IX.AdminResolveMarket]);
+  return new Uint8Array([STAKE_IX.AdminResolveMarket]);
 }
 function encodeStakeAdminWithdrawInsurance(amount) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminWithdrawInsurance]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminWithdrawInsurance]),
     u64Le(amount)
-  ]);
+  );
 }
 function encodeStakeAccrueFees() {
-  return Buffer.from([STAKE_IX.AccrueFees]);
+  return new Uint8Array([STAKE_IX.AccrueFees]);
 }
 function encodeStakeInitTradingPool(cooldownSlots, depositCap) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.InitTradingPool]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.InitTradingPool]),
     u64Le(cooldownSlots),
     u64Le(depositCap)
-  ]);
+  );
 }
 function encodeStakeAdminSetHwmConfig(enabled, hwmFloorBps) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetHwmConfig]),
-    Buffer.from([enabled ? 1 : 0]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetHwmConfig]),
+    new Uint8Array([enabled ? 1 : 0]),
     u16Le(hwmFloorBps)
-  ]);
+  );
 }
 function encodeStakeAdminSetTrancheConfig(juniorFeeMultBps) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetTrancheConfig]),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetTrancheConfig]),
     u16Le(juniorFeeMultBps)
-  ]);
+  );
 }
 function encodeStakeDepositJunior(amount) {
-  return Buffer.concat([Buffer.from([STAKE_IX.DepositJunior]), u64Le(amount)]);
+  return concatBytes(new Uint8Array([STAKE_IX.DepositJunior]), u64Le(amount));
 }
 function encodeStakeAdminSetInsurancePolicy(authority, minWithdrawBase, maxWithdrawBps, cooldownSlots) {
-  return Buffer.concat([
-    Buffer.from([STAKE_IX.AdminSetInsurancePolicy]),
-    authority.toBuffer(),
+  return concatBytes(
+    new Uint8Array([STAKE_IX.AdminSetInsurancePolicy]),
+    authority.toBytes(),
     u64Le(minWithdrawBase),
     u16Le(maxWithdrawBps),
     u64Le(cooldownSlots)
-  ]);
+  );
 }
 var STAKE_POOL_SIZE = 352;
 function decodeStakePool(data) {

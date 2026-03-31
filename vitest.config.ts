@@ -13,6 +13,7 @@ export default defineConfig({
       "test/adl.test.ts",
       "test/accounts.test.ts",
       "test/program-ids.test.ts",
+      "test/stake.test.ts",
     ],
   },
 });
