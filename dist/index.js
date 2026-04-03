@@ -1460,7 +1460,10 @@ var V_ADL_ACCT_LAST_FEE_SLOT_OFF = 240;
 var V1M_ENGINE_OFF = 640;
 var V1M_CONFIG_LEN = 536;
 var V1M_ACCOUNT_SIZE = 248;
+var V1M2_ENGINE_OFF = 616;
+var V1M2_CONFIG_LEN = 512;
 var V1M_ENGINE_PARAMS_OFF = 72;
+var V1M2_ENGINE_PARAMS_OFF = 96;
 var V1M_PARAMS_SIZE = 336;
 var V1M_ENGINE_CURRENT_SLOT_OFF = 408;
 var V1M_ENGINE_FUNDING_INDEX_OFF = 416;
@@ -1540,7 +1543,7 @@ for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Lar
 }
 var SLAB_TIERS_V1M2 = {};
 for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Large", 4096]]) {
-  const size = computeSlabSize(V1M_ENGINE_OFF, V1M2_ENGINE_BITMAP_OFF, V1M2_ACCOUNT_SIZE, n, 18);
+  const size = computeSlabSize(V1M2_ENGINE_OFF, V1M2_ENGINE_BITMAP_OFF, V1M2_ACCOUNT_SIZE, n, 18);
   SLAB_TIERS_V1M2[label.toLowerCase()] = { maxAccounts: n, dataSize: size, label, description: `${n} slots (V1M2 mainnet upgraded)` };
 }
 var SLAB_TIERS_V_ADL = {};
@@ -1801,7 +1804,7 @@ function buildLayoutV1M(maxAccounts) {
   };
 }
 function buildLayoutV1M2(maxAccounts) {
-  const engineOff = V1M_ENGINE_OFF;
+  const engineOff = V1M2_ENGINE_OFF;
   const bitmapOff = V1M2_ENGINE_BITMAP_OFF;
   const accountSize = V1M2_ACCOUNT_SIZE;
   const bitmapWords = Math.ceil(maxAccounts / 64);
@@ -1814,7 +1817,7 @@ function buildLayoutV1M2(maxAccounts) {
     version: 1,
     headerLen: V1_HEADER_LEN,
     configOffset: V1_HEADER_LEN,
-    configLen: V1M_CONFIG_LEN,
+    configLen: V1M2_CONFIG_LEN,
     reservedOff: V1_RESERVED_OFF,
     engineOff,
     accountSize,
@@ -1822,8 +1825,8 @@ function buildLayoutV1M2(maxAccounts) {
     bitmapWords,
     accountsOff: engineOff + accountsOffRel,
     engineInsuranceOff: 16,
-    engineParamsOff: V1M_ENGINE_PARAMS_OFF,
-    // 72 — same as V1M
+    engineParamsOff: V1M2_ENGINE_PARAMS_OFF,
+    // 96 — expanded InsuranceFund
     paramsSize: V1M_PARAMS_SIZE,
     // 336 — same as V1M
     // Runtime fields: same as V1M up to fundingRateBps, then +32 shift
@@ -1960,7 +1963,7 @@ function detectSlabLayout(dataLen, data) {
   const vadln = V_ADL_SIZES.get(dataLen);
   if (vadln !== void 0) {
     if (data && data.length >= 752) {
-      const maxAcctsV1M2 = readU64LE(data, V1M_ENGINE_OFF + V1M_ENGINE_PARAMS_OFF + 32);
+      const maxAcctsV1M2 = readU64LE(data, V1M2_ENGINE_OFF + V1M2_ENGINE_PARAMS_OFF + 32);
       if (maxAcctsV1M2 === BigInt(vadln)) {
         return buildLayoutV1M2(vadln);
       }

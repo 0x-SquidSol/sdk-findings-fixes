@@ -394,7 +394,11 @@ const V_ADL_ACCT_LAST_FEE_SLOT_OFF = 240;      // was 232
 const V1M_ENGINE_OFF = 640;      // align_up(104 + 536, 8) = 640  (same as V1_LEGACY)
 const V1M_CONFIG_LEN = 536;      // MarketConfig size in native/mainnet build
 const V1M_ACCOUNT_SIZE = 248;
+// V1M2: rebuilt from main@4861c56, CONFIG_LEN=512 on SBF → ENGINE_OFF=616
+const V1M2_ENGINE_OFF = 616;     // align_up(104 + 512, 8) = 616
+const V1M2_CONFIG_LEN = 512;     // MarketConfig with u128 native alignment on SBF
 const V1M_ENGINE_PARAMS_OFF = 72; // vault(16) + InsuranceFund(56) = 72  (same as V1)
+const V1M2_ENGINE_PARAMS_OFF = 96; // vault(16) + InsuranceFund(80) = 96  (expanded in main@4861c56)
 
 // V1M RiskParams: 336 bytes (+48 over V1's 288)
 //   Extra fields: fee_utilization_surge_bps(8) [in SDK V1 already? no → +8],
@@ -437,7 +441,10 @@ const V1M_ENGINE_LAST_BREAKER_SLOT_OFF = 696;
 // which is invalid for a [u64; N] array under #[repr(C)].
 const V1M_ENGINE_BITMAP_OFF = 720;
 
-// V1M2: mainnet program upgraded with 312-byte accounts but V1M engine layout (ENGINE_OFF=640).
+// V1M2: mainnet program rebuilt from main@4861c56 with --features medium.
+// ENGINE_OFF=616 (not 640): CONFIG_LEN=512 on SBF because cfg(target_arch="bpf")
+// doesn't match the SBF toolchain (target_arch="sbf"), so u128 align=16 (native) applies.
+// align_up(HEADER=104 + CONFIG=512, 8) = 616.
 // Slab sizes match V_ADL exactly — disambiguation required via data inspection.
 // Confirmed by on-chain probing of slab 7T1Efij9 (SOL-PERP, 323312 bytes, medium tier).
 // Engine struct is larger than V1M (990 vs 720 bitmap offset = +270 runtime bytes).
@@ -558,7 +565,7 @@ for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Lar
  */
 export const SLAB_TIERS_V1M2: Record<string, { maxAccounts: number; dataSize: number; label: string; description: string }> = {};
 for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Large", 4096]] as const) {
-  const size = computeSlabSize(V1M_ENGINE_OFF, V1M2_ENGINE_BITMAP_OFF, V1M2_ACCOUNT_SIZE, n, 18);
+  const size = computeSlabSize(V1M2_ENGINE_OFF, V1M2_ENGINE_BITMAP_OFF, V1M2_ACCOUNT_SIZE, n, 18);
   SLAB_TIERS_V1M2[label.toLowerCase()] = { maxAccounts: n, dataSize: size, label, description: `${n} slots (V1M2 mainnet upgraded)` };
 }
 
@@ -870,7 +877,7 @@ function buildLayoutV1M(maxAccounts: number): SlabLayout {
  * Confirmed by on-chain probing of slab 7T1Efij9 (SOL-PERP, 323312 bytes).
  */
 function buildLayoutV1M2(maxAccounts: number): SlabLayout {
-  const engineOff = V1M_ENGINE_OFF;
+  const engineOff = V1M2_ENGINE_OFF;
   const bitmapOff = V1M2_ENGINE_BITMAP_OFF;
   const accountSize = V1M2_ACCOUNT_SIZE;
   const bitmapWords = Math.ceil(maxAccounts / 64);
@@ -884,7 +891,7 @@ function buildLayoutV1M2(maxAccounts: number): SlabLayout {
     version: 1,
     headerLen: V1_HEADER_LEN,
     configOffset: V1_HEADER_LEN,
-    configLen: V1M_CONFIG_LEN,
+    configLen: V1M2_CONFIG_LEN,
     reservedOff: V1_RESERVED_OFF,
     engineOff,
     accountSize,
@@ -893,7 +900,7 @@ function buildLayoutV1M2(maxAccounts: number): SlabLayout {
     accountsOff: engineOff + accountsOffRel,
 
     engineInsuranceOff: 16,
-    engineParamsOff: V1M_ENGINE_PARAMS_OFF, // 72 — same as V1M
+    engineParamsOff: V1M2_ENGINE_PARAMS_OFF, // 96 — expanded InsuranceFund
     paramsSize: V1M_PARAMS_SIZE,            // 336 — same as V1M
     // Runtime fields: same as V1M up to fundingRateBps, then +32 shift
     engineCurrentSlotOff: V1M2_ENGINE_CURRENT_SLOT_OFF,
@@ -1028,7 +1035,7 @@ export function detectSlabLayout(dataLen: number, data?: Uint8Array): SlabLayout
   const vadln = V_ADL_SIZES.get(dataLen);
   if (vadln !== undefined) {
     if (data && data.length >= 752) {
-      const maxAcctsV1M2 = readU64LE(data, V1M_ENGINE_OFF + V1M_ENGINE_PARAMS_OFF + 32);
+      const maxAcctsV1M2 = readU64LE(data, V1M2_ENGINE_OFF + V1M2_ENGINE_PARAMS_OFF + 32);
       if (maxAcctsV1M2 === BigInt(vadln)) {
         // V1M engine layout with 312-byte accounts (mainnet program upgrade)
         return buildLayoutV1M2(vadln);
