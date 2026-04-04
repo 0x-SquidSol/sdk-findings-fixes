@@ -481,7 +481,7 @@ export interface DiscoverMarketsOptions {
   maxTierQueries?: number;
 
   /**
-   * Base URL of the Percolator REST API (e.g. `"https://api.percolatorlaunch.com"`).
+   * Base URL of the Percolator REST API (e.g. `"https://percolatorlaunch.com/api"`).
    *
    * When set, `discoverMarkets` will fall back to the REST API's `GET /markets`
    * endpoint if `getProgramAccounts` fails or returns 0 results (common on public
@@ -495,7 +495,7 @@ export interface DiscoverMarketsOptions {
    * @example
    * ```ts
    * const markets = await discoverMarkets(connection, programId, {
-   *   apiBaseUrl: "https://api.percolatorlaunch.com",
+   *   apiBaseUrl: "https://percolatorlaunch.com/api",
    * });
    * ```
    */
@@ -919,7 +919,7 @@ export async function getMarketsByAddress(
  * the full API response may contain additional statistics fields.
  */
 export interface ApiMarketEntry {
-  slabAddress: string;
+  slab_address: string;
   symbol?: string;
   name?: string;
   decimals?: number;
@@ -957,7 +957,7 @@ export interface DiscoverMarketsViaApiOptions {
  * @param connection - Solana RPC connection (any endpoint, including public)
  * @param programId - The Percolator program that owns the slabs
  * @param apiBaseUrl - Base URL of the Percolator REST API
- *                     (e.g. `"https://api.percolatorlaunch.com"`)
+ *                     (e.g. `"https://percolatorlaunch.com/api"`)
  * @param options - Optional timeout and on-chain fetch configuration
  * @returns Parsed markets for all valid slab accounts discovered via the API
  *
@@ -971,7 +971,7 @@ export interface DiscoverMarketsViaApiOptions {
  * const markets = await discoverMarketsViaApi(
  *   connection,
  *   programId,
- *   "https://api.percolatorlaunch.com",
+ *   "https://percolatorlaunch.com/api",
  * );
  * console.log(`Discovered ${markets.length} markets via API fallback`);
  * ```
@@ -1020,12 +1020,12 @@ export async function discoverMarketsViaApi(
   // Extract valid slab addresses
   const addresses: PublicKey[] = [];
   for (const entry of apiMarkets) {
-    if (!entry.slabAddress || typeof entry.slabAddress !== "string") continue;
+    if (!entry.slab_address || typeof entry.slab_address !== "string") continue;
     try {
-      addresses.push(new PublicKey(entry.slabAddress));
+      addresses.push(new PublicKey(entry.slab_address));
     } catch {
       console.warn(
-        `[discoverMarketsViaApi] Skipping invalid slab address: ${entry.slabAddress}`,
+        `[discoverMarketsViaApi] Skipping invalid slab address: ${entry.slab_address}`,
       );
     }
   }

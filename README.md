@@ -329,7 +329,7 @@ const event = parseAdlEvent(tx?.meta?.logMessages ?? []);
 import { fetchAdlRankings } from "@percolator/sdk";
 
 const result = await fetchAdlRankings(
-  "https://api.percolatorlaunch.com",
+  "https://percolatorlaunch.com/api",
   slabAddress,
 );
 // result.slabAddress              — slab public key (base58)
@@ -486,7 +486,7 @@ import { Connection } from "@solana/web3.js";
 
 const connection = new Connection("https://api.mainnet-beta.solana.com");
 const markets = await discoverMarkets(connection, getProgramId("mainnet"), {
-  apiBaseUrl: "https://api.percolatorlaunch.com",
+  apiBaseUrl: "https://percolatorlaunch.com/api",
 });
 ```
 
@@ -504,7 +504,7 @@ const programId = getProgramId("mainnet");
 const markets = await discoverMarketsViaApi(
   connection,
   programId,
-  "https://api.percolatorlaunch.com",
+  "https://percolatorlaunch.com/api",
 );
 ```
 

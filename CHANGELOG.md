@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`discoverMarketsViaApi()`** (PR#108, PERC-8424, GH#59): API-first market discovery —
+- **`discoverMarketsViaApi()`** (PR#118, PERC-8424, GH#59): API-first market discovery —
   queries the Percolator REST API (`GET /markets`) for slab addresses, then fetches full
   on-chain data via `getMarketsByAddress` (`getMultipleAccounts`). Works on any RPC
   endpoint including public mainnet nodes. Recommended for mainnet users without a

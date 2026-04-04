@@ -67,8 +67,8 @@ describe("discoverMarketsViaApi", () => {
 
     const apiResponse: { markets: ApiMarketEntry[] } = {
       markets: [
-        { slabAddress: slabAddr1, symbol: "SOL-PERP" },
-        { slabAddress: slabAddr2, symbol: "ETH-PERP" },
+        { slab_address: slabAddr1, symbol: "SOL-PERP" },
+        { slab_address: slabAddr2, symbol: "ETH-PERP" },
       ],
     };
 
@@ -88,13 +88,13 @@ describe("discoverMarketsViaApi", () => {
     const result = await discoverMarketsViaApi(
       mockConnection,
       programId,
-      "https://api.percolatorlaunch.com",
+      "https://percolatorlaunch.com/api",
     );
 
     // API was called with correct URL
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const fetchCall = mockFetch.mock.calls[0];
-    expect(fetchCall[0]).toBe("https://api.percolatorlaunch.com/markets");
+    expect(fetchCall[0]).toBe("https://percolatorlaunch.com/api/markets");
     expect(fetchCall[1]).toMatchObject({
       method: "GET",
       headers: { Accept: "application/json" },
@@ -121,10 +121,10 @@ describe("discoverMarketsViaApi", () => {
     await discoverMarketsViaApi(
       mockConnection,
       programId,
-      "https://api.percolatorlaunch.com///",
+      "https://percolatorlaunch.com/api///",
     );
 
-    expect(mockFetch.mock.calls[0][0]).toBe("https://api.percolatorlaunch.com/markets");
+    expect(mockFetch.mock.calls[0][0]).toBe("https://percolatorlaunch.com/api/markets");
   });
 
   it("throws on non-OK API response", async () => {
@@ -174,15 +174,15 @@ describe("discoverMarketsViaApi", () => {
     expect(result).toEqual([]);
   });
 
-  it("skips entries with missing or invalid slabAddress", async () => {
+  it("skips entries with missing or invalid slab_address", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         markets: [
           { symbol: "NO-SLAB" },
-          { slabAddress: "", symbol: "EMPTY" },
-          { slabAddress: "not-a-valid-pubkey!!!", symbol: "BAD" },
-          { slabAddress: 12345, symbol: "WRONG-TYPE" },
+          { slab_address: "", symbol: "EMPTY" },
+          { slab_address: "not-a-valid-pubkey!!!", symbol: "BAD" },
+          { slab_address: 12345, symbol: "WRONG-TYPE" },
         ],
       }),
     } as Response);
@@ -224,7 +224,7 @@ describe("discoverMarketsViaApi", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        markets: [{ slabAddress: slabAddr }],
+        markets: [{ slab_address: slabAddr }],
       }),
     } as Response);
 
@@ -262,17 +262,17 @@ describe("discoverMarkets with apiBaseUrl fallback", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
-        markets: [{ slabAddress: slabAddr }],
+        markets: [{ slab_address: slabAddr }],
       }),
     } as Response);
 
     const result = await discoverMarkets(mockConnection, programId, {
-      apiBaseUrl: "https://api.percolatorlaunch.com",
+      apiBaseUrl: "https://percolatorlaunch.com/api",
     });
 
     // API was called as fallback
     expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch.mock.calls[0][0]).toBe("https://api.percolatorlaunch.com/markets");
+    expect(mockFetch.mock.calls[0][0]).toBe("https://percolatorlaunch.com/api/markets");
 
     // getMultipleAccountsInfo was called with the API-provided address
     expect(mockConnection.getMultipleAccountsInfo).toHaveBeenCalledTimes(1);
@@ -294,7 +294,7 @@ describe("discoverMarkets with apiBaseUrl fallback", () => {
     // discoverMarkets will try to parse — it may fail on the minimal buffer,
     // but the key assertion is that the API is never called
     await discoverMarkets(mockConnection, programId, {
-      apiBaseUrl: "https://api.percolatorlaunch.com",
+      apiBaseUrl: "https://percolatorlaunch.com/api",
       maxTierQueries: 1,
     });
 
@@ -387,13 +387,13 @@ describe("discoverMarkets with apiBaseUrl fallback", () => {
 describe("discoverMarketsViaApi edge cases", () => {
   const programId = fakePubkey(100);
 
-  it("handles API returning markets with null slabAddress values", async () => {
+  it("handles API returning markets with null slab_address values", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         markets: [
-          { slabAddress: null, symbol: "ZOMBIE" },
-          { slabAddress: fakePubkey(1).toBase58(), symbol: "VALID" },
+          { slab_address: null, symbol: "ZOMBIE" },
+          { slab_address: fakePubkey(1).toBase58(), symbol: "VALID" },
         ],
       }),
     } as Response);
