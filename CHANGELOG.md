@@ -7,6 +7,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.0-rc.6] — 2026-04-04
+
+### Added
+
+- **RPC connection pool (`RpcPool`)** (PR#123, PERC-8453): Multi-endpoint connection pool
+  with configurable failover and weighted round-robin strategies. Automatically retries
+  transient errors (429, 502, 503, 504, network errors) with exponential backoff. Marks
+  endpoints unhealthy after consecutive failures and recovers them automatically.
+
+- **Configurable retry logic (`withRetry`)** (PERC-8453): Standalone exponential-backoff
+  retry wrapper for any async function. Supports `maxRetries` (default 3), `baseDelayMs`
+  (default 500ms), `maxDelayMs` (default 10s), configurable `jitterFactor`, and custom
+  `retryableStatusCodes`.
+
+- **RPC health probe (`checkRpcHealth`)** (PERC-8453): Utility that probes an RPC endpoint
+  by calling `getSlot()` and measuring round-trip latency. Returns `{ healthy, latencyMs,
+  slot, error }`. Also available as `pool.healthCheck()` for all endpoints at once.
+
+- **Request timeout configuration** (PERC-8453): `RpcPool` supports `requestTimeoutMs`
+  (default 30s) applied to every `call()` via `Promise.race`.
+
+- **Full TypeScript types** (PERC-8453): `RetryConfig`, `RpcEndpointConfig`,
+  `RpcPoolConfig`, `SelectionStrategy`, `RpcHealthResult` — all exported.
+
+- **57 unit tests** for retry logic, pool behavior, failover, round-robin, timeout handling,
+  and health probing.
+
+---
+
 ## [1.0.0-rc.5] — 2026-04-04
 
 ### Added

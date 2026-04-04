@@ -443,6 +443,73 @@ const markets = await discoverMarkets(connection);
 
 ---
 
+## RPC Connection Pool, Retry, and Health Probes
+
+The SDK provides a production-grade RPC connection pool with automatic retry,
+failover, and health probing. Use `RpcPool` for mainnet reliability.
+
+### RpcPool — Multi-endpoint with failover/round-robin
+
+```typescript
+import { RpcPool } from "@percolator/sdk";
+
+const pool = new RpcPool({
+  endpoints: [
+    { url: "https://mainnet.helius-rpc.com/?api-key=KEY", weight: 10, label: "helius" },
+    { url: "https://api.mainnet-beta.solana.com", weight: 1, label: "public" },
+  ],
+  strategy: "failover",   // or "round-robin"
+  retry: {
+    maxRetries: 3,         // default: 3
+    baseDelayMs: 500,      // default: 500 (exponential backoff)
+    maxDelayMs: 10_000,    // default: 10s cap
+    jitterFactor: 0.25,    // default: 0.25 (avoid thundering herd)
+  },
+  requestTimeoutMs: 30_000, // default: 30s per request
+  commitment: "confirmed",  // default: confirmed
+});
+
+// Execute any async call through the pool — auto-retry + failover
+const slot = await pool.call(conn => conn.getSlot());
+const balance = await pool.call(conn => conn.getBalance(pubkey));
+
+// Use with discoverMarkets
+const markets = await pool.call(conn =>
+  discoverMarkets(conn, programId, { apiBaseUrl: "https://percolatorlaunch.com/api" })
+);
+
+// Pool status & diagnostics
+console.log(pool.status()); // [{ label, url, healthy, failures, lastLatencyMs }]
+console.log(`${pool.healthyCount}/${pool.size} endpoints healthy`);
+```
+
+### Standalone retry wrapper
+
+```typescript
+import { withRetry } from "@percolator/sdk";
+import { Connection } from "@solana/web3.js";
+
+const conn = new Connection("https://api.mainnet-beta.solana.com");
+const slot = await withRetry(
+  () => conn.getSlot(),
+  { maxRetries: 3, baseDelayMs: 1000 },
+);
+```
+
+### RPC health probes
+
+```typescript
+import { checkRpcHealth } from "@percolator/sdk";
+
+const health = await checkRpcHealth("https://api.mainnet-beta.solana.com", 5000);
+console.log(`${health.endpoint}: ${health.healthy ? "UP" : "DOWN"} — ${health.latencyMs}ms, slot ${health.slot}`);
+
+// Or check all pool endpoints at once
+const results = await pool.healthCheck();
+```
+
+---
+
 ## RPC Concurrency
 
 `discoverMarkets()` fires one `getProgramAccounts` request per known slab tier size.
@@ -590,6 +657,7 @@ const markets = await getMarketsByAddress(
 │   ├── slab.ts          # Slab account parser (header + config + accounts)
 │   ├── pda.ts           # PDA derivation (vault, LP, insurance mint)
 │   ├── discovery.ts     # Market discovery (find all Percolator markets)
+│   ├── rpc-pool.ts      # RPC connection pool, retry, failover, health probes
 │   ├── dex-oracle.ts    # DEX oracle price integration
 │   ├── token-program.ts # SPL Token helpers
 │   ├── ata.ts           # Associated Token Account helpers
