@@ -3610,7 +3610,9 @@ function computePnlPct(pnl, capital) {
 }
 function isAdlTriggered(slabData) {
   const layout = detectSlabLayout(slabData.length);
-  if (!layout) return false;
+  if (!layout) {
+    throw new Error(`isAdlTriggered: unrecognized slab layout (size: ${slabData.length})`);
+  }
   try {
     const engine = parseEngine(slabData);
     if (engine.pnlPosTot === 0n) return false;
@@ -3994,7 +3996,8 @@ function computeMaxLeverage(initialMarginBps) {
   if (initialMarginBps <= 0n) {
     throw new Error("computeMaxLeverage: initialMarginBps must be positive");
   }
-  return Number(10000n / initialMarginBps);
+  const scaledResult = 10000n * 1000000n / initialMarginBps;
+  return Number(scaledResult) / 1e6;
 }
 
 // src/math/warmup.ts
