@@ -1803,8 +1803,8 @@ export function parseAccount(data: Uint8Array, idx: number): Account {
   if (!layout) throw new Error(`Unrecognized slab data length: ${data.length}`);
 
   const maxIdx = maxAccountIndex(data.length);
-  if (!Number.isInteger(idx) || idx < 0 || idx >= maxIdx) {
-    throw new Error(`Account index out of range: ${idx} (max: ${maxIdx - 1})`);
+  if (!Number.isInteger(idx) || idx < 0 || idx > maxIdx) {
+    throw new Error(`Account index out of range: ${idx} (max: ${maxIdx})`);
   }
 
   const base = layout.accountsOff + idx * layout.accountSize;
@@ -1860,11 +1860,11 @@ export function parseAccount(data: Uint8Array, idx: number): Account {
 export function parseAllAccounts(data: Uint8Array): { idx: number; account: Account }[] {
   const indices = parseUsedIndices(data);
   const maxIdx = maxAccountIndex(data.length);
-  const validIndices = indices.filter(idx => idx < maxIdx);
+  const validIndices = indices.filter(idx => idx <= maxIdx);
   const droppedCount = indices.length - validIndices.length;
   if (droppedCount > 0) {
     console.warn(
-      `[parseAllAccounts] bitmap claims ${indices.length} used accounts but only ${maxIdx} fit ` +
+      `[parseAllAccounts] bitmap claims ${indices.length} used accounts but only ${maxIdx + 1} fit ` +
       `in the slab — ${droppedCount} out-of-bounds indices dropped (possible bitmap corruption)`,
     );
   }
