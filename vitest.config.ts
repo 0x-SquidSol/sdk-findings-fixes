@@ -22,6 +22,7 @@ export default defineConfig({
       "test/discovery-static-fallback.test.ts",
       "test/discovery-fallback-integration.test.ts",
       "test/lighthouse.test.ts",
+      "test/rpc-pool.test.ts",
     ],
   },
 });
