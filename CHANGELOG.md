@@ -11,7 +11,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Tier-3 static bundle fallback for `discoverMarkets()`** (PR#TBD, PERC-8435):
+- **Tier-3 static bundle fallback for `discoverMarkets()`** (PR#119, PERC-8435):
   When both `getProgramAccounts` (tier 1) and the REST API (tier 2) are unavailable,
   `discoverMarkets()` now falls back to a bundled static list of known slab addresses.
   Addresses are fetched on-chain via `getMarketsByAddress` (`getMultipleAccounts`),
