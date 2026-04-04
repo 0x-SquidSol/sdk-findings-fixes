@@ -94,15 +94,10 @@ function parseDexScreenerPairs(json: unknown): PriceSource[] {
     else if (liquidity > 1_000) confidence = 45;
 
     const priceUsd = pair.priceUsd;
-    let price = 0;
-    if (typeof priceUsd === "string" || typeof priceUsd === "number") {
-      const parsed = parseFloat(String(priceUsd));
-      if (Number.isNaN(parsed)) {
-        // Invalid price - skip this pair rather than silently using 0
-        continue;
-      }
-      price = parsed;
-    }
+    const price =
+      typeof priceUsd === "string" || typeof priceUsd === "number"
+        ? parseFloat(String(priceUsd)) || 0
+        : 0;
 
     let baseSym = "?";
     let quoteSym = "?";
@@ -140,8 +135,8 @@ function parseJupiterMintEntry(
   if (!isRecord(row)) return null;
   const rawPrice = row.price;
   if (rawPrice === undefined || rawPrice === null) return null;
-  const price = parseFloat(String(rawPrice));
-  if (Number.isNaN(price) || price <= 0) return null;
+  const price = parseFloat(String(rawPrice)) || 0;
+  if (price <= 0) return null;
   let mintSymbol = "?";
   if (typeof row.mintSymbol === "string") mintSymbol = row.mintSymbol;
   return { price, mintSymbol };}
@@ -220,10 +215,17 @@ async function fetchDexSources(mint: string, signal?: AbortSignal): Promise<Pric
         headers: { "User-Agent": "percolator/1.0" },
       },
     );
-    if (!resp.ok) return [];
+    if (!resp.ok) {
+      console.debug(`[fetchDexSources] HTTP ${resp.status} for mint ${mint}`);
+      return [];
+    }
     const json: unknown = await resp.json();
     return parseDexScreenerPairs(json);
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[fetchDexSources] Error fetching DexScreener data for mint ${mint}:`,
+      err instanceof Error ? err.message : String(err),
+    );
     return [];
   }
 }
@@ -258,10 +260,16 @@ async function fetchJupiterSource(mint: string, signal?: AbortSignal): Promise<P
         headers: { "User-Agent": "percolator/1.0" },
       },
     );
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      console.debug(`[fetchJupiterSource] HTTP ${resp.status} for mint ${mint}`);
+      return null;
+    }
     const json: unknown = await resp.json();
     const row = parseJupiterMintEntry(json, mint);
-    if (!row) return null;
+    if (!row) {
+      console.debug(`[fetchJupiterSource] No price data from Jupiter for mint ${mint}`);
+      return null;
+    }
     return {
       type: "jupiter",
       address: mint,
@@ -270,7 +278,11 @@ async function fetchJupiterSource(mint: string, signal?: AbortSignal): Promise<P
       price: row.price,
       confidence: 40, // Fallback — lower confidence
     };
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[fetchJupiterSource] Error fetching Jupiter data for mint ${mint}:`,
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
 }
