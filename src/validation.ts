@@ -100,15 +100,14 @@ export function validateIndex(value: string, field: string): number {
  * @throws {@link ValidationError} if the value is negative or exceeds u64 max.
  */
 export function validateAmount(value: string, field: string): bigint {
-  let num: bigint;
-  try {
-    num = BigInt(value);
-  } catch {
+  const t = value.trim();
+  if (!/^(0|[1-9]\d*)$/.test(t)) {
     throw new ValidationError(
       field,
-      `"${value}" is not a valid number. Use decimal digits only.`
+      `"${value}" is not a valid non-negative integer. Use decimal digits only.`
     );
   }
+  const num = BigInt(t);
   if (num < 0n) {
     throw new ValidationError(field, `must be non-negative, got ${num}`);
   }
@@ -125,15 +124,14 @@ export function validateAmount(value: string, field: string): bigint {
  * Validate a u128 value.
  */
 export function validateU128(value: string, field: string): bigint {
-  let num: bigint;
-  try {
-    num = BigInt(value);
-  } catch {
+  const t = value.trim();
+  if (!/^(0|[1-9]\d*)$/.test(t)) {
     throw new ValidationError(
       field,
-      `"${value}" is not a valid number. Use decimal digits only.`
+      `"${value}" is not a valid non-negative integer. Use decimal digits only.`
     );
   }
+  const num = BigInt(t);
   if (num < 0n) {
     throw new ValidationError(field, `must be non-negative, got ${num}`);
   }
@@ -150,15 +148,14 @@ export function validateU128(value: string, field: string): bigint {
  * Validate an i64 value.
  */
 export function validateI64(value: string, field: string): bigint {
-  let num: bigint;
-  try {
-    num = BigInt(value);
-  } catch {
+  const t = value.trim();
+  if (!/^-?(0|[1-9]\d*)$/.test(t)) {
     throw new ValidationError(
       field,
-      `"${value}" is not a valid number. Use decimal digits only, with optional leading minus.`
+      `"${value}" is not a valid integer. Use decimal digits only, with optional leading minus.`
     );
   }
+  const num = BigInt(t);
   if (num < I64_MIN) {
     throw new ValidationError(
       field,
@@ -178,15 +175,14 @@ export function validateI64(value: string, field: string): bigint {
  * Validate an i128 value (trade sizes).
  */
 export function validateI128(value: string, field: string): bigint {
-  let num: bigint;
-  try {
-    num = BigInt(value);
-  } catch {
+  const t = value.trim();
+  if (!/^-?(0|[1-9]\d*)$/.test(t)) {
     throw new ValidationError(
       field,
-      `"${value}" is not a valid number. Use decimal digits only, with optional leading minus.`
+      `"${value}" is not a valid integer. Use decimal digits only, with optional leading minus.`
     );
   }
+  const num = BigInt(t);
   if (num < I128_MIN) {
     throw new ValidationError(
       field,
