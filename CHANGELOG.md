@@ -7,6 +7,63 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.0.0-rc.2] — 2026-04-04
+
+Post-merge hardening release. 14 PRs merged since rc.1: 5 new utility functions,
+8 security/correctness fixes from extended audit, and 1 regression fix.
+
+### New Exports
+
+| Export | PR | Description |
+|--------|-----|-------------|
+| `computeMaxWithdrawable` | #88 | Calculate maximum withdrawable amount for a position |
+| `isAccountFlat` | #89 | Check if an account has no open positions |
+| `filterOpenPositions` | #89 | Filter account list to only accounts with open positions |
+| `computeWarmupProgress` | #90 | Track position warmup countdown toward full leverage |
+| `getSlabHealth` | #92 | Assess market slab health status (utilization, capacity) |
+
+### Fixed
+
+- **`isAdlTriggered` regression** (PR#103, GH#102): Returns `false` for unrecognized slab
+  layouts instead of throwing. Defensive fix — matches catch-all behavior at function bottom.
+  (PERC-8402)
+
+- **`encodePushOraclePrice` validation** (PR#91): Input validation added to oracle price
+  push instruction — rejects invalid price/exponent/confidence inputs before encoding.
+
+- **`computeWarmupLeverageCap` negative input** (PR#94, medium): Negative warmup progress
+  values now throw instead of producing nonsensical leverage caps.
+
+- **`computeEmaMarkPrice` overflow** (PR#95, medium): Divides early to prevent integer
+  overflow when EMA inputs approach `BigInt(2^53)` boundary.
+
+- **`computeMeteoraDlmmPriceE6` unbounded loop** (PR#96, medium): Exponentiation loop now
+  has iteration limit (256) to prevent DoS on malicious bin step values.
+
+- **ADL event parsing truncation** (PR#97, medium): `targetIdx` validated against u16 range
+  before `BigInt`→`Number` conversion to prevent silent truncation.
+
+- **`parseAccount` bounds check** (PR#98, medium): `acctOwnerOff` validated against buffer
+  length before read — prevents out-of-bounds access on truncated slab data.
+
+- **Validation function Number truncation** (PR#99, low): `Number.MAX_SAFE_INTEGER` checks
+  added to all validation utility functions that convert BigInt to Number.
+
+- **ADL ranking sign convention** (PR#100, low): Explicit validation that long-side PnL > 0
+  and short-side PnL < 0 in ADL ranking — rejects reversed-sign positions.
+
+### Known Issues
+
+- **GH#59**: `discoverMarkets()` requires a Helius (or equivalent) paid-tier RPC on mainnet.
+  Public `api.mainnet-beta.solana.com` rejects `getProgramAccounts`. The `sequential: true`
+  mode with retry also fails because the public RPC blocks the call entirely, not just
+  rate-limits it. **Workaround for public RPC users**: not currently possible for market
+  discovery. Consumers must use a paid RPC provider that supports `getProgramAccounts`.
+  A future `getMarketsByAddress()` function using `getMultipleAccounts` (which public RPCs
+  do support) is planned as an alternative for callers who already know market addresses.
+
+---
+
 ## [1.0.0-rc.1] — 2026-03-31
 
 This is the first release-candidate for `@percolator/sdk` v1. It targets the Percolator V_ADL
