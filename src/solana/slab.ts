@@ -1777,6 +1777,9 @@ export function isAccountUsed(data: Uint8Array, idx: number): boolean {
 export function maxAccountIndex(dataLen: number): number {
   const layout = detectSlabLayout(dataLen);
   if (!layout) return 0;
+  if (layout.accountSize <= 0) {
+    throw new Error(`Invalid slab layout: accountSize must be positive, got ${layout.accountSize}`);
+  }
   const accountsEnd = dataLen - layout.accountsOff;
   if (accountsEnd <= 0) return 0;
   // Return max valid index (0-based), not count. If 256 accounts fit, max index is 255.
