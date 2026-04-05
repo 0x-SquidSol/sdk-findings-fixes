@@ -324,7 +324,7 @@ function sleep(ms: number): Promise<void> {
 function redactUrl(raw: string): string {
   try {
     const u = new URL(raw);
-    const sensitive = /^(api[-_]?key|token|secret|key|password)$/i;
+    const sensitive = /^(api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|key|password|bearer|credential|jwt)$/i;
     for (const k of [...u.searchParams.keys()]) {
       if (sensitive.test(k)) {
         u.searchParams.set(k, "***");
@@ -576,6 +576,7 @@ export class RpcPool {
         ep.lastLatencyMs = result.latencyMs;
         ep.healthy = result.healthy;
         if (result.healthy) ep.failures = 0;
+        result.endpoint = redactUrl(result.endpoint);
         return result;
       }),
     );
