@@ -22,7 +22,15 @@
  * const pnl = computeMarkPnl(10_000_000n, 100_000_000n, 110_000_000n);
  * ```
  */
-export declare function computeMarkPnl(positionSize: bigint, entryPrice: bigint, oraclePrice: bigint): bigint;
+export function computeMarkPnl(positionSize, entryPrice, oraclePrice) {
+    if (positionSize === 0n || oraclePrice === 0n)
+        return 0n;
+    const absPos = positionSize < 0n ? -positionSize : positionSize;
+    const diff = positionSize > 0n
+        ? oraclePrice - entryPrice
+        : entryPrice - oraclePrice;
+    return (diff * absPos) / oraclePrice;
+}
 /**
  * Compute liquidation price given entry, capital, position and maintenance margin.
  * Uses pure BigInt arithmetic for precision (no Number() truncation).
@@ -40,7 +48,27 @@ export declare function computeMarkPnl(positionSize: bigint, entryPrice: bigint,
  * const liqPrice = computeLiqPrice(100_000_000n, 10_000_000n, 1_000_000n, 500n);
  * ```
  */
-export declare function computeLiqPrice(entryPrice: bigint, capital: bigint, positionSize: bigint, maintenanceMarginBps: bigint): bigint;
+export function computeLiqPrice(entryPrice, capital, positionSize, maintenanceMarginBps) {
+    if (positionSize === 0n || entryPrice === 0n)
+        return 0n;
+    const absPos = positionSize < 0n ? -positionSize : positionSize;
+    // capitalPerUnit scaled by 1e6 for precision
+    const capitalPerUnitE6 = (capital * 1000000n) / absPos;
+    if (positionSize > 0n) {
+        const adjusted = (capitalPerUnitE6 * 10000n) / (10000n + maintenanceMarginBps);
+        const liq = entryPrice - adjusted;
+        return liq > 0n ? liq : 0n;
+    }
+    else {
+        // Guard: short positions liquidate when price rises above liq price.
+        // With >= 100% maintenance margin the denominator (10000 - maint) would be <= 0,
+        // meaning the position can never be liquidated. Return max u64 to signal this.
+        if (maintenanceMarginBps >= 10000n)
+            return 18446744073709551615n; // max u64 — unliquidatable
+        const adjusted = (capitalPerUnitE6 * 10000n) / (10000n - maintenanceMarginBps);
+        return entryPrice + adjusted;
+    }
+}
 /**
  * Compute estimated liquidation price BEFORE opening a trade.
  * Accounts for trading fees reducing effective capital.
@@ -60,7 +88,15 @@ export declare function computeLiqPrice(entryPrice: bigint, capital: bigint, pos
  * );
  * ```
  */
-export declare function computePreTradeLiqPrice(oracleE6: bigint, margin: bigint, posSize: bigint, maintBps: bigint, feeBps: bigint, direction: "long" | "short"): bigint;
+export function computePreTradeLiqPrice(oracleE6, margin, posSize, maintBps, feeBps, direction) {
+    if (oracleE6 === 0n || margin === 0n || posSize === 0n)
+        return 0n;
+    const absPos = posSize < 0n ? -posSize : posSize;
+    const fee = (absPos * feeBps) / 10000n;
+    const effectiveCapital = margin > fee ? margin - fee : 0n;
+    const signedPos = direction === "long" ? absPos : -absPos;
+    return computeLiqPrice(oracleE6, effectiveCapital, signedPos, maintBps);
+}
 /**
  * Compute trading fee from notional value and fee rate in bps.
  *
@@ -73,21 +109,8 @@ export declare function computePreTradeLiqPrice(oracleE6: bigint, margin: bigint
  * const fee = computeTradingFee(1_000_000_000n, 30n); // 0.30% of 1 SOL
  * ```
  */
-export declare function computeTradingFee(notional: bigint, tradingFeeBps: bigint): bigint;
-/**
- * Dynamic fee tier configuration.
- */
-export interface FeeTierConfig {
-    /** Base trading fee (Tier 1) in bps */
-    baseBps: bigint;
-    /** Tier 2 fee in bps (0 = disabled) */
-    tier2Bps: bigint;
-    /** Tier 3 fee in bps (0 = disabled) */
-    tier3Bps: bigint;
-    /** Notional threshold to enter Tier 2 (0 = tiered fees disabled) */
-    tier2Threshold: bigint;
-    /** Notional threshold to enter Tier 3 */
-    tier3Threshold: bigint;
+export function computeTradingFee(notional, tradingFeeBps) {
+    return (notional * tradingFeeBps) / 10000n;
 }
 /**
  * Compute the effective fee rate in bps using the tiered fee schedule.
@@ -99,24 +122,26 @@ export interface FeeTierConfig {
  *
  * If tier2Threshold == 0, tiered fees are disabled (flat baseBps).
  */
-export declare function computeDynamicFeeBps(notional: bigint, config: FeeTierConfig): bigint;
+export function computeDynamicFeeBps(notional, config) {
+    if (config.tier2Threshold === 0n)
+        return config.baseBps;
+    if (config.tier3Threshold > 0n && notional >= config.tier3Threshold)
+        return config.tier3Bps;
+    if (notional >= config.tier2Threshold)
+        return config.tier2Bps;
+    return config.baseBps;
+}
 /**
  * Compute the dynamic trading fee for a given notional and tier config.
  *
  * Uses ceiling division to match on-chain behavior (prevents fee evasion
  * via micro-trades).
  */
-export declare function computeDynamicTradingFee(notional: bigint, config: FeeTierConfig): bigint;
-/**
- * Fee split configuration.
- */
-export interface FeeSplitConfig {
-    /** LP vault share in bps (0–10_000) */
-    lpBps: bigint;
-    /** Protocol treasury share in bps */
-    protocolBps: bigint;
-    /** Market creator share in bps */
-    creatorBps: bigint;
+export function computeDynamicTradingFee(notional, config) {
+    const feeBps = computeDynamicFeeBps(notional, config);
+    if (notional <= 0n || feeBps <= 0n)
+        return 0n;
+    return (notional * feeBps + 9999n) / 10000n;
 }
 /**
  * Compute fee split for a total fee amount.
@@ -125,7 +150,26 @@ export interface FeeSplitConfig {
  * If all split params are 0, 100% goes to LP (legacy behavior).
  * Creator gets the rounding remainder to ensure total is preserved.
  */
-export declare function computeFeeSplit(totalFee: bigint, config: FeeSplitConfig): [bigint, bigint, bigint];
+export function computeFeeSplit(totalFee, config) {
+    if (config.lpBps === 0n && config.protocolBps === 0n && config.creatorBps === 0n) {
+        return [totalFee, 0n, 0n];
+    }
+    // Validate that splits equal exactly 100%
+    const totalBps = config.lpBps + config.protocolBps + config.creatorBps;
+    if (totalBps !== 10000n) {
+        throw new Error(`Fee split must equal exactly 10000 bps (100%): lpBps=${config.lpBps} + protocolBps=${config.protocolBps} + ` +
+            `creatorBps=${config.creatorBps} = ${totalBps}`);
+    }
+    const lp = (totalFee * config.lpBps) / 10000n;
+    const protocol = (totalFee * config.protocolBps) / 10000n;
+    const creator = totalFee - lp - protocol; // only rounding dust (max 2 tokens)
+    // Sanity check: creator should never be negative if validation above passes
+    if (creator < 0n) {
+        throw new Error(`Internal error: creator fee is negative (${creator}). ` +
+            `This should not happen if lpBps + protocolBps + creatorBps <= 10000.`);
+    }
+    return [lp, protocol, creator];
+}
 /**
  * Compute PnL as a percentage of capital.
  *
@@ -134,7 +178,15 @@ export declare function computeFeeSplit(totalFee: bigint, config: FeeSplitConfig
  * incorrect percentages for large positions (e.g., tokens with 9 decimals
  * where capital > ~9M tokens in native units exceeds MAX_SAFE_INTEGER).
  */
-export declare function computePnlPercent(pnlTokens: bigint, capital: bigint): number;
+export function computePnlPercent(pnlTokens, capital) {
+    if (capital === 0n)
+        return 0;
+    const scaledPct = (pnlTokens * 10000n) / capital;
+    if (scaledPct > BigInt(Number.MAX_SAFE_INTEGER) || scaledPct < BigInt(-Number.MAX_SAFE_INTEGER)) {
+        throw new Error(`computePnlPercent: scaled result ${scaledPct} exceeds Number.MAX_SAFE_INTEGER — precision loss`);
+    }
+    return Number(scaledPct) / 100;
+}
 /**
  * Estimate entry price including fee impact (slippage approximation).
  *
@@ -149,7 +201,21 @@ export declare function computePnlPercent(pnlTokens: bigint, capital: bigint): n
  * // → 100_030_000n (oracle + 0.30% fee impact)
  * ```
  */
-export declare function computeEstimatedEntryPrice(oracleE6: bigint, tradingFeeBps: bigint, direction: "long" | "short"): bigint;
+export function computeEstimatedEntryPrice(oracleE6, tradingFeeBps, direction) {
+    if (oracleE6 === 0n)
+        return 0n;
+    if (tradingFeeBps < 0n) {
+        throw new Error(`computeEstimatedEntryPrice: tradingFeeBps must be non-negative, got ${tradingFeeBps}`);
+    }
+    const feeImpact = (oracleE6 * tradingFeeBps) / 10000n;
+    const result = direction === "long" ? oracleE6 + feeImpact : oracleE6 - feeImpact;
+    if (result <= 0n) {
+        throw new Error(`computeEstimatedEntryPrice: result ${result} is non-positive (tradingFeeBps=${tradingFeeBps} too high for oracle=${oracleE6})`);
+    }
+    return result;
+}
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const MIN_SAFE_BIGINT = BigInt(-Number.MAX_SAFE_INTEGER);
 /**
  * Convert per-slot funding rate (bps) to annualized percentage.
  *
@@ -162,7 +228,14 @@ export declare function computeEstimatedEntryPrice(oracleE6: bigint, tradingFeeB
  * const apr = computeFundingRateAnnualized(1n); // ~78.84% APR
  * ```
  */
-export declare function computeFundingRateAnnualized(fundingRateBpsPerSlot: bigint): number;
+export function computeFundingRateAnnualized(fundingRateBpsPerSlot) {
+    if (fundingRateBpsPerSlot > MAX_SAFE_BIGINT || fundingRateBpsPerSlot < MIN_SAFE_BIGINT) {
+        throw new Error(`computeFundingRateAnnualized: value ${fundingRateBpsPerSlot} exceeds safe integer range`);
+    }
+    const bpsPerSlot = Number(fundingRateBpsPerSlot);
+    const slotsPerYear = 2.5 * 60 * 60 * 24 * 365; // ~400ms slots
+    return (bpsPerSlot * slotsPerYear) / 100;
+}
 /**
  * Compute margin required for a given notional and initial margin bps.
  *
@@ -176,7 +249,9 @@ export declare function computeFundingRateAnnualized(fundingRateBpsPerSlot: bigi
  * // → 1_000_000_000n
  * ```
  */
-export declare function computeRequiredMargin(notional: bigint, initialMarginBps: bigint): bigint;
+export function computeRequiredMargin(notional, initialMarginBps) {
+    return (notional * initialMarginBps) / 10000n;
+}
 /**
  * Compute maximum leverage from initial margin bps.
  *
@@ -194,7 +269,15 @@ export declare function computeRequiredMargin(notional: bigint, initialMarginBps
  * const maxLev3 = computeMaxLeverage(3333n); // → 3.003 (not truncated to 3)
  * ```
  */
-export declare function computeMaxLeverage(initialMarginBps: bigint): number;
+export function computeMaxLeverage(initialMarginBps) {
+    if (initialMarginBps <= 0n) {
+        throw new Error("computeMaxLeverage: initialMarginBps must be positive");
+    }
+    // Use scaled arithmetic: (10000 * 1e6) / initialMarginBps / 1e6
+    // This preserves fractional leverage instead of truncating
+    const scaledResult = (10000n * 1000000n) / initialMarginBps;
+    return Number(scaledResult) / 1_000_000;
+}
 /**
  * Compute the maximum amount that can be withdrawn from a position.
  *
@@ -219,4 +302,7 @@ export declare function computeMaxLeverage(initialMarginBps: bigint): number;
  * // Returns: 11_500_000_000n (10 + (2 - 0.5) = 11.5 SOL in lamports)
  * ```
  */
-export declare function computeMaxWithdrawable(capital: bigint, pnl: bigint, reservedPnl: bigint): bigint;
+export function computeMaxWithdrawable(capital, pnl, reservedPnl) {
+    const maturedPnl = pnl - reservedPnl;
+    return capital + (maturedPnl > 0n ? maturedPnl : 0n);
+}

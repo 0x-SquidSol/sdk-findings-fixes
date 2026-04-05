@@ -1,5 +1,7 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import { type SlabHeader, type MarketConfig, type EngineState, type RiskParams } from "./slab.js";
+import { type StaticMarketEntry } from "./static-markets.js";
+import { type Network } from "../config/program-ids.js";
 /**
  * A discovered Percolator market from on-chain program accounts.
  */
@@ -253,6 +255,56 @@ export interface DiscoverMarketsOptions {
      * Default: all known tiers.
      */
     maxTierQueries?: number;
+    /**
+     * Base URL of the Percolator REST API (e.g. `"https://percolatorlaunch.com/api"`).
+     *
+     * When set, `discoverMarkets` will fall back to the REST API's `GET /markets`
+     * endpoint if `getProgramAccounts` fails or returns 0 results (common on public
+     * mainnet RPCs that reject `getProgramAccounts`).
+     *
+     * The API returns slab addresses which are then fetched on-chain via
+     * `getMarketsByAddress` (uses `getMultipleAccounts`, works on all RPCs).
+     *
+     * GH#59 / PERC-8424: Unblocks mainnet users without a Helius API key.
+     *
+     * @example
+     * ```ts
+     * const markets = await discoverMarkets(connection, programId, {
+     *   apiBaseUrl: "https://percolatorlaunch.com/api",
+     * });
+     * ```
+     */
+    apiBaseUrl?: string;
+    /**
+     * Timeout in ms for the API fallback HTTP request.
+     * Only used when `apiBaseUrl` is set.
+     * Default: 10_000 (10 seconds).
+     */
+    apiTimeoutMs?: number;
+    /**
+     * Network hint for tier-3 static bundle fallback (`"mainnet"` or `"devnet"`).
+     *
+     * When both `getProgramAccounts` (tier 1) and the REST API (tier 2) fail,
+     * `discoverMarkets` will fall back to a bundled static list of known slab
+     * addresses for the specified network.  The addresses are fetched on-chain
+     * via `getMarketsByAddress` (`getMultipleAccounts` — works on all RPCs).
+     *
+     * If not set, tier-3 fallback is disabled.
+     *
+     * The static list can be extended at runtime via `registerStaticMarkets()`.
+     *
+     * @see {@link registerStaticMarkets} to add addresses at runtime
+     * @see {@link getStaticMarkets} to inspect the current static list
+     *
+     * @example
+     * ```ts
+     * const markets = await discoverMarkets(connection, programId, {
+     *   apiBaseUrl: "https://percolatorlaunch.com/api",
+     *   network: "mainnet",  // enables tier-3 static fallback
+     * });
+     * ```
+     */
+    network?: Network;
 }
 /**
  * Discover all Percolator markets owned by the given program.
@@ -261,3 +313,164 @@ export interface DiscoverMarketsOptions {
  * @param options.sequential - Run tier queries sequentially with 429 retry (PERC-1650).
  */
 export declare function discoverMarkets(connection: Connection, programId: PublicKey, options?: DiscoverMarketsOptions): Promise<DiscoveredMarket[]>;
+/**
+ * Options for `getMarketsByAddress`.
+ */
+export interface GetMarketsByAddressOptions {
+    /**
+     * Maximum number of addresses per `getMultipleAccounts` RPC call.
+     * Solana limits a single call to 100 accounts; callers may lower this
+     * to reduce per-request payload size or avoid 429s.
+     *
+     * Default: 100 (Solana maximum).
+     */
+    batchSize?: number;
+    /**
+     * Delay in ms between batches when the address list exceeds `batchSize`.
+     * Helps avoid rate-limiting on public RPCs.
+     *
+     * Default: 0 (no delay).
+     */
+    interBatchDelayMs?: number;
+}
+/**
+ * Fetch and parse Percolator markets by their known slab addresses.
+ *
+ * Unlike `discoverMarkets()` — which uses `getProgramAccounts` and is blocked
+ * on public mainnet RPCs — this function uses `getMultipleAccounts`, which works
+ * on any RPC endpoint (including `api.mainnet-beta.solana.com`).
+ *
+ * Callers must already know the market slab addresses (e.g. from an indexer,
+ * a hardcoded registry, or a previous `discoverMarkets` call on a permissive RPC).
+ *
+ * @param connection - Solana RPC connection
+ * @param programId - The Percolator program that owns these slabs
+ * @param addresses - Array of slab account public keys to fetch
+ * @param options   - Optional batching/delay configuration
+ * @returns Parsed markets for all valid slab accounts; invalid/missing accounts are silently skipped.
+ *
+ * @example
+ * ```ts
+ * import { getMarketsByAddress, getProgramId } from "@percolator/sdk";
+ * import { Connection, PublicKey } from "@solana/web3.js";
+ *
+ * const connection = new Connection("https://api.mainnet-beta.solana.com");
+ * const programId = getProgramId("mainnet");
+ * const slabs = [
+ *   new PublicKey("So11111111111111111111111111111111111111112"),
+ *   // ... more known slab addresses
+ * ];
+ *
+ * const markets = await getMarketsByAddress(connection, programId, slabs);
+ * console.log(`Found ${markets.length} markets`);
+ * ```
+ */
+export declare function getMarketsByAddress(connection: Connection, programId: PublicKey, addresses: PublicKey[], options?: GetMarketsByAddressOptions): Promise<DiscoveredMarket[]>;
+/**
+ * Shape of a single market entry returned by the Percolator REST API
+ * (`GET /markets`).  Only the fields needed for discovery are typed here;
+ * the full API response may contain additional statistics fields.
+ */
+export interface ApiMarketEntry {
+    slab_address: string;
+    symbol?: string;
+    name?: string;
+    decimals?: number;
+    status?: string;
+    [key: string]: unknown;
+}
+/** Options for {@link discoverMarketsViaApi}. */
+export interface DiscoverMarketsViaApiOptions {
+    /**
+     * Timeout in ms for the HTTP request to the REST API.
+     * Default: 10_000 (10 seconds).
+     */
+    timeoutMs?: number;
+    /**
+     * Options forwarded to {@link getMarketsByAddress} for the on-chain fetch
+     * step (batch size, inter-batch delay).
+     */
+    onChainOptions?: GetMarketsByAddressOptions;
+}
+/**
+ * Discover Percolator markets by first querying the REST API for slab addresses,
+ * then fetching full on-chain data via `getMarketsByAddress` (which uses
+ * `getMultipleAccounts` — works on all RPCs including public mainnet nodes).
+ *
+ * This is the recommended discovery path for mainnet users who do not have a
+ * Helius API key, since `getProgramAccounts` is rejected by public RPCs.
+ *
+ * The REST API acts as an address directory only — all market data is verified
+ * on-chain via `getMarketsByAddress`, so the caller gets the same
+ * `DiscoveredMarket[]` result as `discoverMarkets()`.
+ *
+ * @param connection - Solana RPC connection (any endpoint, including public)
+ * @param programId - The Percolator program that owns the slabs
+ * @param apiBaseUrl - Base URL of the Percolator REST API
+ *                     (e.g. `"https://percolatorlaunch.com/api"`)
+ * @param options - Optional timeout and on-chain fetch configuration
+ * @returns Parsed markets for all valid slab accounts discovered via the API
+ *
+ * @example
+ * ```ts
+ * import { discoverMarketsViaApi, getProgramId } from "@percolator/sdk";
+ * import { Connection } from "@solana/web3.js";
+ *
+ * const connection = new Connection("https://api.mainnet-beta.solana.com");
+ * const programId = getProgramId("mainnet");
+ * const markets = await discoverMarketsViaApi(
+ *   connection,
+ *   programId,
+ *   "https://percolatorlaunch.com/api",
+ * );
+ * console.log(`Discovered ${markets.length} markets via API fallback`);
+ * ```
+ */
+export declare function discoverMarketsViaApi(connection: Connection, programId: PublicKey, apiBaseUrl: string, options?: DiscoverMarketsViaApiOptions): Promise<DiscoveredMarket[]>;
+/** Options for {@link discoverMarketsViaStaticBundle}. */
+export interface DiscoverMarketsViaStaticBundleOptions {
+    /**
+     * Options forwarded to {@link getMarketsByAddress} for the on-chain fetch
+     * step (batch size, inter-batch delay).
+     */
+    onChainOptions?: GetMarketsByAddressOptions;
+}
+/**
+ * Discover Percolator markets from a static list of known slab addresses.
+ *
+ * This is the tier-3 (last-resort) fallback for `discoverMarkets()`.  It uses
+ * a bundled list of known slab addresses and fetches their full account data
+ * on-chain via `getMarketsByAddress` (`getMultipleAccounts` — works on all RPCs).
+ *
+ * The static list acts as an address directory only — all market data is verified
+ * on-chain, so stale entries are silently skipped (the account won't have valid
+ * magic bytes or will have been closed).
+ *
+ * @param connection - Solana RPC connection (any endpoint)
+ * @param programId - The Percolator program that owns the slabs
+ * @param entries   - Static market entries (typically from {@link getStaticMarkets})
+ * @param options   - Optional on-chain fetch configuration
+ * @returns Parsed markets for all valid slab accounts; stale/missing entries are skipped.
+ *
+ * @example
+ * ```ts
+ * import {
+ *   discoverMarketsViaStaticBundle,
+ *   getStaticMarkets,
+ *   getProgramId,
+ * } from "@percolator/sdk";
+ * import { Connection } from "@solana/web3.js";
+ *
+ * const connection = new Connection("https://api.mainnet-beta.solana.com");
+ * const programId = getProgramId("mainnet");
+ * const entries = getStaticMarkets("mainnet");
+ *
+ * const markets = await discoverMarketsViaStaticBundle(
+ *   connection,
+ *   programId,
+ *   entries,
+ * );
+ * console.log(`Recovered ${markets.length} markets from static bundle`);
+ * ```
+ */
+export declare function discoverMarketsViaStaticBundle(connection: Connection, programId: PublicKey, entries: StaticMarketEntry[], options?: DiscoverMarketsViaStaticBundleOptions): Promise<DiscoveredMarket[]>;
