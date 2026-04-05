@@ -191,9 +191,10 @@ function computeRaydiumClmmPriceE6(data: Uint8Array): bigint {
 
   if (sqrtPriceX64 === 0n) return 0n;
 
-  const scaledSqrt = sqrtPriceX64 * 1_000_000n;
-  const term = scaledSqrt >> 64n;
-  const priceE6Raw = (term * sqrtPriceX64) >> 64n;
+  // Compute (sqrtPriceX64^2 * 1e6) >> 128 directly using BigInt arbitrary
+  // precision. The previous split-shift approach truncated small sqrtPriceX64
+  // values (memecoins) to zero due to intermediate >> 64n losing all bits.
+  const priceE6Raw = (sqrtPriceX64 * sqrtPriceX64 * 1_000_000n) >> 128n;
 
   const decimalDiff = 6 + decimals0 - decimals1;
   const adjustedDiff = decimalDiff - 6;
