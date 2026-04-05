@@ -92,7 +92,7 @@ console.log("Testing validation functions...\n");
 
   assertThrows(() => validateAmount("-100", "--amt"), "non-negative", "rejects negative");
   assertThrows(() => validateAmount("18446744073709551616", "--amt"), "u64 max", "rejects above max");
-  assertThrows(() => validateAmount("abc", "--amt"), "not a valid number", "rejects non-numeric");
+  assertThrows(() => validateAmount("abc", "--amt"), "decimal digits only", "rejects non-numeric");
 
   console.log("✓ validateAmount");
 }
