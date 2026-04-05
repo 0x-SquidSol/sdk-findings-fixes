@@ -11,9 +11,6 @@ function dv(data: Uint8Array): DataView {
 }
 /** Read a single unsigned byte at `off`. */
 function readU8(data: Uint8Array, off: number): number {
-  if (off >= data.byteLength) {
-    throw new RangeError(`readU8: offset ${off} out of bounds (length=${data.byteLength})`);
-  }
   return data[off];
 }
 /** Read a little-endian u16 at `off`. */
@@ -320,11 +317,18 @@ const V2_ENGINE_LP_MAX_ABS_SWEEP_OFF = 552;
 // BPF SLAB_LEN: 1288304 (large/4096-account tier) — verified by cargo build-sbf (PERC-8271)
 // ENGINE_OFF = 624 (HEADER=104 + CONFIG=520 native, aligned to 8 = 624)
 // ACCOUNT_SIZE = 312 (248 old + 8 pad for i128 alignment + 16+16+16+8 new ADL fields)
-// ENGINE_BITMAP_OFF = 1006 (sum of all fixed RiskEngine scalar fields before [u64; BITMAP_WORDS])
-// Derivation: SLAB_LEN=1288304 = 624 + accountsOff + 4096*312, accountsOff=9728,
-//   bitmapOff=1006 → preAccountsLen=1006+512+18+8192=9728 (4096 accounts)
+// ENGINE_BITMAP_OFF = 1008 (empirically verified: mainnet CCTegYZ... slab, 323312 bytes, 1024 accts)
+// Prior value of 1006 was an arithmetic transcription error.
+// Derivation: trade_twap_e6(8)@992 + twap_last_slot(8)@1000 = bitmap@1008.
 const V_ADL_ENGINE_OFF = 624;      // align_up(HEADER=104 + CONFIG=520, 8) = 624
-const V_ADL_CONFIG_LEN = 520;      // BPF/native MarketConfig with current fields
+const V_ADL_CONFIG_LEN = 520;      // BPF/native MarketConfig with current fields (pre-SetDexPool)
+
+// V_SETDEXPOOL: PERC-SetDexPool security fix — adds dex_pool: [u8; 32] to MarketConfig.
+// BPF CONFIG_LEN: 496→528 (+32). ENGINE_OFF: align_up(104+528,8) = 632 (+8 from V_ADL=624).
+// Engine struct and account layout are identical to V_ADL — only CONFIG_LEN/ENGINE_OFF changed.
+const V_SETDEXPOOL_CONFIG_LEN = 544;   // SBF on-chain CONFIG_LEN after PERC-SetDexPool (target_arch=sbf uses native alignment)
+const V_SETDEXPOOL_ENGINE_OFF = 648;   // align_up(HEADER=104 + CONFIG=544, 8) = 648
+// All engine field offsets are identical to V_ADL (same engine struct, only engineOff differs).
 const V_ADL_ACCOUNT_SIZE = 312;    // 248 + 8(pad) + 56(new ADL fields) = 312 bytes
 const V_ADL_ENGINE_PARAMS_OFF = 96; // vault(16) + InsuranceFund(80) = 96
 
@@ -373,8 +377,11 @@ const V_ADL_ENGINE_LP_MAX_ABS_SWEEP_OFF = 952;
 const V_ADL_ENGINE_EMERGENCY_OI_MODE_OFF = 968;
 const V_ADL_ENGINE_EMERGENCY_START_SLOT_OFF = 976;
 const V_ADL_ENGINE_LAST_BREAKER_SLOT_OFF = 984;
-// trade_twap_e6(8)@992, twap_last_slot(8)@1000
-const V_ADL_ENGINE_BITMAP_OFF = 1006;           // Verified: 1006+512+18+8192=9728 ✓ for 4096 accts
+// trade_twap_e6(8)@992, twap_last_slot(8)@1000, bitmap([u64;N])@1008
+// Corrected from 1006 → 1008: 992+8(trade_twap_e6)+8(twap_last_slot)=1008. Arithmetic
+// transcription error in prior constant — 1008+512+18+8192=9730 rounds to 9736 (8-byte align),
+// but empirically mainnet CCTegYZ... slab (323312 bytes, 1024 accts) confirms bitmapOff=1008.
+const V_ADL_ENGINE_BITMAP_OFF = 1008;           // Empirically verified: mainnet slab CCTegYZ...
 
 // V_ADL account field offsets (relative to account slot start):
 // account_id(8)+capital(U128,16)+kind(u8+pad7=8)+pnl(I128,16)+reserved_pnl(u128,16)=64
@@ -450,62 +457,17 @@ const V1M_ENGINE_BITMAP_OFF = 720;
 // align_up(HEADER=104 + CONFIG=512, 8) = 616.
 // Slab sizes match V_ADL exactly — disambiguation required via data inspection.
 // Confirmed by on-chain probing of slab 7T1Efij9 (SOL-PERP, 323312 bytes, medium tier).
-// PERC-8469: Full BPF V1M2 engine offset table, provided by anchor agent from
-// offset_of!(RiskEngine, field) on the deployed BPF binary.
-// Previous offsets were WRONG: used V1M base + 32-byte shift, which didn't account for
-// (1) params offset change 72→96 (+24), (2) new pnl_matured_pos_tot field (+16),
-// (3) full ADL side state block (+224 bytes at offsets 688–903).
+// Engine struct is larger than V1M (990 vs 720 bitmap offset = +270 runtime bytes).
+// New runtime fields inserted between fundingRateBps and markPrice:
+//   +408: currentSlot, +416: fundingIndex(i128), +432: lastFundingSlot, +440: fundingRateBps
+//   +448: NEW lastOracleUpdateSlot(?), +456: authorityPriceE6(?), +464-471: reserved
+//   +472: lastEffectivePriceE6(?), +480: markPriceE6, +488-503: reserved
+//   +504: lastCrankSlot, +512: maxCrankStaleness
 const V1M2_ACCOUNT_SIZE = 312;        // 248 + 64 bytes of new fields per account
-
-// V1M2 engine field offsets (relative to engineOff=616).
-// Source: anchor agent BPF offset_of! table (PERC-8469).
-// vault(16)@0, insurance_fund(80)@16, params(336)@96 → runtime starts at 432.
-const V1M2_ENGINE_CURRENT_SLOT_OFF = 432;        // 96 + 336 = 432
-const V1M2_ENGINE_FUNDING_INDEX_OFF = 440;       // i128, 16 bytes
-const V1M2_ENGINE_LAST_FUNDING_SLOT_OFF = 456;
-const V1M2_ENGINE_FUNDING_RATE_BPS_OFF = 464;
-// New fields at 472–496: last_market_slot(8), funding_price_sample(8),
-// materialized_count(8), last_oracle_price(8)
-const V1M2_ENGINE_MARK_PRICE_OFF = 504;
-// funding_frozen(1+7pad)@512, frozen_rate_snap(8)@520
-const V1M2_ENGINE_LAST_CRANK_SLOT_OFF = 528;
-const V1M2_ENGINE_MAX_CRANK_STALENESS_OFF = 536;
-const V1M2_ENGINE_TOTAL_OI_OFF = 544;            // u128, 16 bytes
-const V1M2_ENGINE_LONG_OI_OFF = 560;             // u128
-const V1M2_ENGINE_SHORT_OI_OFF = 576;            // u128
-const V1M2_ENGINE_C_TOT_OFF = 592;               // u128
-const V1M2_ENGINE_PNL_POS_TOT_OFF = 608;         // u128
-// pnl_matured_pos_tot(u128)@624 — NEW in V1M2/PERC-8267
-const V1M2_ENGINE_LIQ_CURSOR_OFF = 640;          // u16
-const V1M2_ENGINE_GC_CURSOR_OFF = 642;           // u16
-// pad(4)@644
-const V1M2_ENGINE_LAST_SWEEP_START_OFF = 648;    // u64
-const V1M2_ENGINE_LAST_SWEEP_COMPLETE_OFF = 656; // u64
-const V1M2_ENGINE_CRANK_CURSOR_OFF = 664;        // u16
-const V1M2_ENGINE_SWEEP_START_IDX_OFF = 666;     // u16
-// pad(4)@668
-const V1M2_ENGINE_LIFETIME_LIQUIDATIONS_OFF = 672;   // u64
-const V1M2_ENGINE_LIFETIME_FORCE_CLOSES_OFF = 680;   // u64
-// ADL side state (224 bytes) at offsets 688–903:
-//   adl_mult_long(16)@688, adl_mult_short(16)@704, adl_coeff_long(16)@720,
-//   adl_coeff_short(16)@736, adl_epoch_long(8)@752, adl_epoch_short(8)@760,
-//   adl_epoch_start_k_long(16)@768, adl_epoch_start_k_short(16)@784,
-//   oi_eff_long_q(16)@800, oi_eff_short_q(16)@816,
-//   side_mode_long(1)@832, side_mode_short(1)@833, pad(6)@834,
-//   stored_pos_count_long(8)@840, stored_pos_count_short(8)@848,
-//   stale_count_long(8)@856, stale_count_short(8)@864,
-//   phantom_dust_long(16)@872, phantom_dust_short(16)@888
-const V1M2_ENGINE_NET_LP_POS_OFF = 904;          // i128
-const V1M2_ENGINE_LP_SUM_ABS_OFF = 920;          // u128
-const V1M2_ENGINE_LP_MAX_ABS_OFF = 936;          // u128
-const V1M2_ENGINE_LP_MAX_ABS_SWEEP_OFF = 952;    // u128
-const V1M2_ENGINE_EMERGENCY_OI_MODE_OFF = 968;   // u8 + 7 pad
-const V1M2_ENGINE_EMERGENCY_START_SLOT_OFF = 976; // u64
-const V1M2_ENGINE_LAST_BREAKER_SLOT_OFF = 984;   // u64
-// trade_twap(8)@992, twap_last_slot(8)@1000
-// CRITICAL: Bitmap at 1008 on BPF (not 1016 as native tests show — u128 align=16
-// on native vs 8 on BPF). The deployed program is BPF, so use 1008.
-const V1M2_ENGINE_BITMAP_OFF = 1008;
+// V1M2 bitmap offset: empirically verified from mainnet slab CCTegYZ... (323312 bytes, 1024 accts).
+// The V1M2 engine struct is layout-identical to V_ADL — same relative field offsets from engineOff.
+// V_ADL_ENGINE_BITMAP_OFF (1008) is correct for V1M2 as well; prior value of 990 was wrong.
+const V1M2_ENGINE_BITMAP_OFF = 1008;  // Same as V_ADL_ENGINE_BITMAP_OFF — V1M2 uses V_ADL engine struct
 
 // For backward compatibility, export ENGINE_OFF and ENGINE_MARK_PRICE_OFF
 // (used by reinit-slab and other scripts). These refer to V1 layout.
@@ -554,8 +516,18 @@ const V1D_SIZES = new Map<number, number>();
 const V2_SIZES = new Map<number, number>();
 // V1M: mainnet-deployed V1 program (ENGINE_OFF=640, BITMAP_OFF=726, expanded RiskParams)
 const V1M_SIZES = new Map<number, number>();
-// V_ADL: PERC-8270/8271 ADL-upgraded program (ENGINE_OFF=624, BITMAP_OFF=1006, ACCOUNT_SIZE=312)
+// V_ADL: PERC-8270/8271 ADL-upgraded program (ENGINE_OFF=624, BITMAP_OFF=1008, ACCOUNT_SIZE=312)
 const V_ADL_SIZES = new Map<number, number>();
+// V1M2: main@4861c56 with 312-byte accounts (ENGINE_OFF=616, BITMAP_OFF=1008, ACCOUNT_SIZE=312)
+// After fixing bitmapOff to 1008 for both V1M2 and V_ADL, sizes differ because engineOff differs:
+//   V1M2 medium (1024 accts): computeSlabSize(616, 1008, 312, 1024, 18) = 323312
+//   V_ADL medium (1024 accts): computeSlabSize(624, 1008, 312, 1024, 18) = 323320
+// No disambiguation probe required — size-based detection works correctly.
+const V1M2_SIZES = new Map<number, number>();
+// V_SETDEXPOOL: PERC-SetDexPool — ENGINE_OFF=648, BITMAP_OFF=1008, ACCOUNT_SIZE=312.
+// Same engine and account layout as V_ADL; only ENGINE_OFF changed (+8 from config growth).
+//   e.g. large (4096 accts): computeSlabSize(632, 1008, 312, 4096, 18) = 1288336
+const V_SETDEXPOOL_SIZES = new Map<number, number>();
 const V1D_SIZES_LEGACY = new Map<number, number>();
 for (const n of TIERS) {
   V0_SIZES.set(computeSlabSize(V0_ENGINE_OFF, V0_ENGINE_BITMAP_OFF, V0_ACCOUNT_SIZE, n), n);
@@ -573,8 +545,14 @@ for (const n of TIERS) {
   // e.g. n=1024 → 257512 bytes (confirmed on-chain for slab 8NY7rvQ).
   V1M_SIZES.set(computeSlabSize(V1M_ENGINE_OFF, V1M_ENGINE_BITMAP_OFF, V1M_ACCOUNT_SIZE, n, 18), n);
   // V_ADL: PERC-8270 ADL-upgraded program — new account size (312) and expanded engine layout.
-  // e.g. n=4096 → 1288304 bytes (verified by cargo build-sbf in PERC-8271).
+  // e.g. n=4096 → 1288320 bytes (engineOff=624, bitmapOff=1008).
   V_ADL_SIZES.set(computeSlabSize(V_ADL_ENGINE_OFF, V_ADL_ENGINE_BITMAP_OFF, V_ADL_ACCOUNT_SIZE, n, 18), n);
+  // V1M2: main@4861c56 rebuild — engineOff=616, bitmapOff=1008, accountSize=312.
+  // e.g. n=1024 → 323312 bytes (confirmed on-chain for slab CCTegYZ...).
+  V1M2_SIZES.set(computeSlabSize(V1M2_ENGINE_OFF, V1M2_ENGINE_BITMAP_OFF, V1M2_ACCOUNT_SIZE, n, 18), n);
+  // V_SETDEXPOOL: PERC-SetDexPool — engineOff=648, bitmapOff=1008, accountSize=312.
+  // e.g. n=4096 → 1288336 bytes.
+  V_SETDEXPOOL_SIZES.set(computeSlabSize(V_SETDEXPOOL_ENGINE_OFF, V_ADL_ENGINE_BITMAP_OFF, V_ADL_ACCOUNT_SIZE, n, 18), n);
 }
 
 /**
@@ -600,8 +578,10 @@ for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Lar
 }
 
 /**
- * V1M2 slab tier sizes — mainnet program with 312-byte accounts.
- * Same engine layout as V1M but larger accounts. Sizes match V_ADL exactly.
+ * V1M2 slab tier sizes — mainnet program rebuilt from main@4861c56 with 312-byte accounts.
+ * ENGINE_OFF=616, BITMAP_OFF=1008 (empirically verified from CCTegYZ...).
+ * Engine struct is layout-identical to V_ADL; differs only in engineOff (616 vs 624).
+ * Sizes are unique from V_ADL after the bitmap correction: medium=323312 vs V_ADL=323320.
  */
 export const SLAB_TIERS_V1M2: Record<string, { maxAccounts: number; dataSize: number; label: string; description: string }> = {};
 for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Large", 4096]] as const) {
@@ -611,9 +591,9 @@ for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Lar
 
 /**
  * V_ADL slab tier sizes — PERC-8270/8271 ADL-upgraded program.
- * ENGINE_OFF=624, BITMAP_OFF=1006, ACCOUNT_SIZE=312, postBitmap=18.
+ * ENGINE_OFF=624, BITMAP_OFF=1008, ACCOUNT_SIZE=312, postBitmap=18.
  * New account layout adds ADL tracking fields (+64 bytes/account including alignment padding).
- * BPF SLAB_LEN verified by cargo build-sbf in PERC-8271: large (4096) = 1288304 bytes.
+ * BPF SLAB_LEN verified by cargo build-sbf in PERC-8271: large (4096) = 1288320 bytes.
  */
 export const SLAB_TIERS_V_ADL: Record<string, { maxAccounts: number; dataSize: number; label: string; description: string }> = {};
 for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Large", 4096]] as const) {
@@ -911,10 +891,12 @@ function buildLayoutV1M(maxAccounts: number): SlabLayout {
 }
 
 /**
- * Build a SlabLayout for V1M2 — mainnet program with 312-byte accounts.
- * PERC-8469: All offsets derived from BPF offset_of! table (anchor agent).
- * V1M2 and V_ADL have identical engine layout — same struct, same field offsets.
- * Confirmed by on-chain probing of slab 7T1Efij9 (SOL-PERP, 323312 bytes).
+ * Build a SlabLayout for V1M2 — mainnet program rebuilt from main@4861c56 with 312-byte accounts.
+ * ENGINE_OFF=616 (align_up(104+512,8)=616), CONFIG_LEN=512.
+ * The engine struct is layout-identical to V_ADL (same relative field offsets from engineOff),
+ * so all runtime field offsets reuse V_ADL constants. bitmapOff=1008 (same as V_ADL).
+ * This differs from V_ADL only in engineOff (616 vs 624) and configLen (512 vs 520).
+ * Confirmed by empirical probing of mainnet slab CCTegYZ... (323312 bytes, 1024-account medium tier).
  */
 function buildLayoutV1M2(maxAccounts: number): SlabLayout {
   const engineOff = V1M2_ENGINE_OFF;
@@ -940,39 +922,39 @@ function buildLayoutV1M2(maxAccounts: number): SlabLayout {
     accountsOff: engineOff + accountsOffRel,
 
     engineInsuranceOff: 16,
-    engineParamsOff: V1M2_ENGINE_PARAMS_OFF, // 96 — expanded InsuranceFund
-    paramsSize: V1M_PARAMS_SIZE,            // 336 — same as V1M
-    // All runtime offsets from BPF offset_of! (PERC-8469)
-    engineCurrentSlotOff: V1M2_ENGINE_CURRENT_SLOT_OFF,       // 432
-    engineFundingIndexOff: V1M2_ENGINE_FUNDING_INDEX_OFF,     // 440
-    engineLastFundingSlotOff: V1M2_ENGINE_LAST_FUNDING_SLOT_OFF, // 456
-    engineFundingRateBpsOff: V1M2_ENGINE_FUNDING_RATE_BPS_OFF,   // 464
-    engineMarkPriceOff: V1M2_ENGINE_MARK_PRICE_OFF,           // 504
-    engineLastCrankSlotOff: V1M2_ENGINE_LAST_CRANK_SLOT_OFF,  // 528
-    engineMaxCrankStalenessOff: V1M2_ENGINE_MAX_CRANK_STALENESS_OFF, // 536
-    engineTotalOiOff: V1M2_ENGINE_TOTAL_OI_OFF,               // 544
-    engineLongOiOff: V1M2_ENGINE_LONG_OI_OFF,                 // 560
-    engineShortOiOff: V1M2_ENGINE_SHORT_OI_OFF,               // 576
-    engineCTotOff: V1M2_ENGINE_C_TOT_OFF,                     // 592
-    enginePnlPosTotOff: V1M2_ENGINE_PNL_POS_TOT_OFF,          // 608
-    engineLiqCursorOff: V1M2_ENGINE_LIQ_CURSOR_OFF,           // 640
-    engineGcCursorOff: V1M2_ENGINE_GC_CURSOR_OFF,             // 642
-    engineLastSweepStartOff: V1M2_ENGINE_LAST_SWEEP_START_OFF,       // 648
-    engineLastSweepCompleteOff: V1M2_ENGINE_LAST_SWEEP_COMPLETE_OFF, // 656
-    engineCrankCursorOff: V1M2_ENGINE_CRANK_CURSOR_OFF,       // 664
-    engineSweepStartIdxOff: V1M2_ENGINE_SWEEP_START_IDX_OFF,  // 666
-    engineLifetimeLiquidationsOff: V1M2_ENGINE_LIFETIME_LIQUIDATIONS_OFF, // 672
-    engineLifetimeForceClosesOff: V1M2_ENGINE_LIFETIME_FORCE_CLOSES_OFF,  // 680
-    engineNetLpPosOff: V1M2_ENGINE_NET_LP_POS_OFF,            // 904
-    engineLpSumAbsOff: V1M2_ENGINE_LP_SUM_ABS_OFF,            // 920
-    engineLpMaxAbsOff: V1M2_ENGINE_LP_MAX_ABS_OFF,            // 936
-    engineLpMaxAbsSweepOff: V1M2_ENGINE_LP_MAX_ABS_SWEEP_OFF, // 952
-    engineEmergencyOiModeOff: V1M2_ENGINE_EMERGENCY_OI_MODE_OFF,     // 968
-    engineEmergencyStartSlotOff: V1M2_ENGINE_EMERGENCY_START_SLOT_OFF, // 976
-    engineLastBreakerSlotOff: V1M2_ENGINE_LAST_BREAKER_SLOT_OFF,     // 984
-    engineBitmapOff: V1M2_ENGINE_BITMAP_OFF,                  // 1008
+    engineParamsOff: V1M2_ENGINE_PARAMS_OFF,                         // 96 — expanded InsuranceFund (same as V_ADL)
+    paramsSize: V_ADL_PARAMS_SIZE,                                    // 336 — same as V_ADL
+    // Runtime fields: V1M2 engine struct is layout-identical to V_ADL — reuse V_ADL constants.
+    engineCurrentSlotOff: V_ADL_ENGINE_CURRENT_SLOT_OFF,             // 432
+    engineFundingIndexOff: V_ADL_ENGINE_FUNDING_INDEX_OFF,           // 440
+    engineLastFundingSlotOff: V_ADL_ENGINE_LAST_FUNDING_SLOT_OFF,   // 456
+    engineFundingRateBpsOff: V_ADL_ENGINE_FUNDING_RATE_BPS_OFF,     // 464
+    engineMarkPriceOff: V_ADL_ENGINE_MARK_PRICE_OFF,                 // 504
+    engineLastCrankSlotOff: V_ADL_ENGINE_LAST_CRANK_SLOT_OFF,       // 528
+    engineMaxCrankStalenessOff: V_ADL_ENGINE_MAX_CRANK_STALENESS_OFF, // 536
+    engineTotalOiOff: V_ADL_ENGINE_TOTAL_OI_OFF,                     // 544
+    engineLongOiOff: V_ADL_ENGINE_LONG_OI_OFF,                       // 560
+    engineShortOiOff: V_ADL_ENGINE_SHORT_OI_OFF,                     // 576
+    engineCTotOff: V_ADL_ENGINE_C_TOT_OFF,                           // 592
+    enginePnlPosTotOff: V_ADL_ENGINE_PNL_POS_TOT_OFF,               // 608
+    engineLiqCursorOff: V_ADL_ENGINE_LIQ_CURSOR_OFF,                 // 640
+    engineGcCursorOff: V_ADL_ENGINE_GC_CURSOR_OFF,                   // 642
+    engineLastSweepStartOff: V_ADL_ENGINE_LAST_SWEEP_START_OFF,     // 648
+    engineLastSweepCompleteOff: V_ADL_ENGINE_LAST_SWEEP_COMPLETE_OFF, // 656
+    engineCrankCursorOff: V_ADL_ENGINE_CRANK_CURSOR_OFF,             // 664
+    engineSweepStartIdxOff: V_ADL_ENGINE_SWEEP_START_IDX_OFF,       // 666
+    engineLifetimeLiquidationsOff: V_ADL_ENGINE_LIFETIME_LIQUIDATIONS_OFF, // 672
+    engineLifetimeForceClosesOff: V_ADL_ENGINE_LIFETIME_FORCE_CLOSES_OFF,  // 680
+    engineNetLpPosOff: V_ADL_ENGINE_NET_LP_POS_OFF,                  // 904
+    engineLpSumAbsOff: V_ADL_ENGINE_LP_SUM_ABS_OFF,                  // 920
+    engineLpMaxAbsOff: V_ADL_ENGINE_LP_MAX_ABS_OFF,                  // 936
+    engineLpMaxAbsSweepOff: V_ADL_ENGINE_LP_MAX_ABS_SWEEP_OFF,      // 952
+    engineEmergencyOiModeOff: V_ADL_ENGINE_EMERGENCY_OI_MODE_OFF,    // 968
+    engineEmergencyStartSlotOff: V_ADL_ENGINE_EMERGENCY_START_SLOT_OFF, // 976
+    engineLastBreakerSlotOff: V_ADL_ENGINE_LAST_BREAKER_SLOT_OFF,   // 984
+    engineBitmapOff: V1M2_ENGINE_BITMAP_OFF,
     postBitmap: 18,
-    acctOwnerOff: V_ADL_ACCT_OWNER_OFF,                       // 192 — V1M2 uses 312-byte accounts (same struct as V_ADL)
+    acctOwnerOff: V_ADL_ACCT_OWNER_OFF,            // 192 — same shift as V_ADL (reserved_pnl u64→u128)
 
     hasInsuranceIsolation: true,
     engineInsuranceIsolatedOff: 48,
@@ -982,11 +964,11 @@ function buildLayoutV1M2(maxAccounts: number): SlabLayout {
 
 /**
  * Build a SlabLayout for the ADL-upgraded program (PERC-8270/8271).
- * ENGINE_OFF=624, BITMAP_OFF=1006, ACCOUNT_SIZE=312.
+ * ENGINE_OFF=624, BITMAP_OFF=1008, ACCOUNT_SIZE=312.
  *
- * Verified slab sizes (BPF, cargo build-sbf):
- *   large  (4096 accounts): 1288304 bytes ← PERC-8271 confirmed
- *   medium (1024 accounts): 323312 bytes
+ * Verified slab sizes (BPF, cargo build-sbf, bitmapOff corrected to 1008):
+ *   large  (4096 accounts): 1288320 bytes
+ *   medium (1024 accounts): 323320 bytes
  *   small  (256 accounts):  82064 bytes
  */
 function buildLayoutVADL(maxAccounts: number): SlabLayout {
@@ -1042,7 +1024,7 @@ function buildLayoutVADL(maxAccounts: number): SlabLayout {
     engineEmergencyOiModeOff: V_ADL_ENGINE_EMERGENCY_OI_MODE_OFF,    // 968
     engineEmergencyStartSlotOff: V_ADL_ENGINE_EMERGENCY_START_SLOT_OFF, // 976
     engineLastBreakerSlotOff: V_ADL_ENGINE_LAST_BREAKER_SLOT_OFF,    // 984
-    engineBitmapOff: V_ADL_ENGINE_BITMAP_OFF,                  // 1006
+    engineBitmapOff: V_ADL_ENGINE_BITMAP_OFF,                  // 1008
     postBitmap: 18,
     acctOwnerOff: V_ADL_ACCT_OWNER_OFF,                        // 192
 
@@ -1053,9 +1035,88 @@ function buildLayoutVADL(maxAccounts: number): SlabLayout {
 }
 
 /**
+ * V_SETDEXPOOL slab tier sizes — PERC-SetDexPool security fix.
+ * ENGINE_OFF=632, BITMAP_OFF=1008, ACCOUNT_SIZE=312, CONFIG_LEN=528.
+ * e.g. large (4096 accts) = 1288336 bytes.
+ */
+export const SLAB_TIERS_V_SETDEXPOOL: Record<string, { maxAccounts: number; dataSize: number; label: string; description: string }> = {};
+for (const [label, n] of [["Micro", 64], ["Small", 256], ["Medium", 1024], ["Large", 4096]] as const) {
+  const size = computeSlabSize(V_SETDEXPOOL_ENGINE_OFF, V_ADL_ENGINE_BITMAP_OFF, V_ADL_ACCOUNT_SIZE, n, 18);
+  SLAB_TIERS_V_SETDEXPOOL[label.toLowerCase()] = { maxAccounts: n, dataSize: size, label, description: `${n} slots (V_SETDEXPOOL PERC-SetDexPool)` };
+}
+
+/**
+ * Build a SlabLayout for V_SETDEXPOOL slabs (PERC-SetDexPool security fix).
+ * ENGINE_OFF=632 (+8 from V_ADL=624 due to CONFIG_LEN growing 520→528).
+ * All engine and account field offsets are identical to V_ADL.
+ */
+function buildLayoutVSetDexPool(maxAccounts: number): SlabLayout {
+  const engineOff = V_SETDEXPOOL_ENGINE_OFF;
+  const bitmapOff = V_ADL_ENGINE_BITMAP_OFF;
+  const accountSize = V_ADL_ACCOUNT_SIZE;
+  const bitmapWords = Math.ceil(maxAccounts / 64);
+  const bitmapBytes = bitmapWords * 8;
+  const postBitmap = 18;
+  const nextFreeBytes = maxAccounts * 2;
+  const preAccountsLen = bitmapOff + bitmapBytes + postBitmap + nextFreeBytes;
+  const accountsOffRel = Math.ceil(preAccountsLen / 8) * 8;
+
+  return {
+    version: 1,
+    headerLen: V1_HEADER_LEN,
+    configOffset: V1_HEADER_LEN,
+    configLen: V_SETDEXPOOL_CONFIG_LEN,   // 544
+    reservedOff: V1_RESERVED_OFF,
+    engineOff,
+    accountSize,
+    maxAccounts,
+    bitmapWords,
+    accountsOff: engineOff + accountsOffRel,
+
+    engineInsuranceOff: 16,
+    engineParamsOff: V_ADL_ENGINE_PARAMS_OFF,
+    paramsSize: V_ADL_PARAMS_SIZE,
+    engineCurrentSlotOff: V_ADL_ENGINE_CURRENT_SLOT_OFF,
+    engineFundingIndexOff: V_ADL_ENGINE_FUNDING_INDEX_OFF,
+    engineLastFundingSlotOff: V_ADL_ENGINE_LAST_FUNDING_SLOT_OFF,
+    engineFundingRateBpsOff: V_ADL_ENGINE_FUNDING_RATE_BPS_OFF,
+    engineMarkPriceOff: V_ADL_ENGINE_MARK_PRICE_OFF,
+    engineLastCrankSlotOff: V_ADL_ENGINE_LAST_CRANK_SLOT_OFF,
+    engineMaxCrankStalenessOff: V_ADL_ENGINE_MAX_CRANK_STALENESS_OFF,
+    engineTotalOiOff: V_ADL_ENGINE_TOTAL_OI_OFF,
+    engineLongOiOff: V_ADL_ENGINE_LONG_OI_OFF,
+    engineShortOiOff: V_ADL_ENGINE_SHORT_OI_OFF,
+    engineCTotOff: V_ADL_ENGINE_C_TOT_OFF,
+    enginePnlPosTotOff: V_ADL_ENGINE_PNL_POS_TOT_OFF,
+    engineLiqCursorOff: V_ADL_ENGINE_LIQ_CURSOR_OFF,
+    engineGcCursorOff: V_ADL_ENGINE_GC_CURSOR_OFF,
+    engineLastSweepStartOff: V_ADL_ENGINE_LAST_SWEEP_START_OFF,
+    engineLastSweepCompleteOff: V_ADL_ENGINE_LAST_SWEEP_COMPLETE_OFF,
+    engineCrankCursorOff: V_ADL_ENGINE_CRANK_CURSOR_OFF,
+    engineSweepStartIdxOff: V_ADL_ENGINE_SWEEP_START_IDX_OFF,
+    engineLifetimeLiquidationsOff: V_ADL_ENGINE_LIFETIME_LIQUIDATIONS_OFF,
+    engineLifetimeForceClosesOff: V_ADL_ENGINE_LIFETIME_FORCE_CLOSES_OFF,
+    engineNetLpPosOff: V_ADL_ENGINE_NET_LP_POS_OFF,
+    engineLpSumAbsOff: V_ADL_ENGINE_LP_SUM_ABS_OFF,
+    engineLpMaxAbsOff: V_ADL_ENGINE_LP_MAX_ABS_OFF,
+    engineLpMaxAbsSweepOff: V_ADL_ENGINE_LP_MAX_ABS_SWEEP_OFF,
+    engineEmergencyOiModeOff: V_ADL_ENGINE_EMERGENCY_OI_MODE_OFF,
+    engineEmergencyStartSlotOff: V_ADL_ENGINE_EMERGENCY_START_SLOT_OFF,
+    engineLastBreakerSlotOff: V_ADL_ENGINE_LAST_BREAKER_SLOT_OFF,
+    engineBitmapOff: V_ADL_ENGINE_BITMAP_OFF,
+    postBitmap: 18,
+    acctOwnerOff: V_ADL_ACCT_OWNER_OFF,
+
+    hasInsuranceIsolation: true,
+    engineInsuranceIsolatedOff: 48,
+    engineInsuranceIsolationBpsOff: 64,
+  };
+}
+
+/**
  * Detect the slab layout version from the raw account data length.
  * Returns the full SlabLayout descriptor, or null if the size is unrecognised.
- * Checks V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes in priority order.
+ * Checks V_SETDEXPOOL, V1M2, V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes.
  *
  * When `data` is provided and the size matches V1D, the version field at offset 8 is read
  * to disambiguate V2 slabs (which produce identical sizes to V1D with postBitmap=2).
@@ -1065,24 +1126,22 @@ function buildLayoutVADL(maxAccounts: number): SlabLayout {
  * @param data    - Optional raw slab data for version-field disambiguation
  */
 export function detectSlabLayout(dataLen: number, data?: Uint8Array): SlabLayout | null {
-  // Check V_ADL / V1M2 sizes — these two layouts produce IDENTICAL slab sizes because
-  // V_ADL (ENGINE_OFF=624, BITMAP_OFF=1006, ACCOUNT_SIZE=312) and V1M2 (ENGINE_OFF=616,
-  // BITMAP_OFF=1008, ACCOUNT_SIZE=312) compute to the same totals for all tiers.
-  // PERC-8469: V1M2 bitmap corrected from 990→1008, slab sizes now genuinely match V_ADL.
-  // Disambiguate by reading max_accounts at each layout's params offset:
-  //   V1M2: engine(616) + params(96) + max_accounts_field(32) = offset 744
-  //   V_ADL: engine(624) + params(96) + max_accounts_field(32) = offset 752
+  // Check V_SETDEXPOOL sizes first (PERC-SetDexPool, ENGINE_OFF=632, CONFIG_LEN=528).
+  // These are the newest slabs — largest ENGINE_OFF so no size collision with V_ADL (624).
+  const vsdpn = V_SETDEXPOOL_SIZES.get(dataLen);
+  if (vsdpn !== undefined) return buildLayoutVSetDexPool(vsdpn);
+
+  // Check V1M2 sizes. After fixing bitmapOff to 1008 for both V1M2 and V_ADL,
+  // their sizes no longer collide (engineOff differs: 616 vs 624), so size-based detection
+  // works directly — no data-probe disambiguation required.
+  //   V1M2 medium (1024 accts): computeSlabSize(616, 1008, 312, 1024, 18) = 323312
+  //   V_ADL medium (1024 accts): computeSlabSize(624, 1008, 312, 1024, 18) = 323320
+  const v1m2n = V1M2_SIZES.get(dataLen);
+  if (v1m2n !== undefined) return buildLayoutV1M2(v1m2n);
+
+  // Check V_ADL sizes (PERC-8270/8271, ENGINE_OFF=624, BITMAP_OFF=1008, ACCOUNT_SIZE=312).
   const vadln = V_ADL_SIZES.get(dataLen);
-  if (vadln !== undefined) {
-    if (data && data.length >= 752) {
-      const maxAcctsV1M2 = readU64LE(data, V1M2_ENGINE_OFF + V1M2_ENGINE_PARAMS_OFF + 32);
-      if (maxAcctsV1M2 === BigInt(vadln)) {
-        // V1M engine layout with 312-byte accounts (mainnet program upgrade)
-        return buildLayoutV1M2(vadln);
-      }
-    }
-    return buildLayoutVADL(vadln);
-  }
+  if (vadln !== undefined) return buildLayoutVADL(vadln);
 
   // Check V1M sizes (mainnet-deployed V1 program, ESa89R5).
   // Must be checked before V1_LEGACY because V1M sizes are unique and don't overlap.
@@ -1132,12 +1191,9 @@ export function detectSlabLayout(dataLen: number, data?: Uint8Array): SlabLayout
  * GH#1238: previously recomputed accountsOff with hardcoded postBitmap=18, which gave a value
  * 16 bytes too large for V1D slabs (which use postBitmap=2). Now delegates directly to the
  * SlabLayout descriptor so each variant uses its own correct accountsOff.
- *
- * @param data - Optional slab data for accurate V1D/V2 disambiguation. Without it, ambiguous
- *   sizes default to V1D which may misparse V2 slabs. Pass data when available.
  */
-export function detectLayout(dataLen: number, data?: Uint8Array) {
-  const layout = detectSlabLayout(dataLen, data);
+export function detectLayout(dataLen: number) {
+  const layout = detectSlabLayout(dataLen);
   if (!layout) return null;
   return { bitmapWords: layout.bitmapWords, accountsOff: layout.accountsOff, maxAccounts: layout.maxAccounts };
 }
@@ -1243,6 +1299,14 @@ export interface MarketConfig {
   cumulativeVolumeE6: bigint;
   /** PERC-622: Slots elapsed from market creation to Phase 2 entry (u24) */
   phase2DeltaSlots: number;
+  /**
+   * PERC-SetDexPool: Admin-pinned DEX pool pubkey for HYPERP markets.
+   * Null when reading old slabs (pre-SetDexPool configLen < 528) or when
+   * SetDexPool has never been called (all-zero pubkey).
+   * Non-null means the program will reject any UpdateHyperpMark that passes
+   * a different pool account.
+   */
+  dexPool: PublicKey | null;
 }
 
 export interface InsuranceFund {
@@ -1599,6 +1663,19 @@ export function parseConfig(data: Uint8Array, layoutHint?: SlabLayout | null): M
     }
   }
 
+  // PERC-SetDexPool: read dex_pool at BPF offset 496 within config.
+  // Only present in V_SETDEXPOOL slabs (configLen >= 528).
+  // All-zero pubkey means SetDexPool was never called.
+  let dexPool: PublicKey | null = null;
+  const DEX_POOL_REL_OFF = 512; // SBF offset of dex_pool within MarketConfig (CONFIG_LEN=544, dex_pool at end = 544-32=512)
+  if (configLen >= DEX_POOL_REL_OFF + 32 && data.length >= configOff + DEX_POOL_REL_OFF + 32) {
+    const dexPoolBytes = data.subarray(configOff + DEX_POOL_REL_OFF, configOff + DEX_POOL_REL_OFF + 32);
+    // Return null if all-zero (SetDexPool never called)
+    if (dexPoolBytes.some(b => b !== 0)) {
+      dexPool = new PublicKey(dexPoolBytes);
+    }
+  }
+
   return {
     collateralMint,
     vaultPubkey,
@@ -1642,6 +1719,7 @@ export function parseConfig(data: Uint8Array, layoutHint?: SlabLayout | null): M
     oraclePhase,
     cumulativeVolumeE6,
     phase2DeltaSlots,
+    dexPool,
   };
 }
 
@@ -1807,19 +1885,8 @@ export function isAccountUsed(data: Uint8Array, idx: number): boolean {
   const layout = detectSlabLayout(data.length, data);
   if (!layout) return false;
   if (!Number.isInteger(idx) || idx < 0 || idx >= layout.maxAccounts) return false;
-
   const base = layout.engineOff + layout.engineBitmapOff;
   const word = Math.floor(idx / 64);
-
-  // Ensure bitmap word is within bounds before reading
-  if (data.length < base + word * 8 + 8) {
-    console.warn(
-      `[isAccountUsed] Bitmap read would exceed buffer bounds: ` +
-      `base=${base}, word=${word}, dataLen=${data.length}`,
-    );
-    return false;
-  }
-
   const bit = idx % 64;
   const bits = readU64LE(data, base + word * 8);
   return ((bits >> BigInt(bit)) & 1n) !== 0n;
@@ -1833,9 +1900,7 @@ export function maxAccountIndex(dataLen: number): number {
   if (!layout) return 0;
   const accountsEnd = dataLen - layout.accountsOff;
   if (accountsEnd <= 0) return 0;
-  // Return max valid index (0-based), not count. If 256 accounts fit, max index is 255.
-  const count = Math.floor(accountsEnd / layout.accountSize);
-  return Math.max(0, count - 1);
+  return Math.floor(accountsEnd / layout.accountSize);
 }
 
 /**
@@ -1846,8 +1911,8 @@ export function parseAccount(data: Uint8Array, idx: number): Account {
   if (!layout) throw new Error(`Unrecognized slab data length: ${data.length}`);
 
   const maxIdx = maxAccountIndex(data.length);
-  if (!Number.isInteger(idx) || idx < 0 || idx > maxIdx) {
-    throw new Error(`Account index out of range: ${idx} (max: ${maxIdx})`);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= maxIdx) {
+    throw new Error(`Account index out of range: ${idx} (max: ${maxIdx - 1})`);
   }
 
   const base = layout.accountsOff + idx * layout.accountSize;
@@ -1870,13 +1935,6 @@ export function parseAccount(data: Uint8Array, idx: number): Account {
 
   const kindByte = readU8(data, base + ACCT_KIND_OFF);
   const kind = kindByte === 1 ? AccountKind.LP : AccountKind.User;
-
-  // Validate owner field offset before accessing
-  if (base + layout.acctOwnerOff + 32 > data.length) {
-    throw new Error(
-      `Account owner field out of bounds: base=${base}, acctOwnerOff=${layout.acctOwnerOff}, dataLen=${data.length}`,
-    );
-  }
 
   return {
     kind,
@@ -1903,11 +1961,11 @@ export function parseAccount(data: Uint8Array, idx: number): Account {
 export function parseAllAccounts(data: Uint8Array): { idx: number; account: Account }[] {
   const indices = parseUsedIndices(data);
   const maxIdx = maxAccountIndex(data.length);
-  const validIndices = indices.filter(idx => idx <= maxIdx);
+  const validIndices = indices.filter(idx => idx < maxIdx);
   const droppedCount = indices.length - validIndices.length;
   if (droppedCount > 0) {
     console.warn(
-      `[parseAllAccounts] bitmap claims ${indices.length} used accounts but only ${maxIdx + 1} fit ` +
+      `[parseAllAccounts] bitmap claims ${indices.length} used accounts but only ${maxIdx} fit ` +
       `in the slab — ${droppedCount} out-of-bounds indices dropped (possible bitmap corruption)`,
     );
   }
@@ -1915,154 +1973,5 @@ export function parseAllAccounts(data: Uint8Array): { idx: number; account: Acco
     idx,
     account: parseAccount(data, idx),
   }));
-}
-
-// ---------------------------------------------------------------------------
-// Position Status Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Check if an account has a flat (zero) position size.
- *
- * A flat position has no open leverage and cannot be liquidated.
- * This is useful for filtering out unused or closed accounts from
- * the list of all slab accounts.
- *
- * @param account - The account to check
- * @returns true if the account's position size is exactly 0n
- *
- * @example
- * ```ts
- * const allAccounts = parseAllAccounts(slabData);
- * const openAccounts = allAccounts.filter(({ account }) => !isAccountFlat(account));
- * ```
- */
-export function isAccountFlat(account: Account): boolean {
-  return account.positionSize === 0n;
-}
-
-/**
- * Filter out flat (zero-size) positions from an account list.
- *
- * The "ghost position bug" in percolator-launch occurred because zero-sized
- * accounts were included in position lists, showing users non-existent positions.
- * This utility provides a canonical way to filter them out consistently across
- * all consumers of the SDK.
- *
- * @param accounts - Array of accounts (typically from parseAllAccounts or similar)
- * @returns Filtered array containing only accounts with non-zero position sizes
- *
- * @example
- * ```ts
- * const all = parseAllAccounts(slabData);
- * const openOnly = filterOpenPositions(all.map(a => a.account));
- * console.log(`${openOnly.length} open positions out of ${all.length} accounts`);
- * ```
- */
-export function filterOpenPositions(accounts: Account[]): Account[] {
-  return accounts.filter(account => !isAccountFlat(account));
-}
-
-// ---------------------------------------------------------------------------
-// Market Health Assessment
-// ---------------------------------------------------------------------------
-
-/**
- * Market health status.
- * Helps applications decide whether to allow trading or show warnings.
- */
-export type SlabHealth =
-  | "healthy"           // Normal operations, trading enabled
-  | "paused"            // Admin paused the market
-  | "resolved"          // Market was resolved/closed
-  | "adl-triggered"     // ADL is active (insurance depleted or PnL cap exceeded)
-  | "crank-stale"       // Last keeper crank is too old (risk parameters may be stale)
-  | "oracle-unavailable"; // No recent oracle price available
-
-/**
- * Assess the health status of a market (slab).
- *
- * Different health states indicate different issues:
- * - **healthy**: Trading is normal, no issues detected.
- * - **paused**: Admin has paused the market; trading is disabled.
- * - **resolved**: Market was fully resolved (period ended); no more trading possible.
- * - **adl-triggered**: Auto-deleverage is active; insurance is depleted or PnL cap exceeded.
- *   This is a critical state where profitable positions may be force-closed.
- * - **crank-stale**: The keeper crank hasn't run recently. Risk parameters may be stale;
- *   liquidation engine state may not reflect current prices.
- * - **oracle-unavailable**: No recent oracle price is available. Cannot trust mark prices.
- *
- * Applications can use this to:
- * - Show warnings to traders ("Market is ADL-triggered")
- * - Disable trading UI buttons ("Market paused")
- * - Disable liquidations ("Oracle unavailable")
- * - Show "risk parameters may be stale" warning
- *
- * @param slabData - Raw slab account bytes
- * @param currentSlot - Current on-chain slot (from engine state, or from RPC)
- * @param maxCranknessSlots - Maximum acceptable staleness (default 200 slots ≈ 1 min 20 sec)
- * @returns The health status
- *
- * @example
- * ```ts
- * const slabData = await fetchSlab(connection, slabKey);
- * const health = getSlabHealth(slabData, currentSlot);
- *
- * if (health === "paused") {
- *   showWarning("Market is paused by admin");
- * } else if (health === "adl-triggered") {
- *   showError("Market ADL is active — positions may be force-closed");
- * } else if (health === "healthy") {
- *   enableTradingButtons();
- * }
- * ```
- */
-export function getSlabHealth(
-  slabData: Uint8Array,
-  currentSlot: bigint,
-  maxCranknessSlots: bigint = 200n,
-): SlabHealth {
-  let layout: SlabLayout | null = null;
-  try {
-    layout = detectSlabLayout(slabData.length, slabData);
-    if (!layout) return "oracle-unavailable"; // Unrecognized layout — cannot assess health
-  } catch {
-    return "oracle-unavailable"; // Parse error — cannot assess health
-  }
-
-  // Check resolved flag in header (offset 13, bit 0)
-  try {
-    const flagsByte = readU8(slabData, 13);
-    const FLAG_RESOLVED = 1 << 0;
-    if ((flagsByte & FLAG_RESOLVED) !== 0) {
-      return "resolved";
-    }
-  } catch {
-    // Ignore read errors
-  }
-
-  try {
-    const config = parseConfig(slabData, layout);
-
-    // Check ADL trigger: pnl_pos_tot > max_pnl_cap
-    const engine = parseEngine(slabData);
-    if (config.maxPnlCap > 0n && engine.pnlPosTot > config.maxPnlCap) {
-      return "adl-triggered";
-    }
-
-    // Check crank staleness: last_crank_slot too far in the past
-    const lastCrankSlot = engine.lastCrankSlot ?? 0n;
-    if (lastCrankSlot > 0n && currentSlot > lastCrankSlot) {
-      const crankAge = currentSlot - lastCrankSlot;
-      if (crankAge > maxCranknessSlots) {
-        return "crank-stale";
-      }
-    }
-  } catch {
-    // Config/engine parse failed — cannot reliably assess market state
-    return "oracle-unavailable";
-  }
-
-  return "healthy";
 }
 

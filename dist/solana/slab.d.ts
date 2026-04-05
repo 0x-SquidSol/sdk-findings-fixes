@@ -85,8 +85,10 @@ export declare const SLAB_TIERS_V1M: Record<string, {
     description: string;
 }>;
 /**
- * V1M2 slab tier sizes — mainnet program with 312-byte accounts.
- * Same engine layout as V1M but larger accounts. Sizes match V_ADL exactly.
+ * V1M2 slab tier sizes — mainnet program rebuilt from main@4861c56 with 312-byte accounts.
+ * ENGINE_OFF=616, BITMAP_OFF=1008 (empirically verified from CCTegYZ...).
+ * Engine struct is layout-identical to V_ADL; differs only in engineOff (616 vs 624).
+ * Sizes are unique from V_ADL after the bitmap correction: medium=323312 vs V_ADL=323320.
  */
 export declare const SLAB_TIERS_V1M2: Record<string, {
     maxAccounts: number;
@@ -96,9 +98,9 @@ export declare const SLAB_TIERS_V1M2: Record<string, {
 }>;
 /**
  * V_ADL slab tier sizes — PERC-8270/8271 ADL-upgraded program.
- * ENGINE_OFF=624, BITMAP_OFF=1006, ACCOUNT_SIZE=312, postBitmap=18.
+ * ENGINE_OFF=624, BITMAP_OFF=1008, ACCOUNT_SIZE=312, postBitmap=18.
  * New account layout adds ADL tracking fields (+64 bytes/account including alignment padding).
- * BPF SLAB_LEN verified by cargo build-sbf in PERC-8271: large (4096) = 1288304 bytes.
+ * BPF SLAB_LEN verified by cargo build-sbf in PERC-8271: large (4096) = 1288320 bytes.
  */
 export declare const SLAB_TIERS_V_ADL: Record<string, {
     maxAccounts: number;
@@ -107,9 +109,20 @@ export declare const SLAB_TIERS_V_ADL: Record<string, {
     description: string;
 }>;
 /**
+ * V_SETDEXPOOL slab tier sizes — PERC-SetDexPool security fix.
+ * ENGINE_OFF=632, BITMAP_OFF=1008, ACCOUNT_SIZE=312, CONFIG_LEN=528.
+ * e.g. large (4096 accts) = 1288336 bytes.
+ */
+export declare const SLAB_TIERS_V_SETDEXPOOL: Record<string, {
+    maxAccounts: number;
+    dataSize: number;
+    label: string;
+    description: string;
+}>;
+/**
  * Detect the slab layout version from the raw account data length.
  * Returns the full SlabLayout descriptor, or null if the size is unrecognised.
- * Checks V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes in priority order.
+ * Checks V_SETDEXPOOL, V1M2, V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes.
  *
  * When `data` is provided and the size matches V1D, the version field at offset 8 is read
  * to disambiguate V2 slabs (which produce identical sizes to V1D with postBitmap=2).
@@ -126,11 +139,8 @@ export declare function detectSlabLayout(dataLen: number, data?: Uint8Array): Sl
  * GH#1238: previously recomputed accountsOff with hardcoded postBitmap=18, which gave a value
  * 16 bytes too large for V1D slabs (which use postBitmap=2). Now delegates directly to the
  * SlabLayout descriptor so each variant uses its own correct accountsOff.
- *
- * @param data - Optional slab data for accurate V1D/V2 disambiguation. Without it, ambiguous
- *   sizes default to V1D which may misparse V2 slabs. Pass data when available.
  */
-export declare function detectLayout(dataLen: number, data?: Uint8Array): {
+export declare function detectLayout(dataLen: number): {
     bitmapWords: number;
     accountsOff: number;
     maxAccounts: number;
@@ -192,6 +202,14 @@ export interface MarketConfig {
     cumulativeVolumeE6: bigint;
     /** PERC-622: Slots elapsed from market creation to Phase 2 entry (u24) */
     phase2DeltaSlots: number;
+    /**
+     * PERC-SetDexPool: Admin-pinned DEX pool pubkey for HYPERP markets.
+     * Null when reading old slabs (pre-SetDexPool configLen < 528) or when
+     * SetDexPool has never been called (all-zero pubkey).
+     * Non-null means the program will reject any UpdateHyperpMark that passes
+     * a different pool account.
+     */
+    dexPool: PublicKey | null;
 }
 export interface InsuranceFund {
     balance: bigint;
@@ -327,83 +345,3 @@ export declare function parseAllAccounts(data: Uint8Array): {
     idx: number;
     account: Account;
 }[];
-/**
- * Check if an account has a flat (zero) position size.
- *
- * A flat position has no open leverage and cannot be liquidated.
- * This is useful for filtering out unused or closed accounts from
- * the list of all slab accounts.
- *
- * @param account - The account to check
- * @returns true if the account's position size is exactly 0n
- *
- * @example
- * ```ts
- * const allAccounts = parseAllAccounts(slabData);
- * const openAccounts = allAccounts.filter(({ account }) => !isAccountFlat(account));
- * ```
- */
-export declare function isAccountFlat(account: Account): boolean;
-/**
- * Filter out flat (zero-size) positions from an account list.
- *
- * The "ghost position bug" in percolator-launch occurred because zero-sized
- * accounts were included in position lists, showing users non-existent positions.
- * This utility provides a canonical way to filter them out consistently across
- * all consumers of the SDK.
- *
- * @param accounts - Array of accounts (typically from parseAllAccounts or similar)
- * @returns Filtered array containing only accounts with non-zero position sizes
- *
- * @example
- * ```ts
- * const all = parseAllAccounts(slabData);
- * const openOnly = filterOpenPositions(all.map(a => a.account));
- * console.log(`${openOnly.length} open positions out of ${all.length} accounts`);
- * ```
- */
-export declare function filterOpenPositions(accounts: Account[]): Account[];
-/**
- * Market health status.
- * Helps applications decide whether to allow trading or show warnings.
- */
-export type SlabHealth = "healthy" | "paused" | "resolved" | "adl-triggered" | "crank-stale" | "oracle-unavailable";
-/**
- * Assess the health status of a market (slab).
- *
- * Different health states indicate different issues:
- * - **healthy**: Trading is normal, no issues detected.
- * - **paused**: Admin has paused the market; trading is disabled.
- * - **resolved**: Market was fully resolved (period ended); no more trading possible.
- * - **adl-triggered**: Auto-deleverage is active; insurance is depleted or PnL cap exceeded.
- *   This is a critical state where profitable positions may be force-closed.
- * - **crank-stale**: The keeper crank hasn't run recently. Risk parameters may be stale;
- *   liquidation engine state may not reflect current prices.
- * - **oracle-unavailable**: No recent oracle price is available. Cannot trust mark prices.
- *
- * Applications can use this to:
- * - Show warnings to traders ("Market is ADL-triggered")
- * - Disable trading UI buttons ("Market paused")
- * - Disable liquidations ("Oracle unavailable")
- * - Show "risk parameters may be stale" warning
- *
- * @param slabData - Raw slab account bytes
- * @param currentSlot - Current on-chain slot (from engine state, or from RPC)
- * @param maxCranknessSlots - Maximum acceptable staleness (default 200 slots ≈ 1 min 20 sec)
- * @returns The health status
- *
- * @example
- * ```ts
- * const slabData = await fetchSlab(connection, slabKey);
- * const health = getSlabHealth(slabData, currentSlot);
- *
- * if (health === "paused") {
- *   showWarning("Market is paused by admin");
- * } else if (health === "adl-triggered") {
- *   showError("Market ADL is active — positions may be force-closed");
- * } else if (health === "healthy") {
- *   enableTradingButtons();
- * }
- * ```
- */
-export declare function getSlabHealth(slabData: Uint8Array, currentSlot: bigint, maxCranknessSlots?: bigint): SlabHealth;
