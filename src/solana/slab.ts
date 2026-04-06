@@ -1126,7 +1126,7 @@ function buildLayoutVSetDexPool(maxAccounts: number): SlabLayout {
  * @param data    - Optional raw slab data for version-field disambiguation
  */
 export function detectSlabLayout(dataLen: number, data?: Uint8Array): SlabLayout | null {
-  // Check V_SETDEXPOOL sizes first (PERC-SetDexPool, ENGINE_OFF=632, CONFIG_LEN=528).
+  // Check V_SETDEXPOOL sizes first (PERC-SetDexPool, ENGINE_OFF=648, CONFIG_LEN=544).
   // These are the newest slabs — largest ENGINE_OFF so no size collision with V_ADL (624).
   const vsdpn = V_SETDEXPOOL_SIZES.get(dataLen);
   if (vsdpn !== undefined) return buildLayoutVSetDexPool(vsdpn);
