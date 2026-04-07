@@ -14,10 +14,10 @@ import { concatBytes } from '../abi/encode.js';// ══════════
 // Program ID — network-conditional (mirrors program-ids.ts pattern)
 // ═══════════════════════════════════════════════════════════════
 
-/** Known stake program addresses per network. Mainnet is empty until deployed. */
+/** Known stake program addresses per network. */
 export const STAKE_PROGRAM_IDS = {
   devnet: '6aJb1F9CDCVWCNYFwj8aQsVb696YnW6J1FznteHq4Q6k',
-  mainnet: '', // TODO: populate once DevOps deploys percolator-stake to mainnet
+  mainnet: 'DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F',
 } as const;
 
 /**
