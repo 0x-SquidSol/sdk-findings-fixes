@@ -35,24 +35,34 @@ export interface DiscoveredMarket {
  * History: Small was V0 (62_808) until 2026-03-13 program upgrade. V0 values preserved
  *          in SLAB_TIERS_V0 for discovery of legacy on-chain accounts.
  */
+/**
+ * Default slab tiers for the current mainnet program (v12.1).
+ * These are used by useCreateMarket to allocate slab accounts of the correct size.
+ */
 export declare const SLAB_TIERS: {
+    readonly micro: {
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
+    };
     readonly small: {
-        readonly maxAccounts: 256;
-        readonly dataSize: 65352;
-        readonly label: "Small";
-        readonly description: "256 slots · ~0.45 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
     readonly medium: {
-        readonly maxAccounts: 1024;
-        readonly dataSize: 257448;
-        readonly label: "Medium";
-        readonly description: "1,024 slots · ~1.79 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
     readonly large: {
-        readonly maxAccounts: 4096;
-        readonly dataSize: 1025832;
-        readonly label: "Large";
-        readonly description: "4,096 slots · ~7.14 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
 };
 /** @deprecated V0 slab sizes — kept for backward compatibility with old on-chain slabs */
@@ -156,23 +166,29 @@ export declare const SLAB_TIERS_V1D_LEGACY: {
 };
 /** @deprecated Alias — use SLAB_TIERS (already V1) */
 export declare const SLAB_TIERS_V1: {
+    readonly micro: {
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
+    };
     readonly small: {
-        readonly maxAccounts: 256;
-        readonly dataSize: 65352;
-        readonly label: "Small";
-        readonly description: "256 slots · ~0.45 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
     readonly medium: {
-        readonly maxAccounts: 1024;
-        readonly dataSize: 257448;
-        readonly label: "Medium";
-        readonly description: "1,024 slots · ~1.79 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
     readonly large: {
-        readonly maxAccounts: 4096;
-        readonly dataSize: 1025832;
-        readonly label: "Large";
-        readonly description: "4,096 slots · ~7.14 SOL";
+        maxAccounts: number;
+        dataSize: number;
+        label: string;
+        description: string;
     };
 };
 /**

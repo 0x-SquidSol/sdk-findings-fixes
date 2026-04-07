@@ -118,21 +118,6 @@ export declare const ACCOUNTS_UNPAUSE_MARKET: readonly AccountSpec[];
  */
 export declare function buildAccountMetas(spec: readonly AccountSpec[], keys: PublicKey[] | Record<string, PublicKey>): AccountMeta[];
 /**
- * CreateInsuranceMint: 9 accounts
- * Creates SPL mint PDA for insurance LP tokens. Admin only, once per market.
- */
-export declare const ACCOUNTS_CREATE_INSURANCE_MINT: readonly AccountSpec[];
-/**
- * DepositInsuranceLP: 8 accounts
- * Deposit collateral into insurance fund, receive LP tokens.
- */
-export declare const ACCOUNTS_DEPOSIT_INSURANCE_LP: readonly AccountSpec[];
-/**
- * WithdrawInsuranceLP: 8 accounts
- * Burn LP tokens and withdraw proportional share of insurance fund.
- */
-export declare const ACCOUNTS_WITHDRAW_INSURANCE_LP: readonly AccountSpec[];
-/**
  * LpVaultWithdraw: 10 accounts (tag 39, PERC-627 / GH#1926 / PERC-8287)
  *
  * Burn LP vault tokens and withdraw proportional collateral from the LP vault.
@@ -249,6 +234,13 @@ export declare const ACCOUNTS_CLEAR_PENDING_SETTLEMENT: readonly AccountSpec[];
  * Sets the per-wallet position cap (admin only). capE6=0 disables.
  */
 export declare const ACCOUNTS_SET_WALLET_CAP: readonly AccountSpec[];
+/**
+ * InitMatcherCtx: 5 accounts
+ * Admin CPI-initializes the matcher context account for an LP slot.
+ * The LP PDA signs via invoke_signed in the program — it must be included in
+ * the transaction's account list even though it carries 0 lamports.
+ */
+export declare const ACCOUNTS_INIT_MATCHER_CTX: readonly AccountSpec[];
 export declare const WELL_KNOWN: {
     readonly tokenProgram: PublicKey;
     readonly clock: PublicKey;

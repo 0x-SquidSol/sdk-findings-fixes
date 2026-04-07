@@ -81,8 +81,6 @@ import {
   // Instructions (ADL)
   encodeExecuteAdl,
   // Instructions (insurance)
-  encodeDepositInsuranceLP,
-  encodeWithdrawInsuranceLP,
   encodeTopUpInsurance,
   // Account metas
   buildAccountMetas,
@@ -101,7 +99,6 @@ import {
   ACCOUNTS_TOPUP_INSURANCE,
   // PDA derivation
   deriveVaultAuthority,
-  deriveInsuranceLpMint,
   deriveLpPda,
   deriveKeeperFund,
   deriveCreatorLockPda,
@@ -742,16 +739,6 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
   // ========================================================================
 
   describe("6. Insurance Instructions", () => {
-    it("encodeDepositInsuranceLP() produces valid data", () => {
-      const data = encodeDepositInsuranceLP({ amount: 5_000_000n });
-      expect(data.length).toBe(9); // tag(1) + u64(8)
-    });
-
-    it("encodeWithdrawInsuranceLP() produces valid data", () => {
-      const data = encodeWithdrawInsuranceLP({ lpAmount: 3_000_000n });
-      expect(data.length).toBe(9);
-    });
-
     it("encodeTopUpInsurance() produces valid data", () => {
       const data = encodeTopUpInsurance({ amount: 10_000_000n });
       expect(data.length).toBe(9);
@@ -773,12 +760,6 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
       // Deterministic
       const [pda2] = deriveVaultAuthority(PROGRAM_ID, slab);
       expect(pda.equals(pda2)).toBe(true);
-    });
-
-    it("deriveInsuranceLpMint() returns deterministic PDA", () => {
-      const [pda, bump] = deriveInsuranceLpMint(PROGRAM_ID, slab);
-      expect(pda).toBeInstanceOf(PublicKey);
-      expect(bump).toBeLessThanOrEqual(255);
     });
 
     it("deriveLpPda() returns deterministic PDA for valid lpIdx", () => {
@@ -809,12 +790,11 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
 
     it("all PDAs for same slab are distinct", () => {
       const [vault] = deriveVaultAuthority(PROGRAM_ID, slab);
-      const [insLp] = deriveInsuranceLpMint(PROGRAM_ID, slab);
       const [lp0] = deriveLpPda(PROGRAM_ID, slab, 0);
       const [keeper] = deriveKeeperFund(PROGRAM_ID, slab);
       const [creator] = deriveCreatorLockPda(PROGRAM_ID, slab);
 
-      const pdas = [vault, insLp, lp0, keeper, creator];
+      const pdas = [vault, lp0, keeper, creator];
       const unique = new Set(pdas.map((p) => p.toBase58()));
       expect(unique.size).toBe(pdas.length);
     });

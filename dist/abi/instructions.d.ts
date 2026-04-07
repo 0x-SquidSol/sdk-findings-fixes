@@ -32,9 +32,6 @@ export declare const IX_TAG: {
     readonly AdminForceClose: 21;
     readonly UpdateRiskParams: 22;
     readonly RenounceAdmin: 23;
-    readonly CreateInsuranceMint: 24;
-    readonly DepositInsuranceLP: 25;
-    readonly WithdrawInsuranceLP: 26;
     readonly PauseMarket: 27;
     readonly UnpauseMarket: 28;
     readonly AcceptAdmin: 29;
@@ -111,6 +108,14 @@ export declare const IX_TAG: {
     readonly SetWalletCap: 70;
     /** PERC-8110: Set OI imbalance hard-block threshold (admin only). */
     readonly SetOiImbalanceHardBlock: 71;
+    /** PERC-8270: Rescue orphan vault — recover tokens from a closed market's vault (admin). */
+    readonly RescueOrphanVault: 72;
+    /** PERC-8270: Close orphan slab — reclaim rent from a slab whose market closed unexpectedly (admin). */
+    readonly CloseOrphanSlab: 73;
+    /** PERC-SetDexPool: Pin admin-approved DEX pool address for a HYPERP market (admin). */
+    readonly SetDexPool: 74;
+    /** CPI to the matcher program to initialize a matcher context account for an LP slot. Admin-only. */
+    readonly InitMatcherCtx: 75;
 };
 /**
  * InitMarket instruction data (256 bytes total)
@@ -382,27 +387,6 @@ export declare const UNRESOLVE_CONFIRMATION = 16045690984503054900n;
  * to prevent accidental invocation.
  */
 export declare function encodeRenounceAdmin(): Uint8Array;
-/**
- * CreateInsuranceMint instruction data (1 byte)
- * Creates the SPL mint PDA for insurance LP tokens. Admin only, once per market.
- */
-export declare function encodeCreateInsuranceMint(): Uint8Array;
-/**
- * DepositInsuranceLP instruction data (9 bytes)
- * Deposit collateral into insurance fund, receive LP tokens proportional to share.
- */
-export interface DepositInsuranceLPArgs {
-    amount: bigint | string;
-}
-export declare function encodeDepositInsuranceLP(args: DepositInsuranceLPArgs): Uint8Array;
-/**
- * WithdrawInsuranceLP instruction data (9 bytes)
- * Burn LP tokens and withdraw proportional share of insurance fund.
- */
-export interface WithdrawInsuranceLPArgs {
-    lpAmount: bigint | string;
-}
-export declare function encodeWithdrawInsuranceLP(args: WithdrawInsuranceLPArgs): Uint8Array;
 /**
  * LpVaultWithdraw (Tag 39, PERC-627 / GH#1926 / PERC-8287) — burn LP vault tokens and
  * withdraw proportional collateral.
@@ -1004,3 +988,47 @@ export interface SetWalletCapArgs {
     capE6: bigint | string;
 }
 export declare function encodeSetWalletCap(args: SetWalletCapArgs): Uint8Array;
+/**
+ * InitMatcherCtx (Tag 75) — admin initializes the matcher context account for an LP slot.
+ *
+ * The matcher program (DHP6DtwXP1yJsz8YzfoeigRFPB979gzmumkmCxDLSkUX) requires its context
+ * account to be initialized before TradeCpi can work. Only the percolator program can sign
+ * as the LP PDA via invoke_signed, so this instruction acts as the trusted initializer.
+ *
+ * Instruction data layout: tag(1) + lp_idx(2) + kind(1) + trading_fee_bps(4) +
+ *   base_spread_bps(4) + max_total_bps(4) + impact_k_bps(4) +
+ *   liquidity_notional_e6(16) + max_fill_abs(16) + max_inventory_abs(16) +
+ *   fee_to_insurance_bps(2) + skew_spread_mult_bps(2) = 72 bytes
+ *
+ * Accounts:
+ *   0. [signer]   admin
+ *   1. []         slab (program-owned; used to verify admin + LP slot)
+ *   2. [writable] matcherCtx (must match LP's stored matcher_context)
+ *   3. []         matcherProg (executable; must match LP's stored matcher_program)
+ *   4. []         lpPda (PDA ["lp", slab, lp_idx]; required by CPI as signer)
+ */
+export interface InitMatcherCtxArgs {
+    /** LP account index in the engine (0-based). */
+    lpIdx: number;
+    /** Matcher kind: 0=Passive, 1=vAMM. */
+    kind: number;
+    /** Base trading fee in bps (e.g. 30 = 0.30%). */
+    tradingFeeBps: number;
+    /** Base spread in bps. */
+    baseSpreadBps: number;
+    /** Max total spread in bps. */
+    maxTotalBps: number;
+    /** vAMM impact constant in bps (0 for passive matchers). */
+    impactKBps: number;
+    /** Liquidity notional in e6 units (0 for passive matchers). */
+    liquidityNotionalE6: bigint | string;
+    /** Max single fill size in absolute units (u128::MAX = no limit). */
+    maxFillAbs: bigint | string;
+    /** Max inventory size in absolute units (u128::MAX = no limit). */
+    maxInventoryAbs: bigint | string;
+    /** Fraction of fees routed to insurance fund in bps. */
+    feeToInsuranceBps: number;
+    /** Skew spread multiplier in bps (0 = disabled). */
+    skewSpreadMultBps: number;
+}
+export declare function encodeInitMatcherCtx(args: InitMatcherCtxArgs): Uint8Array;

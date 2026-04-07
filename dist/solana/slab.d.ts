@@ -120,9 +120,20 @@ export declare const SLAB_TIERS_V_SETDEXPOOL: Record<string, {
     description: string;
 }>;
 /**
+ * V12_1 slab tier sizes — percolator-core v12.1 merge.
+ * ENGINE_OFF=648, BITMAP_OFF=1016, ACCOUNT_SIZE=320.
+ * Verified by cargo build-sbf compile-time assertions.
+ */
+export declare const SLAB_TIERS_V12_1: Record<string, {
+    maxAccounts: number;
+    dataSize: number;
+    label: string;
+    description: string;
+}>;
+/**
  * Detect the slab layout version from the raw account data length.
  * Returns the full SlabLayout descriptor, or null if the size is unrecognised.
- * Checks V_SETDEXPOOL, V1M2, V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes.
+ * Checks V12_1, V_SETDEXPOOL, V1M2, V_ADL, V1M, V0, V1D, V1D-legacy, V1, and V1-legacy sizes.
  *
  * When `data` is provided and the size matches V1D, the version field at offset 8 is read
  * to disambiguate V2 slabs (which produce identical sizes to V1D with postBitmap=2).

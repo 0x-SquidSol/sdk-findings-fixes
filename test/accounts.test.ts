@@ -24,9 +24,6 @@ import {
   ACCOUNTS_SET_ORACLE_PRICE_CAP,
   ACCOUNTS_PAUSE_MARKET,
   ACCOUNTS_UNPAUSE_MARKET,
-  ACCOUNTS_CREATE_INSURANCE_MINT,
-  ACCOUNTS_DEPOSIT_INSURANCE_LP,
-  ACCOUNTS_WITHDRAW_INSURANCE_LP,
   buildAccountMetas,
   WELL_KNOWN,
   type AccountSpec,
@@ -68,9 +65,6 @@ describe("Account orderings", () => {
     ["ACCOUNTS_SET_ORACLE_PRICE_CAP", ACCOUNTS_SET_ORACLE_PRICE_CAP],
     ["ACCOUNTS_PAUSE_MARKET", ACCOUNTS_PAUSE_MARKET],
     ["ACCOUNTS_UNPAUSE_MARKET", ACCOUNTS_UNPAUSE_MARKET],
-    ["ACCOUNTS_CREATE_INSURANCE_MINT", ACCOUNTS_CREATE_INSURANCE_MINT],
-    ["ACCOUNTS_DEPOSIT_INSURANCE_LP", ACCOUNTS_DEPOSIT_INSURANCE_LP],
-    ["ACCOUNTS_WITHDRAW_INSURANCE_LP", ACCOUNTS_WITHDRAW_INSURANCE_LP],
   ];
 
   it.each(allSpecs)("%s has valid structure", (_name, spec) => {
@@ -143,17 +137,6 @@ describe("Account orderings", () => {
     expect(ACCOUNTS_WITHDRAW_INSURANCE).toHaveLength(6);
   });
 
-  it("ACCOUNTS_CREATE_INSURANCE_MINT has 9 accounts", () => {
-    expect(ACCOUNTS_CREATE_INSURANCE_MINT).toHaveLength(9);
-  });
-
-  it("ACCOUNTS_DEPOSIT_INSURANCE_LP has 8 accounts", () => {
-    expect(ACCOUNTS_DEPOSIT_INSURANCE_LP).toHaveLength(8);
-  });
-
-  it("ACCOUNTS_WITHDRAW_INSURANCE_LP has 8 accounts", () => {
-    expect(ACCOUNTS_WITHDRAW_INSURANCE_LP).toHaveLength(8);
-  });
 
   it("ACCOUNTS_SET_ORACLE_PRICE_CAP has 2 accounts", () => {
     expect(ACCOUNTS_SET_ORACLE_PRICE_CAP).toHaveLength(2);
@@ -245,11 +228,6 @@ describe("Signer / writable invariants", () => {
     }
   });
 
-  it("CreateInsuranceMint has two signers (admin and payer)", () => {
-    const signers = ACCOUNTS_CREATE_INSURANCE_MINT.filter((a) => a.signer);
-    expect(signers).toHaveLength(2);
-    expect(signers.map((s) => s.name).sort()).toEqual(["admin", "payer"]);
-  });
 });
 
 // ============================================================================

@@ -16,20 +16,6 @@ export function deriveVaultAuthority(
   );
 }
 
-/**
- * Derive insurance LP mint PDA.
- * Seeds: ["ins_lp", slab_key]
- */
-export function deriveInsuranceLpMint(
-  programId: PublicKey,
-  slab: PublicKey
-): [PublicKey, number] {
-  return PublicKey.findProgramAddressSync(
-    [textEncoder.encode("ins_lp"), slab.toBytes()],
-    programId
-  );
-}
-
 const LP_INDEX_U16_MAX = 0xffff;
 
 /**
