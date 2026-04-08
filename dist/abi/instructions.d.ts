@@ -142,6 +142,9 @@ export interface InitMarketArgs {
     invert: number;
     unitScale: number;
     initialMarkPriceE6: bigint | string;
+    maxMaintenanceFeePerSlot?: bigint | string;
+    maxInsuranceFloor?: bigint | string;
+    minOraclePriceCap?: bigint | string;
     warmupPeriodSlots: bigint | string;
     maintenanceMarginBps: bigint | string;
     initialMarginBps: bigint | string;

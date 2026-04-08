@@ -248,7 +248,7 @@ function encodeFeedId(feedId) {
   }
   return bytes;
 }
-var INIT_MARKET_DATA_LEN = 312;
+var INIT_MARKET_DATA_LEN = 352;
 function encodeInitMarket(args) {
   const data = concatBytes(
     encU8(IX_TAG.InitMarket),
@@ -260,6 +260,11 @@ function encodeInitMarket(args) {
     encU8(args.invert),
     encU32(args.unitScale),
     encU64(args.initialMarkPriceE6),
+    // 3 fields between header and RiskParams (immutable after init)
+    encU128(args.maxMaintenanceFeePerSlot ?? 0n),
+    encU128(args.maxInsuranceFloor ?? 0n),
+    encU64(args.minOraclePriceCap ?? 0n),
+    // RiskParams block (15 fields)
     encU64(args.warmupPeriodSlots),
     encU64(args.maintenanceMarginBps),
     encU64(args.initialMarginBps),

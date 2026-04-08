@@ -163,27 +163,32 @@ export interface InitMarketArgs {
   admin: PublicKey | string;
   collateralMint: PublicKey | string;
   indexFeedId: string;           // Pyth feed ID (hex string, 64 chars without 0x prefix). All zeros = Hyperp mode.
-  maxStalenessSecs: bigint | string;  // Max staleness in SECONDS (Pyth Pull uses unix timestamps)
+  maxStalenessSecs: bigint | string;
   confFilterBps: number;
-  invert: number;              // 0 = no inversion, 1 = invert oracle price (USD/SOL -> SOL/USD)
-  unitScale: number;           // Lamports per unit (0 = no scaling, e.g. 1000 = 1 SOL = 1,000,000 units)
-  initialMarkPriceE6: bigint | string;  // Initial mark price (required non-zero for Hyperp mode)
+  invert: number;
+  unitScale: number;
+  initialMarkPriceE6: bigint | string;
+  // Fields between header and RiskParams (immutable after init, default 0 if omitted)
+  maxMaintenanceFeePerSlot?: bigint | string;  // u128 — max maintenance fee per slot
+  maxInsuranceFloor?: bigint | string;         // u128 — max insurance floor
+  minOraclePriceCap?: bigint | string;         // u64 — min oracle price cap in e2bps
+  // RiskParams block (15 fields, read by read_risk_params on-chain)
   warmupPeriodSlots: bigint | string;
   maintenanceMarginBps: bigint | string;
   initialMarginBps: bigint | string;
   tradingFeeBps: bigint | string;
   maxAccounts: bigint | string;
   newAccountFee: bigint | string;
-  riskReductionThreshold: bigint | string;
+  riskReductionThreshold: bigint | string;    // maps to insurance_floor slot on-chain
   maintenanceFeePerSlot: bigint | string;
   maxCrankStalenessSlots: bigint | string;
   liquidationFeeBps: bigint | string;
   liquidationFeeCap: bigint | string;
   liquidationBufferBps: bigint | string;
   minLiquidationAbs: bigint | string;
-  minInitialDeposit: bigint | string;     // min deposit to open a new account (u128)
-  minNonzeroMmReq: bigint | string;       // min nonzero maintenance margin requirement (u128)
-  minNonzeroImReq: bigint | string;       // min nonzero initial margin requirement (u128)
+  minInitialDeposit: bigint | string;         // u128 — min deposit to open account
+  minNonzeroMmReq: bigint | string;           // u128 — must be > 0, < minNonzeroImReq
+  minNonzeroImReq: bigint | string;           // u128 — must be > minNonzeroMmReq, <= minInitialDeposit
 }
 
 /**
@@ -211,7 +216,13 @@ function encodeFeedId(feedId: string): Uint8Array {
   return bytes;
 }
 
-const INIT_MARKET_DATA_LEN = 312; // 264 + 3×u128(16) = 312
+// tag(1) + admin(32) + mint(32) + feedId(32) + staleness(8) + conf(2) + invert(1) + scale(4) +
+// markPrice(8) + maxMaintFee(16) + maxInsFloor(16) + minOracleCap(8) +
+// RiskParams: warmup(8) + mmBps(8) + imBps(8) + tradeFee(8) + maxAcct(8) + newAcctFee(16) +
+//   riskRedThresh(16) + maintFee(16) + maxStale(8) + liqFee(8) + liqCap(16) + liqBuf(8) +
+//   minLiqAbs(16) + minDeposit(16) + minMm(16) + minIm(16)
+// = 1+32+32+32+8+2+1+4+8+16+16+8 + 8+8+8+8+8+16+16+16+8+8+16+8+16+16+16+16 = 352
+const INIT_MARKET_DATA_LEN = 352;
 
 export function encodeInitMarket(args: InitMarketArgs): Uint8Array {
   const data = concatBytes(
@@ -224,6 +235,11 @@ export function encodeInitMarket(args: InitMarketArgs): Uint8Array {
     encU8(args.invert),
     encU32(args.unitScale),
     encU64(args.initialMarkPriceE6),
+    // 3 fields between header and RiskParams (immutable after init)
+    encU128(args.maxMaintenanceFeePerSlot ?? 0n),
+    encU128(args.maxInsuranceFloor ?? 0n),
+    encU64(args.minOraclePriceCap ?? 0n),
+    // RiskParams block (15 fields)
     encU64(args.warmupPeriodSlots),
     encU64(args.maintenanceMarginBps),
     encU64(args.initialMarginBps),
