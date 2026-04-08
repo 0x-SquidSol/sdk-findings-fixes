@@ -30,13 +30,20 @@ export declare const IX_TAG: {
     readonly ResolveMarket: 19;
     readonly WithdrawInsurance: 20;
     readonly AdminForceClose: 21;
-    readonly UpdateRiskParams: 22;
-    readonly RenounceAdmin: 23;
-    readonly PauseMarket: 27;
-    readonly UnpauseMarket: 28;
-    readonly AcceptAdmin: 29;
-    readonly SetInsuranceWithdrawPolicy: 30;
-    readonly WithdrawInsuranceLimited: 31;
+    readonly SetInsuranceWithdrawPolicy: 22;
+    /** @deprecated Use SetInsuranceWithdrawPolicy */ readonly UpdateRiskParams: 22;
+    readonly WithdrawInsuranceLimited: 23;
+    /** @deprecated Use WithdrawInsuranceLimited */ readonly RenounceAdmin: 23;
+    readonly QueryLpFees: 24;
+    readonly ReclaimEmptyAccount: 25;
+    readonly SettleAccount: 26;
+    readonly DepositFeeCredits: 27;
+    /** @deprecated No on-chain PauseMarket instruction */ readonly PauseMarket: 27;
+    readonly ConvertReleasedPnl: 28;
+    /** @deprecated No on-chain UnpauseMarket instruction */ readonly UnpauseMarket: 28;
+    readonly ResolvePermissionless: 29;
+    /** @deprecated Use ResolvePermissionless */ readonly AcceptAdmin: 29;
+    readonly ForceCloseResolved: 30;
     readonly SetPythOracle: 32;
     readonly UpdateMarkPrice: 33;
     readonly UpdateHyperpMark: 34;
@@ -148,6 +155,9 @@ export interface InitMarketArgs {
     liquidationFeeCap: bigint | string;
     liquidationBufferBps: bigint | string;
     minLiquidationAbs: bigint | string;
+    minInitialDeposit: bigint | string;
+    minNonzeroMmReq: bigint | string;
+    minNonzeroImReq: bigint | string;
 }
 export declare function encodeInitMarket(args: InitMarketArgs): Uint8Array;
 /**
@@ -1032,3 +1042,67 @@ export interface InitMatcherCtxArgs {
     skewSpreadMultBps: number;
 }
 export declare function encodeInitMatcherCtx(args: InitMatcherCtxArgs): Uint8Array;
+/** SetInsuranceWithdrawPolicy (tag 22): authority + min_withdraw_base + max_withdraw_bps + cooldown_slots */
+export interface SetInsuranceWithdrawPolicyArgs {
+    authority: PublicKey | string;
+    minWithdrawBase: bigint | string;
+    maxWithdrawBps: number;
+    cooldownSlots: bigint | string;
+}
+export declare function encodeSetInsuranceWithdrawPolicy(args: SetInsuranceWithdrawPolicyArgs): Uint8Array;
+/** WithdrawInsuranceLimited (tag 23): amount */
+export declare function encodeWithdrawInsuranceLimited(args: {
+    amount: bigint | string;
+}): Uint8Array;
+/** ResolvePermissionless (tag 29): no args */
+export declare function encodeResolvePermissionless(): Uint8Array;
+/** ForceCloseResolved (tag 30): user_idx */
+export declare function encodeForceCloseResolved(args: {
+    userIdx: number;
+}): Uint8Array;
+/** CreateLpVault (tag 37): fee_share_bps + util_curve_enabled */
+export declare function encodeCreateLpVault(args: {
+    feeShareBps: bigint | string;
+    utilCurveEnabled?: boolean;
+}): Uint8Array;
+/** LpVaultDeposit (tag 38): amount */
+export declare function encodeLpVaultDeposit(args: {
+    amount: bigint | string;
+}): Uint8Array;
+/** LpVaultCrankFees (tag 40): no args */
+export declare function encodeLpVaultCrankFees(): Uint8Array;
+/** ChallengeSettlement (tag 43): proposed_price_e6 */
+export declare function encodeChallengeSettlement(args: {
+    proposedPriceE6: bigint | string;
+}): Uint8Array;
+/** ResolveDispute (tag 44): accept (0 = reject, 1 = accept) */
+export declare function encodeResolveDispute(args: {
+    accept: number;
+}): Uint8Array;
+/** DepositLpCollateral (tag 45): user_idx + lp_amount */
+export declare function encodeDepositLpCollateral(args: {
+    userIdx: number;
+    lpAmount: bigint | string;
+}): Uint8Array;
+/** WithdrawLpCollateral (tag 46): user_idx + lp_amount */
+export declare function encodeWithdrawLpCollateral(args: {
+    userIdx: number;
+    lpAmount: bigint | string;
+}): Uint8Array;
+/** SetOffsetPair (tag 54): offset_bps */
+export declare function encodeSetOffsetPair(args: {
+    offsetBps: number;
+}): Uint8Array;
+/** AttestCrossMargin (tag 55): user_idx_a + user_idx_b */
+export declare function encodeAttestCrossMargin(args: {
+    userIdxA: number;
+    userIdxB: number;
+}): Uint8Array;
+/** RescueOrphanVault (tag 72): no args */
+export declare function encodeRescueOrphanVault(): Uint8Array;
+/** CloseOrphanSlab (tag 73): no args */
+export declare function encodeCloseOrphanSlab(): Uint8Array;
+/** SetDexPool (tag 74): pool pubkey */
+export declare function encodeSetDexPool(args: {
+    pool: PublicKey | string;
+}): Uint8Array;

@@ -43,15 +43,28 @@ export const IX_TAG = {
   ResolveMarket: 19,
   WithdrawInsurance: 20,
   AdminForceClose: 21,
-  UpdateRiskParams: 22,
-  RenounceAdmin: 23,
-  // Tags 24–26 (CreateInsuranceMint / DepositInsuranceLP / WithdrawInsuranceLP)
-  // were removed in SDK v1.0.0-beta.3. Replaced by percolator-stake.
-  PauseMarket: 27,
-  UnpauseMarket: 28,
-  AcceptAdmin: 29,
-  SetInsuranceWithdrawPolicy: 30,
-  WithdrawInsuranceLimited: 31,
+  // Tags 22-23: on-chain these are SetInsuranceWithdrawPolicy / WithdrawInsuranceLimited.
+  // Legacy aliases (UpdateRiskParams/RenounceAdmin) kept for backward compat.
+  SetInsuranceWithdrawPolicy: 22,
+  /** @deprecated Use SetInsuranceWithdrawPolicy */ UpdateRiskParams: 22,
+  WithdrawInsuranceLimited: 23,
+  /** @deprecated Use WithdrawInsuranceLimited */ RenounceAdmin: 23,
+  // Tags 24–26: on-chain = QueryLpFees/ReclaimEmptyAccount/SettleAccount.
+  // Old insurance LP tags removed — those moved to percolator-stake.
+  QueryLpFees: 24,
+  ReclaimEmptyAccount: 25,
+  SettleAccount: 26,
+  // Tags 27-28: on-chain = DepositFeeCredits/ConvertReleasedPnl.
+  // Legacy aliases (PauseMarket/UnpauseMarket) kept — those instructions don't exist on-chain.
+  DepositFeeCredits: 27,
+  /** @deprecated No on-chain PauseMarket instruction */ PauseMarket: 27,
+  ConvertReleasedPnl: 28,
+  /** @deprecated No on-chain UnpauseMarket instruction */ UnpauseMarket: 28,
+  // Tags 29-30: on-chain = ResolvePermissionless/ForceCloseResolved.
+  ResolvePermissionless: 29,
+  /** @deprecated Use ResolvePermissionless */ AcceptAdmin: 29,
+  ForceCloseResolved: 30,
+  // Tag 31: gap (no decode arm on-chain)
   SetPythOracle: 32,
   UpdateMarkPrice: 33,
   UpdateHyperpMark: 34,
@@ -1638,4 +1651,98 @@ export function encodeInitMatcherCtx(args: InitMatcherCtxArgs): Uint8Array {
     encU16(args.feeToInsuranceBps),
     encU16(args.skewSpreadMultBps),
   );
+}
+
+// ============================================================================
+// Missing encoders — corrected tag mappings (tags 22-74)
+// ============================================================================
+
+/** SetInsuranceWithdrawPolicy (tag 22): authority + min_withdraw_base + max_withdraw_bps + cooldown_slots */
+export interface SetInsuranceWithdrawPolicyArgs {
+  authority: PublicKey | string;
+  minWithdrawBase: bigint | string;
+  maxWithdrawBps: number;
+  cooldownSlots: bigint | string;
+}
+export function encodeSetInsuranceWithdrawPolicy(args: SetInsuranceWithdrawPolicyArgs): Uint8Array {
+  return concatBytes(encU8(IX_TAG.SetInsuranceWithdrawPolicy), encPubkey(args.authority), encU64(args.minWithdrawBase), encU16(args.maxWithdrawBps), encU64(args.cooldownSlots));
+}
+
+/** WithdrawInsuranceLimited (tag 23): amount */
+export function encodeWithdrawInsuranceLimited(args: { amount: bigint | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.WithdrawInsuranceLimited), encU64(args.amount));
+}
+
+/** ResolvePermissionless (tag 29): no args */
+export function encodeResolvePermissionless(): Uint8Array {
+  return concatBytes(encU8(IX_TAG.ResolvePermissionless));
+}
+
+/** ForceCloseResolved (tag 30): user_idx */
+export function encodeForceCloseResolved(args: { userIdx: number }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.ForceCloseResolved), encU16(args.userIdx));
+}
+
+/** CreateLpVault (tag 37): fee_share_bps + util_curve_enabled */
+export function encodeCreateLpVault(args: { feeShareBps: bigint | string; utilCurveEnabled?: boolean }): Uint8Array {
+  const parts = [encU8(IX_TAG.CreateLpVault), encU64(args.feeShareBps)];
+  if (args.utilCurveEnabled !== undefined) {
+    parts.push(encU8(args.utilCurveEnabled ? 1 : 0));
+  }
+  return concatBytes(...parts);
+}
+
+/** LpVaultDeposit (tag 38): amount */
+export function encodeLpVaultDeposit(args: { amount: bigint | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.LpVaultDeposit), encU64(args.amount));
+}
+
+/** LpVaultCrankFees (tag 40): no args */
+export function encodeLpVaultCrankFees(): Uint8Array {
+  return concatBytes(encU8(IX_TAG.LpVaultCrankFees));
+}
+
+/** ChallengeSettlement (tag 43): proposed_price_e6 */
+export function encodeChallengeSettlement(args: { proposedPriceE6: bigint | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.ChallengeSettlement), encU64(args.proposedPriceE6));
+}
+
+/** ResolveDispute (tag 44): accept (0 = reject, 1 = accept) */
+export function encodeResolveDispute(args: { accept: number }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.ResolveDispute), encU8(args.accept));
+}
+
+/** DepositLpCollateral (tag 45): user_idx + lp_amount */
+export function encodeDepositLpCollateral(args: { userIdx: number; lpAmount: bigint | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.DepositLpCollateral), encU16(args.userIdx), encU64(args.lpAmount));
+}
+
+/** WithdrawLpCollateral (tag 46): user_idx + lp_amount */
+export function encodeWithdrawLpCollateral(args: { userIdx: number; lpAmount: bigint | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.WithdrawLpCollateral), encU16(args.userIdx), encU64(args.lpAmount));
+}
+
+/** SetOffsetPair (tag 54): offset_bps */
+export function encodeSetOffsetPair(args: { offsetBps: number }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.SetOffsetPair), encU16(args.offsetBps));
+}
+
+/** AttestCrossMargin (tag 55): user_idx_a + user_idx_b */
+export function encodeAttestCrossMargin(args: { userIdxA: number; userIdxB: number }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.AttestCrossMargin), encU16(args.userIdxA), encU16(args.userIdxB));
+}
+
+/** RescueOrphanVault (tag 72): no args */
+export function encodeRescueOrphanVault(): Uint8Array {
+  return concatBytes(encU8(IX_TAG.RescueOrphanVault));
+}
+
+/** CloseOrphanSlab (tag 73): no args */
+export function encodeCloseOrphanSlab(): Uint8Array {
+  return concatBytes(encU8(IX_TAG.CloseOrphanSlab));
+}
+
+/** SetDexPool (tag 74): pool pubkey */
+export function encodeSetDexPool(args: { pool: PublicKey | string }): Uint8Array {
+  return concatBytes(encU8(IX_TAG.SetDexPool), encPubkey(args.pool));
 }

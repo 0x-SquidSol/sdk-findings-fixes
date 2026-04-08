@@ -117,15 +117,33 @@ var IX_TAG = {
   ResolveMarket: 19,
   WithdrawInsurance: 20,
   AdminForceClose: 21,
+  // Tags 22-23: on-chain these are SetInsuranceWithdrawPolicy / WithdrawInsuranceLimited.
+  // Legacy aliases (UpdateRiskParams/RenounceAdmin) kept for backward compat.
+  SetInsuranceWithdrawPolicy: 22,
+  /** @deprecated Use SetInsuranceWithdrawPolicy */
   UpdateRiskParams: 22,
+  WithdrawInsuranceLimited: 23,
+  /** @deprecated Use WithdrawInsuranceLimited */
   RenounceAdmin: 23,
-  // Tags 24–26 (CreateInsuranceMint / DepositInsuranceLP / WithdrawInsuranceLP)
-  // were removed in SDK v1.0.0-beta.3. Replaced by percolator-stake.
+  // Tags 24–26: on-chain = QueryLpFees/ReclaimEmptyAccount/SettleAccount.
+  // Old insurance LP tags removed — those moved to percolator-stake.
+  QueryLpFees: 24,
+  ReclaimEmptyAccount: 25,
+  SettleAccount: 26,
+  // Tags 27-28: on-chain = DepositFeeCredits/ConvertReleasedPnl.
+  // Legacy aliases (PauseMarket/UnpauseMarket) kept — those instructions don't exist on-chain.
+  DepositFeeCredits: 27,
+  /** @deprecated No on-chain PauseMarket instruction */
   PauseMarket: 27,
+  ConvertReleasedPnl: 28,
+  /** @deprecated No on-chain UnpauseMarket instruction */
   UnpauseMarket: 28,
+  // Tags 29-30: on-chain = ResolvePermissionless/ForceCloseResolved.
+  ResolvePermissionless: 29,
+  /** @deprecated Use ResolvePermissionless */
   AcceptAdmin: 29,
-  SetInsuranceWithdrawPolicy: 30,
-  WithdrawInsuranceLimited: 31,
+  ForceCloseResolved: 30,
+  // Tag 31: gap (no decode arm on-chain)
   SetPythOracle: 32,
   UpdateMarkPrice: 33,
   UpdateHyperpMark: 34,
@@ -230,7 +248,7 @@ function encodeFeedId(feedId) {
   }
   return bytes;
 }
-var INIT_MARKET_DATA_LEN = 264;
+var INIT_MARKET_DATA_LEN = 312;
 function encodeInitMarket(args) {
   const data = concatBytes(
     encU8(IX_TAG.InitMarket),
@@ -254,7 +272,10 @@ function encodeInitMarket(args) {
     encU64(args.liquidationFeeBps),
     encU128(args.liquidationFeeCap),
     encU64(args.liquidationBufferBps),
-    encU128(args.minLiquidationAbs)
+    encU128(args.minLiquidationAbs),
+    encU128(args.minInitialDeposit),
+    encU128(args.minNonzeroMmReq),
+    encU128(args.minNonzeroImReq)
   );
   if (data.length !== INIT_MARKET_DATA_LEN) {
     throw new Error(
@@ -641,6 +662,58 @@ function encodeInitMatcherCtx(args) {
     encU16(args.feeToInsuranceBps),
     encU16(args.skewSpreadMultBps)
   );
+}
+function encodeSetInsuranceWithdrawPolicy(args) {
+  return concatBytes(encU8(IX_TAG.SetInsuranceWithdrawPolicy), encPubkey(args.authority), encU64(args.minWithdrawBase), encU16(args.maxWithdrawBps), encU64(args.cooldownSlots));
+}
+function encodeWithdrawInsuranceLimited(args) {
+  return concatBytes(encU8(IX_TAG.WithdrawInsuranceLimited), encU64(args.amount));
+}
+function encodeResolvePermissionless() {
+  return concatBytes(encU8(IX_TAG.ResolvePermissionless));
+}
+function encodeForceCloseResolved(args) {
+  return concatBytes(encU8(IX_TAG.ForceCloseResolved), encU16(args.userIdx));
+}
+function encodeCreateLpVault(args) {
+  const parts = [encU8(IX_TAG.CreateLpVault), encU64(args.feeShareBps)];
+  if (args.utilCurveEnabled !== void 0) {
+    parts.push(encU8(args.utilCurveEnabled ? 1 : 0));
+  }
+  return concatBytes(...parts);
+}
+function encodeLpVaultDeposit(args) {
+  return concatBytes(encU8(IX_TAG.LpVaultDeposit), encU64(args.amount));
+}
+function encodeLpVaultCrankFees() {
+  return concatBytes(encU8(IX_TAG.LpVaultCrankFees));
+}
+function encodeChallengeSettlement(args) {
+  return concatBytes(encU8(IX_TAG.ChallengeSettlement), encU64(args.proposedPriceE6));
+}
+function encodeResolveDispute(args) {
+  return concatBytes(encU8(IX_TAG.ResolveDispute), encU8(args.accept));
+}
+function encodeDepositLpCollateral(args) {
+  return concatBytes(encU8(IX_TAG.DepositLpCollateral), encU16(args.userIdx), encU64(args.lpAmount));
+}
+function encodeWithdrawLpCollateral(args) {
+  return concatBytes(encU8(IX_TAG.WithdrawLpCollateral), encU16(args.userIdx), encU64(args.lpAmount));
+}
+function encodeSetOffsetPair(args) {
+  return concatBytes(encU8(IX_TAG.SetOffsetPair), encU16(args.offsetBps));
+}
+function encodeAttestCrossMargin(args) {
+  return concatBytes(encU8(IX_TAG.AttestCrossMargin), encU16(args.userIdxA), encU16(args.userIdxB));
+}
+function encodeRescueOrphanVault() {
+  return concatBytes(encU8(IX_TAG.RescueOrphanVault));
+}
+function encodeCloseOrphanSlab() {
+  return concatBytes(encU8(IX_TAG.CloseOrphanSlab));
+}
+function encodeSetDexPool(args) {
+  return concatBytes(encU8(IX_TAG.SetDexPool), encPubkey(args.pool));
 }
 
 // src/abi/accounts.ts
@@ -3790,7 +3863,7 @@ function getStakeProgramId(network) {
   }
   return new PublicKey10(id);
 }
-var STAKE_PROGRAM_ID = new PublicKey10(STAKE_PROGRAM_IDS.devnet);
+var STAKE_PROGRAM_ID = new PublicKey10(STAKE_PROGRAM_IDS.mainnet);
 var STAKE_IX = {
   InitPool: 0,
   Deposit: 1,
@@ -5011,7 +5084,7 @@ function computeFeeSplit(totalFee, config) {
   const creator = totalFee - lp - protocol;
   if (creator < 0n) {
     throw new Error(
-      `Internal error: creator fee is negative (${creator}). This should not happen if lpBps + protocolBps + creatorBps <= 10000.`
+      `Internal error: creator fee is negative (${creator}). This should not happen if lpBps + protocolBps + creatorBps === 10000.`
     );
   }
   return [lp, protocol, creator];
@@ -5731,17 +5804,23 @@ export {
   encodeAdvanceEpoch,
   encodeAdvanceOraclePhase,
   encodeAllocateMarket,
+  encodeAttestCrossMargin,
   encodeAuditCrank,
   encodeBurnPositionNft,
   encodeCancelQueuedWithdrawal,
+  encodeChallengeSettlement,
   encodeClaimEpochWithdrawal,
   encodeClaimQueuedWithdrawal,
   encodeClearPendingSettlement,
   encodeCloseAccount,
+  encodeCloseOrphanSlab,
   encodeCloseSlab,
   encodeCloseStaleSlabs,
+  encodeCreateLpVault,
   encodeDepositCollateral,
+  encodeDepositLpCollateral,
   encodeExecuteAdl,
+  encodeForceCloseResolved,
   encodeFundMarketInsurance,
   encodeInitLP,
   encodeInitMarket,
@@ -5750,6 +5829,8 @@ export {
   encodeInitUser,
   encodeKeeperCrank,
   encodeLiquidateAtOracle,
+  encodeLpVaultCrankFees,
+  encodeLpVaultDeposit,
   encodeLpVaultWithdraw,
   encodeMintPositionNft,
   encodePauseMarket,
@@ -5758,9 +5839,15 @@ export {
   encodeQueueWithdrawalSV,
   encodeReclaimSlabRent,
   encodeRenounceAdmin,
+  encodeRescueOrphanVault,
+  encodeResolveDispute,
   encodeResolveMarket,
+  encodeResolvePermissionless,
+  encodeSetDexPool,
   encodeSetInsuranceIsolation,
+  encodeSetInsuranceWithdrawPolicy,
   encodeSetMaintenanceFee,
+  encodeSetOffsetPair,
   encodeSetOiImbalanceHardBlock,
   encodeSetOracleAuthority,
   encodeSetOraclePriceCap,
@@ -5801,6 +5888,8 @@ export {
   encodeUpdateRiskParams,
   encodeWithdrawCollateral,
   encodeWithdrawInsurance,
+  encodeWithdrawInsuranceLimited,
+  encodeWithdrawLpCollateral,
   fetchAdlRankedPositions,
   fetchAdlRankings,
   fetchSlab,
