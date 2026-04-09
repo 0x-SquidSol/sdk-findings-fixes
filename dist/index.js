@@ -2228,10 +2228,14 @@ function buildLayoutV12_1(maxAccounts, dataLen) {
   const accountsOffRel = Math.ceil(preAccountsLen / 8) * 8;
   return {
     version: 1,
-    headerLen: V1_HEADER_LEN,
-    configOffset: V1_HEADER_LEN,
-    configLen: V_SETDEXPOOL_CONFIG_LEN,
-    // 544 (same as V_SETDEXPOOL)
+    // V12_1 upstream rebase uses 72-byte header (SlabHeader only, no V1 extension).
+    // Empirically verified: USDC mint found at offset 72 on mainnet slab BVjPc6rd.
+    headerLen: V0_HEADER_LEN,
+    // 72 (not 104 — V12_1 removed the 32-byte header extension)
+    configOffset: V0_HEADER_LEN,
+    // 72
+    configLen: 576,
+    // 544 + 32 (dex_pool: [u8;32] added in V12_1)
     reservedOff: V1_RESERVED_OFF,
     engineOff,
     accountSize,
