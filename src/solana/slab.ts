@@ -1433,10 +1433,7 @@ export interface MarketConfig {
   fundingInvScaleNotionalE6: bigint;
   fundingMaxPremiumBps: bigint;
   fundingMaxBpsPerSlot: bigint;
-  fundingPremiumWeightBps: bigint;
-  fundingSettlementIntervalSlots: bigint;
-  fundingPremiumDampeningE6: bigint;
-  fundingPremiumMaxBpsPerSlot: bigint;
+  // fundingPremiumWeightBps etc. removed in V12_1 upstream rebase
   threshFloor: bigint;
   threshRiskBps: bigint;
   threshUpdateIntervalSlots: bigint;
@@ -1717,18 +1714,10 @@ export function parseConfig(data: Uint8Array, layoutHint?: SlabLayout | null): M
   const fundingMaxBpsPerSlot = readI64LE(data, off);
   off += 8;
 
-  // Extended funding fields
-  const fundingPremiumWeightBps = readU64LE(data, off);
-  off += 8;
-
-  const fundingSettlementIntervalSlots = readU64LE(data, off);
-  off += 8;
-
-  const fundingPremiumDampeningE6 = readU64LE(data, off);
-  off += 8;
-
-  const fundingPremiumMaxBpsPerSlot = readU64LE(data, off);
-  off += 8;
+  // NOTE: Extended funding fields (fundingPremiumWeightBps, fundingSettlementIntervalSlots,
+  // fundingPremiumDampeningE6, fundingPremiumMaxBpsPerSlot) were removed in V12_1 upstream
+  // rebase. They do NOT exist in the on-chain MarketConfig struct. Reading them here shifted
+  // all subsequent fields by 32 bytes, causing oracle_authority to read garbage.
 
   // Threshold parameters
   const threshFloor = readU128LE(data, off);
@@ -1856,10 +1845,10 @@ export function parseConfig(data: Uint8Array, layoutHint?: SlabLayout | null): M
     fundingInvScaleNotionalE6,
     fundingMaxPremiumBps,
     fundingMaxBpsPerSlot,
-    fundingPremiumWeightBps,
-    fundingSettlementIntervalSlots,
-    fundingPremiumDampeningE6,
-    fundingPremiumMaxBpsPerSlot,
+    fundingPremiumWeightBps: 0n,
+    fundingSettlementIntervalSlots: 0n,
+    fundingPremiumDampeningE6: 0n,
+    fundingPremiumMaxBpsPerSlot: 0n,
     threshFloor,
     threshRiskBps,
     threshUpdateIntervalSlots,
