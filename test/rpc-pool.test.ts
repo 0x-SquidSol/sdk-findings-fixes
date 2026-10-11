@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   RpcPool,
+  RpcTimeoutError,
   checkRpcHealth,
   withRetry,
   _internal,
@@ -715,5 +716,73 @@ describe("#350 redactUrl", () => {
     expect(blob).not.toContain("bob");
     expect(blob).not.toContain("pw123");
     expect(blob).toContain("token=***");
+  });
+});
+
+// ============================================================================
+// #351: timeout must not fail over concurrently for non-idempotent callbacks
+// ============================================================================
+
+describe("#351 RpcPool timeout failover", () => {
+  const mk = () =>
+    new RpcPool({
+      endpoints: ["https://rpc1.example.com", "https://rpc2.example.com"],
+      strategy: "failover",
+      retry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 2, jitterFactor: 0 },
+      requestTimeoutMs: 30,
+      verbose: false,
+    });
+
+  it("default (non-idempotent): a timeout throws RpcTimeoutError and fn runs exactly once", async () => {
+    const pool = mk();
+    let running = 0;
+    let maxConcurrent = 0;
+    const fn = vi.fn(async () => {
+      running++;
+      maxConcurrent = Math.max(maxConcurrent, running);
+      await new Promise((r) => setTimeout(r, 300));
+      running--;
+      return "late";
+    });
+    await expect(pool.call(fn)).rejects.toBeInstanceOf(RpcTimeoutError);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(maxConcurrent).toBe(1);
+    await new Promise((r) => setTimeout(r, 350));
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("the attempt's AbortSignal is aborted when the SDK timeout fires", async () => {
+    const pool = mk();
+    let sig: AbortSignal | undefined;
+    await expect(
+      pool.call(async (_c, s) => {
+        sig = s;
+        await new Promise((r) => setTimeout(r, 200));
+      }),
+    ).rejects.toBeInstanceOf(RpcTimeoutError);
+    expect(sig?.aborted).toBe(true);
+  });
+
+  it("idempotent: true still fails over to the next endpoint after a timeout", async () => {
+    const pool = mk();
+    const seen: AbortSignal[] = [];
+    const fn = vi.fn(async (_c: Connection, s: AbortSignal) => {
+      seen.push(s);
+      if (fn.mock.calls.length === 1) await new Promise((r) => setTimeout(r, 300));
+      return "ok";
+    });
+    await expect(pool.call(fn, { idempotent: true })).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(seen[0].aborted).toBe(true); // first attempt told to stop before the retry ran
+  });
+
+  it("errors thrown BY fn (callback settled) still fail over without idempotent", async () => {
+    const pool = mk();
+    const fn = vi.fn(async () => {
+      if (fn.mock.calls.length === 1) throw new Error("HTTP 429 Too Many Requests");
+      return "ok";
+    });
+    await expect(pool.call(fn)).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
   });
 });
