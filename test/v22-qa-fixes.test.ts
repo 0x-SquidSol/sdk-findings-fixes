@@ -267,3 +267,21 @@ describe("Q-5 tag 39 ResolveStalePermissionless (wrapper RC 6c078a0e)", () => {
     expect(() => encodeResolveStalePermissionless(Number.MAX_SAFE_INTEGER + 2)).toThrow();
   });
 });
+
+// ============================================================================
+// P-4: 104 copy says which close is refused (favourable TO THE CLOSER while pinned)
+// ============================================================================
+describe("P-4 error 104 copy", () => {
+  it("keeps the on-chain name and says the close would beat the market price", () => {
+    expect(PERCOLATOR_ERRORS[104]!.name).toBe("PriceBandPinned");
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/pinned at the band edge/);
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/better price than the market/);
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/once the price catches up/);
+  });
+  it("negative control: no longer promises closing resumes in a few seconds", () => {
+    expect(PERCOLATOR_ERRORS[104]!.hint).not.toMatch(/closing resumes in a few seconds/);
+    const p = parseErrorFromLogs([`Program ${FX.programs.wrapper} failed: custom program error: 0x68`])!;
+    expect(p).toMatchObject({ program: "wrapper", code: 104, name: "PriceBandPinned" });
+    expect(p.hint).toMatch(/better price than the market/);
+  });
+});

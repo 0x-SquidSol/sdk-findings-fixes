@@ -545,7 +545,11 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   // Wave B `v22-band-defaults-and-product-copy.md`, the Rust doc comments) where they give copy.
   104: {
     name: "PriceBandPinned",
-    hint: "Price catching up; closing resumes in a few seconds.",
+    // P-4 (2026-10-11, ledger v22-diag-p4-band-close): on a close, 104 means the close is favourable TO THE CLOSER
+    // while the band is pinned/lagged (`reject_band_favourable_close_view`, wrapper RC 6c078a0e): a long reducing while
+    // target < pinned price, a short reducing while target > pinned price. The opposite close is allowed (the closer
+    // takes the worse price). 104 is also an accrual refusal (price outside the band / duration pin).
+    hint: "The price is pinned at the band edge; this close would get a better price than the market. Try again once the price catches up. (Closing in the other direction, at the worse price, is allowed.)",
   },
   105: {
     name: "PriceBandConfigInvalid",
