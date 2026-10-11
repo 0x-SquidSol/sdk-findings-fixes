@@ -59,6 +59,7 @@ export default defineConfig({
       "test/nft-program-env.test.ts",
       "test/v22-qa-fixes.test.ts",
       "test/dist-fresh.test.ts",
+      "test/stake-352-token-program.test.ts",
     ],
   },
 });
