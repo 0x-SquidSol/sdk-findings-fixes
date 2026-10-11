@@ -60,6 +60,7 @@ export default defineConfig({
       "test/v22-qa-fixes.test.ts",
       "test/dist-fresh.test.ts",
       "test/stake-352-token-program.test.ts",
+      "test/workflow-pinning-349.test.ts",
     ],
   },
 });
