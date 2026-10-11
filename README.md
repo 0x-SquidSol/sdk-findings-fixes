@@ -4,12 +4,56 @@ TypeScript SDK for building clients, bots, and UIs on top of the [Percolator](ht
 
 > **EXPERIMENTAL. NOT AUDITED.** `2.0.5`. v12.19 single-target. 792 tests passing. Do NOT use with real funds.
 
-## 9.0.0 (v2.1) devnet program IDs
+## 9.0.0-candidate (v2.2) devnet program IDs
 
-Devnet defaults point at the v2.1 fresh-ID set: wrapper `5NGgnU2j…`, stake `A6DVNubv…`, nft `DWUNq2iY…`,
-matcher `DfTxJUT5…`. The 8.x ETDLAdi world stays live as "v1 / close-only"; its four ids are exported as
-`PROGRAM_IDS_DEVNET_V1` and must be passed explicitly to read or close v1 markets. Mainnet ids are unchanged.
-See `CHANGELOG.md`.
+Devnet defaults point at the v2.2 fresh devnet deployment (2026-10-10, test only; v2.2 does not ship):
+wrapper `6kpg2wi7…`, stake `7JrgAUHi…`, nft `27LWmR72…`, matcher `AsHvEJ8z…` (`PROGRAM_IDS_DEVNET_V22`).
+The v2.1 RC ids (`5NGgnU2j…` / `A6DVNubv…` / `DWUNq2iY…` / `DfTxJUT5…`) were never deployed and are no
+longer defaults or allowlisted. The 8.x ETDLAdi world stays live as "v1 / close-only"; its four ids are
+exported as `PROGRAM_IDS_DEVNET_V1` and must be passed explicitly. Mainnet ids are unchanged.
+`NFT_PROGRAM_ID=27LWmR72…` needs no `PERCOLATOR_SDK_ALLOW_PROGRAM_OVERRIDE`. See `CHANGELOG.md`.
+
+### Trading fee to sign (v2.2)
+
+A matcher trade (TradeCpi) is refused with Custom(9) when the signed max fee is below the base fee plus the
+matcher's fee, or above the market maximum. Read the inputs and sign the helper's value:
+
+```ts
+import { readTradeFeeInputsV22, computeTradeFeeBpsToSignV22, encodeTradeCpi } from "@percolatorct/sdk";
+
+const [market, ctx] = await connection.getMultipleAccountsInfo([marketPk, matcherCtxPk]);
+const { feeBps } = computeTradeFeeBpsToSignV22(readTradeFeeInputsV22(market!.data, 0, ctx!.data));
+// v2.2 devnet markets: base 30 + matcher up to 100 + margin 5 = 135 (max 700)
+const data = encodeTradeCpi({ ...tradeArgs, feeBps });
+```
+
+### Resolving a stale market (tag 39)
+
+Anyone can permanently resolve a market whose price has been stale for `permissionless_resolve_stale_slots`
+(18,000 slots, about 72 minutes, on the v2.2 markets). Check first, then send; only the fee payer signs:
+
+```ts
+import { Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
+import { getProgramId, staleResolveStatusV22, buildResolveStalePermissionlessIxV22 } from "@percolatorct/sdk";
+
+const slot = BigInt(await connection.getSlot());
+const info = await connection.getAccountInfo(marketPk);
+const status = staleResolveStatusV22(info!.data, slot); // refusalCode: 21 resolved, 19 behind, 27 not matured
+if (status.canResolve) {
+  const tx = new Transaction().add(buildResolveStalePermissionlessIxV22(getProgramId("devnet"), marketPk, slot));
+  await sendAndConfirmTransaction(connection, tx, [payer]);
+}
+```
+
+After resolution, traders exit through CloseResolved (tag 30). A price push before resolution moves the
+market's last good oracle slot and un-matures it.
+
+### Errors by program
+
+`parseErrorFromLogs(logs, { context })` decodes the first failing program's error with that program's table
+(wrapper, stake, nft, matcher, SPL Token) and returns `program` / `programId`. Unknown programs fall back to the
+wrapper table and report `program: "unknown"`; pass `programIds` for fresh deployments. `context: { action:
+"trade" }` or `{ action: "withdraw", openLegs }` gives the precise line for wrapper 9 and 19.
 
 ## 8.0.0 relaunch targets
 

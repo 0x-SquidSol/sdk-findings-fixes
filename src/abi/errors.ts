@@ -26,6 +26,13 @@
  *   - Errors 42-46 are NFT/B-3 (new in v17).
  *   - v12.x errors 28-65 are entirely removed.
  */
+import type { PublicKey } from "@solana/web3.js";
+import { PROGRAM_IDS, PROGRAM_IDS_DEVNET_V1, PROGRAM_IDS_DEVNET_V22, NFT_PROGRAM_IDS } from "../config/program-ids.js";
+import { STAKE_ERRORS, STAKE_PROGRAM_IDS } from "../solana/stake.js";
+import { STAKE_ERRORS_V5, STAKE_ERROR_NAMES } from "./v22-stake.js";
+import { MATCHER_V2_ERRORS } from "./matcher-v2.js";
+import { NFT_ERRORS, SPL_TOKEN_ERRORS } from "./nft-errors.js";
+
 export interface ErrorInfo {
   name: string;
   hint: string;
@@ -71,7 +78,13 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   },
   9: {
     name: "InvalidInstruction",
-    hint: "Unknown instruction tag. The SDK and program versions may be mismatched.",
+    // Q-1 (2026-10-11): the wrapper returns 9 for many argument checks, not only an unknown tag. On a
+    // trade (tag 10 TradeCpi, 6 TradeNoCpi, 66/67 batch) the reachable causes in wrapper RC 6c078a0e are:
+    // signed fee_bps < trade_fee_base_bps; fee_bps > the market's max_trading_fee_bps; base + the
+    // matcher's requested fee > fee_bps (or > the protocol cap); the fill missed limit_price; and a
+    // 5th open position on a cap-4 portfolio. Use getContextualErrorHint(9, { action: "trade" }) for
+    // the trade wording and computeTradeFeeBpsToSignV22() for the fee to sign.
+    hint: "The program refused this instruction's arguments. On a trade: your max fee is below the market's base fee plus the matcher's fee (or above the market maximum), the fill missed your limit price, or the trade would open a 5th position. Otherwise an argument is out of range or the SDK and program versions are mismatched.",
   },
   10: {
     name: "InvalidMint",
@@ -111,7 +124,10 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   },
   19: {
     name: "EngineStale",
-    hint: "Engine position is stale — the market mark price has not been updated recently.",
+    // P-2 (2026-10-11): a withdrawal from an account with open positions refuses with 19 on v2.2; the
+    // old "mark price has not been updated" text sent users to wait for a price that was never the
+    // problem. getContextualErrorHint(19, { action: "withdraw", openLegs }) gives the precise line.
+    hint: "Positions on this account need to be brought current first. If you are withdrawing with open positions, close them first; otherwise a crank must catch the market up — retry shortly.",
   },
   20: {
     name: "EngineBStale",
@@ -300,7 +316,7 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   },
   55: {
     name: "StakePoolOwnerMismatch",
-    hint: "The supplied stake-pool account is not owned by the wrapper's pinned STAKE_PROGRAM_ID. THIS IS THE FORGERY GATE — it is checked before any byte of the account is read. Pass the pool PDA ['stake_pool', market] derived under the canonical stake program (devnet v2.1 A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE; v1 close-only wrapper ETDLAdi… pins VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w).",
+    hint: "The supplied stake-pool account is not owned by the wrapper's pinned STAKE_PROGRAM_ID. THIS IS THE FORGERY GATE — it is checked before any byte of the account is read. Pass the pool PDA ['stake_pool', market] derived under the canonical stake program (devnet v2.2 wrapper 6kpg2wi7… pins 7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V; v1 close-only wrapper ETDLAdi… pins VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w).",
   },
   56: {
     name: "StakePoolAuthorityMismatch",
@@ -649,26 +665,132 @@ export function getErrorHint(code: number): string | undefined {
 /** Max hex digits for `custom program error: 0x...` — Solana custom errors are u32. */
 const CUSTOM_ERROR_HEX_MAX_LEN = 8;
 
+/** Which program a custom error was attributed to. */
+export type ErrorProgramKind = "wrapper" | "stake" | "nft" | "matcher" | "token" | "unknown";
+
+/** Program ids to attribute errors to, in addition to the SDK's known deployments. */
+export type ErrorProgramIds = Partial<Record<Exclude<ErrorProgramKind, "token" | "unknown">, readonly (PublicKey | string)[]>>;
+
 /**
- * Parse a custom program error from transaction logs.
- *
- * Looks for "Program ... failed: custom program error: 0x..." in the log lines.
- * Returns null if no custom error is found.
- *
- * @param logs Array of transaction log strings from the RPC response.
- * @returns Parsed error with code, name, and hint — or null if not found.
- *
- * @example
- * ```ts
- * const err = parseErrorFromLogs(txResult.meta?.logMessages ?? []);
- * if (err) console.error(`${err.name}: ${err.hint}`);
- * ```
+ * What the caller was doing, so a code with several meanings can get the right line.
+ * `openLegs` is the number of open positions on the account (e.g. from parsePortfolioV17).
  */
-export function parseErrorFromLogs(logs: string[]): {
+export interface ErrorContext {
+  action?: "trade" | "withdraw" | "deposit" | "other";
+  openLegs?: number;
+}
+
+/** Options for {@link parseErrorFromLogs}. */
+export interface ParseErrorOptions {
+  /** Extra program ids (fresh deployments, env overrides) to attribute by kind. */
+  programIds?: ErrorProgramIds;
+  /** Caller context for codes with several meanings (wrapper 9 and 19). */
+  context?: ErrorContext;
+}
+
+/** A custom program error decoded from transaction logs. */
+export interface ParsedProgramError {
   code: number;
   name: string;
   hint?: string;
-} | null {
+  /** The program the failing log line names, decoded with that program's own error table. */
+  program: ErrorProgramKind;
+  /** Base58 id of the failing program, when the log line names one. */
+  programId?: string;
+}
+
+const TOKEN_PROGRAM_IDS = [
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+];
+
+function knownProgramIds(extra?: ErrorProgramIds): Map<string, ErrorProgramKind> {
+  const m = new Map<string, ErrorProgramKind>();
+  const add = (kind: ErrorProgramKind, ids: readonly (PublicKey | string | undefined)[]) => {
+    for (const id of ids) {
+      if (id === undefined) continue;
+      m.set(typeof id === "string" ? id : id.toBase58(), kind);
+    }
+  };
+  add("wrapper", [PROGRAM_IDS.devnet.percolator, PROGRAM_IDS.mainnet.percolator, PROGRAM_IDS_DEVNET_V22.percolator, PROGRAM_IDS_DEVNET_V1.percolator]);
+  add("matcher", [PROGRAM_IDS.devnet.matcher, PROGRAM_IDS.mainnet.matcher, PROGRAM_IDS_DEVNET_V22.matcher, PROGRAM_IDS_DEVNET_V1.matcher]);
+  add("stake", [STAKE_PROGRAM_IDS.devnet, STAKE_PROGRAM_IDS.mainnet, PROGRAM_IDS_DEVNET_V22.vault, PROGRAM_IDS_DEVNET_V1.vault]);
+  add("nft", [NFT_PROGRAM_IDS.devnet, NFT_PROGRAM_IDS.mainnet, PROGRAM_IDS_DEVNET_V22.nft, PROGRAM_IDS_DEVNET_V1.nft]);
+  add("token", TOKEN_PROGRAM_IDS);
+  // Caller-declared ids win over the built-in sets.
+  if (extra) {
+    for (const kind of ["wrapper", "stake", "nft", "matcher"] as const) add(kind, extra[kind] ?? []);
+  }
+  return m;
+}
+
+function decodeForProgram(kind: ErrorProgramKind, code: number): ErrorInfo | undefined {
+  switch (kind) {
+    case "stake": {
+      const v5 = STAKE_ERRORS_V5[code];
+      if (v5) return v5;
+      const hint = STAKE_ERRORS[code];
+      const name = STAKE_ERROR_NAMES[code];
+      return hint !== undefined && name !== undefined ? { name, hint } : undefined;
+    }
+    case "nft":
+      return NFT_ERRORS[code];
+    case "matcher":
+      return MATCHER_V2_ERRORS[code];
+    case "token":
+      return SPL_TOKEN_ERRORS[code];
+    case "wrapper":
+    case "unknown":
+      return PERCOLATOR_ERRORS[code];
+  }
+}
+
+/**
+ * A hint for a wrapper error code that takes the caller's context into account. Codes with one meaning
+ * return their table hint unchanged.
+ *
+ * @param code     Wrapper custom error code.
+ * @param context  What the caller was doing (see {@link ErrorContext}).
+ * @returns The hint, or undefined for an unknown code.
+ * @example
+ * ```ts
+ * getContextualErrorHint(19, { action: "withdraw", openLegs: 1 });
+ * // "Close your open positions first, then withdraw. ..."
+ * getContextualErrorHint(9, { action: "trade" });
+ * ```
+ */
+export function getContextualErrorHint(code: number, context?: ErrorContext): string | undefined {
+  if (code === 9 && context?.action === "trade") {
+    return "Trade refused: your max fee must cover the market's base fee plus the matcher's fee (and stay at or below the market maximum), the fill must meet your limit price, and an account can hold at most 4 positions. Sign the fee from computeTradeFeeBpsToSignV22() and retry, or close a position first.";
+  }
+  if (code === 19 && context?.action === "withdraw" && (context.openLegs ?? 0) > 0) {
+    return "Close your open positions first, then withdraw. Withdrawals from an account with open positions are refused.";
+  }
+  return PERCOLATOR_ERRORS[code]?.hint;
+}
+
+/**
+ * Parse a custom program error from transaction logs and attribute it to the program that failed.
+ *
+ * The FIRST `Program <id> failed: custom program error: 0x..` line is used (the innermost failing
+ * program of a CPI chain). The id on that line selects the error table: the wrapper's
+ * (PERCOLATOR_ERRORS), the stake program's (STAKE_ERRORS + STAKE_ERRORS_V5), the NFT program's
+ * (NFT_ERRORS), the matcher's (MATCHER_V2_ERRORS) or SPL Token's. Ids are the SDK's known
+ * deployments (devnet v2.2 / v1, mainnet) plus `opts.programIds`. A program the SDK does not know,
+ * or a log line without an id, falls back to the wrapper table (the legacy behaviour) and is
+ * reported as `program: "unknown"`.
+ *
+ * @param logs  Array of transaction log strings from the RPC response.
+ * @param opts  Extra program ids and caller context (see {@link ParseErrorOptions}).
+ * @returns Parsed error with code, name, hint and program — or null if none is found.
+ *
+ * @example
+ * ```ts
+ * const err = parseErrorFromLogs(sim.value.logs ?? [], { context: { action: "withdraw", openLegs: 1 } });
+ * if (err) console.error(`${err.program} ${err.name}: ${err.hint}`);
+ * ```
+ */
+export function parseErrorFromLogs(logs: string[], opts?: ParseErrorOptions): ParsedProgramError | null {
   if (!Array.isArray(logs)) {
     return null;
   }
@@ -676,6 +798,8 @@ export function parseErrorFromLogs(logs: string[]): {
     `custom program error: 0x([0-9a-fA-F]{1,${CUSTOM_ERROR_HEX_MAX_LEN}})(?![0-9a-fA-F])`,
     "i",
   );
+  const programRe = /^Program ([1-9A-HJ-NP-Za-km-z]{32,44}) failed:/;
+  let known: Map<string, ErrorProgramKind> | undefined;
   for (const log of logs) {
     if (typeof log !== "string") {
       continue;
@@ -686,11 +810,18 @@ export function parseErrorFromLogs(logs: string[]): {
       if (!Number.isFinite(code) || code < 0 || code > 0xffff_ffff) {
         continue;
       }
-      const info = decodeError(code);
+      const programId = log.match(programRe)?.[1];
+      known ??= knownProgramIds(opts?.programIds);
+      const program: ErrorProgramKind = (programId !== undefined ? known.get(programId) : undefined) ?? "unknown";
+      const info = decodeForProgram(program, code);
+      const isWrapperTable = program === "wrapper" || program === "unknown";
+      const hint = isWrapperTable && opts?.context ? getContextualErrorHint(code, opts.context) : info?.hint;
       return {
         code,
         name: info?.name ?? `Unknown(${code})`,
-        hint: info?.hint,
+        hint,
+        program,
+        ...(programId !== undefined ? { programId } : {}),
       };
     }
   }

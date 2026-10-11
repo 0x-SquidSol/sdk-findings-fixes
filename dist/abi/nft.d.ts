@@ -26,7 +26,8 @@ import { PublicKey } from "@solana/web3.js";
  *
  * Same contract as `PROGRAM_ID` / `MATCHER_PROGRAM_ID` / `STAKE_PROGRAM_ID` (#308): a value in the allowlist is used; an
  * UNLISTED value is used only when the operator explicitly opts in with `PERCOLATOR_SDK_ALLOW_PROGRAM_OVERRIDE=1`
- * (a freshly deployed program, e.g. the v2.2 fresh devnet NFT `27LWmR72…`), with a warning. Without the opt-in an
+ * (a freshly deployed program), with a warning. The v2.2 fresh devnet NFT `27LWmR72…` is in the allowlist (Q-5), so
+ * setting it needs no opt-in. Without the opt-in an
  * unlisted value still fails closed (ambient env poisoning must not redirect NFT instructions). This used to throw
  * at import for EVERY unlisted value, opt-in or not, so a fresh-ID consumer could not set NFT_PROGRAM_ID at all.
  *

@@ -252,6 +252,11 @@ export declare function commitSlotForPendingTargetV5(pool: Pick<StakePoolV5, "pe
  */
 export declare const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>>;
 /**
+ * Stable Rust variant names of StakeError 0..32 (percolator-stake `src/error.rs` @ aebbff6), for
+ * attributing a stake failure by name. The user-facing text for these codes is `STAKE_ERRORS`.
+ */
+export declare const STAKE_ERROR_NAMES: Readonly<Record<number, string>>;
+/**
  * Decode a stake error code (0..45) for a v5 program. Codes 33..45 come from {@link STAKE_ERRORS_V5}; the
  * rest are looked up by the caller in `STAKE_ERRORS` (returned as `undefined` here).
  *

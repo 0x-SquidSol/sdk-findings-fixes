@@ -3,8 +3,9 @@
  * Percolator Insurance LP Staking program — instruction encoders, PDA derivation, and account specs.
  *
  * Program: percolator-stake (dcccrypto/percolator-stake)
- * Devnet (v2.1, SDK 9.0.0): A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE — the v2.1 fresh-ID
- *   set, see PROGRAM_IDS_V17.vault in `src/config/program-ids.ts`. The v1 / close-only
+ * Devnet (v2.2, SDK 9.0.0-candidate): 7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V — the v2.2
+ *   fresh devnet set, see PROGRAM_IDS_DEVNET_V22.vault in `src/config/program-ids.ts` (the v2.1 RC
+ *   id A6DVNubv… was never deployed). The v1 / close-only
  *   ETDLAdi… world's stake program VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w is exported as
  *   PROGRAM_IDS_DEVNET_V1.vault and stays accepted by the STAKE_PROGRAM_ID env allowlist.
  * Deployed mainnet: DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F (unverified — no confirmed
@@ -23,7 +24,7 @@
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
 export { TOKEN_2022_PROGRAM_ID };
-import { safeEnv, PROGRAM_IDS_DEVNET_V1 } from '../config/program-ids.js';
+import { safeEnv, PROGRAM_IDS_DEVNET_V1, PROGRAM_IDS_DEVNET_V22 } from '../config/program-ids.js';
 import { concatBytes } from '../abi/encode.js';
 import { STAKE_FLOOR_FLAGS_RESERVED_INDEX } from '../abi/stake-dead-lp.js';
 
@@ -34,8 +35,8 @@ import { STAKE_FLOOR_FLAGS_RESERVED_INDEX } from '../abi/stake-dead-lp.js';
 /**
  * Known stake program addresses per network.
  *
- * devnet (SDK 9.0.0): the v2.1 fresh-ID stake program `A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE`
- * (= PROGRAM_IDS_V17.vault; pinned as STAKE_PROGRAM_ID by the v2.1 wrapper). The previous
+ * devnet (SDK 9.0.0-candidate): the v2.2 fresh devnet stake program `7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V`
+ * (= PROGRAM_IDS_DEVNET_V22.vault; pinned as STAKE_PROGRAM_ID by the v2.2 wrapper 6kpg2wi7…). The previous
  * default `VmpVUArR…` belongs to the v1 / close-only ETDLAdi… world — see PROGRAM_IDS_DEVNET_V1.
  * The history below is kept as a record.
  *
@@ -61,12 +62,12 @@ import { STAKE_FLOOR_FLAGS_RESERVED_INDEX } from '../abi/stake-dead-lp.js';
  * a real, executing mainnet program rather than failing safe.
  */
 export const STAKE_PROGRAM_IDS = {
-  devnet: 'A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE',
+  devnet: PROGRAM_IDS_DEVNET_V22.vault, // 7JrgAUHi… — v2.2 fresh devnet stake (v5); see program-ids.ts
   mainnet: 'DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F',
 } as const;
 Object.freeze(STAKE_PROGRAM_IDS);
 
-/** Allowlist of legitimate stake program addresses (devnet v2.1 + devnet v1 close-only + mainnet). */
+/** Allowlist of legitimate stake program addresses (devnet v2.2 + devnet v1 close-only + mainnet). */
 const KNOWN_STAKE_PROGRAM_IDS = new Set<string>([
   ...Object.values(STAKE_PROGRAM_IDS),
   PROGRAM_IDS_DEVNET_V1.vault, // v1 / close-only devnet stake program (still live)

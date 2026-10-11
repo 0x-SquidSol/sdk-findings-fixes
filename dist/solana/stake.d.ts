@@ -3,8 +3,9 @@
  * Percolator Insurance LP Staking program — instruction encoders, PDA derivation, and account specs.
  *
  * Program: percolator-stake (dcccrypto/percolator-stake)
- * Devnet (v2.1, SDK 9.0.0): A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE — the v2.1 fresh-ID
- *   set, see PROGRAM_IDS_V17.vault in `src/config/program-ids.ts`. The v1 / close-only
+ * Devnet (v2.2, SDK 9.0.0-candidate): 7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V — the v2.2
+ *   fresh devnet set, see PROGRAM_IDS_DEVNET_V22.vault in `src/config/program-ids.ts` (the v2.1 RC
+ *   id A6DVNubv… was never deployed). The v1 / close-only
  *   ETDLAdi… world's stake program VmpVUArRnVkrjaPXQ2qaqCQa3ZrZFgsz7rjeALitF5w is exported as
  *   PROGRAM_IDS_DEVNET_V1.vault and stays accepted by the STAKE_PROGRAM_ID env allowlist.
  * Deployed mainnet: DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F (unverified — no confirmed
@@ -25,8 +26,8 @@ export { TOKEN_2022_PROGRAM_ID };
 /**
  * Known stake program addresses per network.
  *
- * devnet (SDK 9.0.0): the v2.1 fresh-ID stake program `A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE`
- * (= PROGRAM_IDS_V17.vault; pinned as STAKE_PROGRAM_ID by the v2.1 wrapper). The previous
+ * devnet (SDK 9.0.0-candidate): the v2.2 fresh devnet stake program `7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V`
+ * (= PROGRAM_IDS_DEVNET_V22.vault; pinned as STAKE_PROGRAM_ID by the v2.2 wrapper 6kpg2wi7…). The previous
  * default `VmpVUArR…` belongs to the v1 / close-only ETDLAdi… world — see PROGRAM_IDS_DEVNET_V1.
  * The history below is kept as a record.
  *
@@ -52,7 +53,7 @@ export { TOKEN_2022_PROGRAM_ID };
  * a real, executing mainnet program rather than failing safe.
  */
 export declare const STAKE_PROGRAM_IDS: {
-    readonly devnet: "A6DVNubvzMMETQinK6bipekkaTTrkUu2RMw2kBoJrdkE";
+    readonly devnet: "7JrgAUHi4PxaRv5JKHoGAxodDFbozYexpERei66Xgq4V";
     readonly mainnet: "DC5fovFQD5SZYsetwvEqd4Wi4PFY1Yfnc669VMe6oa7F";
 };
 /**

@@ -57,6 +57,7 @@ export default defineConfig({
       "test/v22-lp-share.test.ts",
       "test/stake-dead-lp.test.ts",
       "test/nft-program-env.test.ts",
+      "test/v22-qa-fixes.test.ts",
       "test/dist-fresh.test.ts",
     ],
   },

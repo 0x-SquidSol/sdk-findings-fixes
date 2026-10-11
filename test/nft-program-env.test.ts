@@ -1,14 +1,15 @@
 /**
  * K-5 (2026-10-10): NFT_PROGRAM_ID env resolution follows the #308 opt-in contract instead of throwing at import for
- * every unlisted value. A fresh-ID consumer (the v2.2 fresh devnet NFT 27LWmR72...) sets
- * PERCOLATOR_SDK_ALLOW_PROGRAM_OVERRIDE=1 and can now import the SDK with NFT_PROGRAM_ID set; without the opt-in an
- * unlisted value still fails closed.
+ * every unlisted value. A fresh-ID consumer sets PERCOLATOR_SDK_ALLOW_PROGRAM_OVERRIDE=1 and can now import the SDK
+ * with NFT_PROGRAM_ID set; without the opt-in an unlisted value still fails closed.
+ * Q-5 (2026-10-11): the v2.2 fresh devnet NFT 27LWmR72... is now the allowlisted DEFAULT, so the "unlisted fresh id"
+ * here is the never-deployed v2.1 RC NFT id DWUNq2iY... (removed from the allowlist).
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveNftProgramOverride } from "../src/abi/nft.js";
 import { PROGRAM_IDS_V17 } from "../src/config/program-ids.js";
 
-const FRESH_NFT = "27LWmR72Ru1NCkbN2xgxB7BgYcTUrU7qeEJoV3D8sZh1";
+const FRESH_NFT = "DWUNq2iYh6Sdgdv3qv7aWJNJGhoK25FqyQrqDUrDD9zs"; // unlisted (never-deployed v2.1 RC id)
 const env = (o: Record<string, string>) => (k: string) => o[k];
 
 describe("resolveNftProgramOverride (pure)", () => {

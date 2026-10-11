@@ -430,6 +430,22 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**
+ * Stable Rust variant names of StakeError 0..32 (percolator-stake `src/error.rs` @ aebbff6), for
+ * attributing a stake failure by name. The user-facing text for these codes is `STAKE_ERRORS`.
+ */
+export const STAKE_ERROR_NAMES: Readonly<Record<number, string>> = Object.freeze({
+  0: "AlreadyInitialized", 1: "NotInitialized", 2: "Unauthorized", 3: "CooldownNotElapsed",
+  4: "InsufficientLpTokens", 5: "ZeroAmount", 6: "Overflow", 7: "InvalidMint", 8: "MarketResolved",
+  9: "DepositCapExceeded", 10: "InvalidPda", 11: "DeprecatedAdminAlreadyTransferred",
+  12: "DeprecatedAdminNotTransferred", 13: "InsufficientVaultBalance", 14: "InvalidPercolatorProgram",
+  15: "CpiFailed", 16: "InvalidAccount", 17: "InvalidPoolMode", 18: "WithdrawalBelowHwmFloor",
+  19: "TrancheNotEnabled", 20: "JuniorBalanceInsufficient", 21: "WrongTranche", 22: "ZeroSharesMinted",
+  23: "NoPendingAdmin", 24: "InsuranceLossOutstanding", 25: "CooldownIncreaseRequiresTimelock",
+  26: "TimelockNotElapsed", 27: "NoPendingCooldownProposal", 28: "DepositBelowMinimumLiquidity",
+  29: "NoRealLpHolders", 30: "MarketNotTerminal", 31: "NothingToRecover", 32: "UnsupportedWrapperLayout",
+}) as Readonly<Record<number, string>>;
+
+/**
  * Decode a stake error code (0..45) for a v5 program. Codes 33..45 come from {@link STAKE_ERRORS_V5}; the
  * rest are looked up by the caller in `STAKE_ERRORS` (returned as `undefined` here).
  *
