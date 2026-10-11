@@ -653,3 +653,67 @@ describe("Type exports", () => {
     expect(result.healthy).toBe(true);
   });
 });
+
+// ============================================================================
+// #350: redactUrl strips credentials
+// ============================================================================
+
+describe("#350 redactUrl", () => {
+  const r = _internal.redactUrl;
+
+  it("removes userinfo username and password", () => {
+    const out = r("https://alice:hunter2@rpc.example.com/");
+    expect(out).not.toContain("alice");
+    expect(out).not.toContain("hunter2");
+    expect(out).toContain("rpc.example.com");
+  });
+
+  it("removes a username-only userinfo (token as username)", () => {
+    const out = r("https://sk_live_secrettoken@rpc.example.com/");
+    expect(out).not.toContain("sk_live_secrettoken");
+  });
+
+  it("redacts api-key style query parameters", () => {
+    const out = r("https://mainnet.helius-rpc.com/?api-key=abc123&foo=bar");
+    expect(out).not.toContain("abc123");
+    expect(out).toContain("api-key=***");
+    expect(out).toContain("foo=bar");
+  });
+
+  it("redacts opaque path-embedded keys (Alchemy / QuickNode style)", () => {
+    expect(r("https://solana-mainnet.g.alchemy.com/v2/ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")).toBe(
+      "https://solana-mainnet.g.alchemy.com/v2/***",
+    );
+    const qn = r("https://x.quiknode.pro/0123456789abcdef0123456789abcdef01234567/");
+    expect(qn).not.toContain("0123456789abcdef");
+  });
+
+  it("drops the fragment", () => {
+    expect(r("https://rpc.example.com/#secretfragmentvalue1234567890")).not.toContain("secretfragment");
+  });
+
+  it("returns a fixed placeholder, never the raw string, when unparseable", () => {
+    const raw = "user:pass@not a url/with-secret-0123456789abcdef";
+    const out = r(raw);
+    expect(out).toBe("[unparseable-url]");
+    expect(out).not.toContain("pass");
+    expect(out).not.toContain("secret");
+  });
+
+  it("endpointLabel does not echo an unparseable URL", () => {
+    expect(_internal.endpointLabel({ url: "user:pass@not a url/secret-0123456789" })).toBe("endpoint");
+  });
+
+  it("status() urls never contain credentials", () => {
+    const pool = new RpcPool({
+      endpoints: [
+        { url: "https://bob:pw123@rpc1.example.com/?token=tok" },
+      ],
+      verbose: false,
+    });
+    const blob = JSON.stringify(pool.status());
+    expect(blob).not.toContain("bob");
+    expect(blob).not.toContain("pw123");
+    expect(blob).toContain("token=***");
+  });
+});
