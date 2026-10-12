@@ -2817,6 +2817,15 @@ function stakeHasRealLpHolders(pool) {
 }
 
 // src/solana/stake.ts
+function assertClassicTokenProgram(tokenProgramId) {
+  if (!tokenProgramId.equals(TOKEN_PROGRAM_ID2)) {
+    const what = tokenProgramId.equals(TOKEN_2022_PROGRAM_ID) ? "Token-2022 is not supported by the stake program" : "unsupported token program";
+    throw new Error(
+      `stake: ${what} (got ${tokenProgramId.toBase58()}); the stake program accepts only the classic SPL Token program ${TOKEN_PROGRAM_ID2.toBase58()}`
+    );
+  }
+  return tokenProgramId;
+}
 var STAKE_PROGRAM_IDS = {
   devnet: PROGRAM_IDS_DEVNET_V22.vault,
   // 7JrgAUHi… — v2.2 fresh devnet stake (v5); see program-ids.ts
@@ -3448,7 +3457,7 @@ function recoverFlushedInsuranceAccounts(a) {
     { pubkey: a.wrapperMarket, isSigner: false, isWritable: true },
     { pubkey: a.wrapperVault, isSigner: false, isWritable: true },
     { pubkey: a.wrapperVaultAuth, isSigner: false, isWritable: false },
-    { pubkey: a.tokenProgram, isSigner: false, isWritable: false },
+    { pubkey: assertClassicTokenProgram(a.tokenProgram), isSigner: false, isWritable: false },
     { pubkey: a.percolatorProgram, isSigner: false, isWritable: false }
   ];
 }
@@ -3671,6 +3680,7 @@ function decodeDepositPda(data) {
   };
 }
 function initPoolAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
+  assertClassicTokenProgram(tokenProgramId);
   return [
     { pubkey: a.admin, isSigner: true, isWritable: true },
     { pubkey: a.slab, isSigner: false, isWritable: true },
@@ -3687,6 +3697,7 @@ function initPoolAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
   ];
 }
 function depositAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
+  assertClassicTokenProgram(tokenProgramId);
   return [
     { pubkey: a.user, isSigner: true, isWritable: false },
     { pubkey: a.pool, isSigner: false, isWritable: true },
@@ -3706,6 +3717,7 @@ function depositJuniorAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
   return depositAccounts(a, tokenProgramId);
 }
 function withdrawAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
+  assertClassicTokenProgram(tokenProgramId);
   return [
     { pubkey: a.user, isSigner: true, isWritable: false },
     { pubkey: a.pool, isSigner: false, isWritable: true },
@@ -3730,6 +3742,7 @@ function accrueFeesAccounts(a) {
   ];
 }
 function flushToInsuranceAccounts(a, tokenProgramId = TOKEN_PROGRAM_ID2) {
+  assertClassicTokenProgram(tokenProgramId);
   return [
     { pubkey: a.caller, isSigner: true, isWritable: false },
     { pubkey: a.pool, isSigner: false, isWritable: true },
@@ -3756,7 +3769,7 @@ function recoverTerminalInsuranceAccounts(a) {
     { pubkey: a.market, isSigner: false, isWritable: true },
     { pubkey: a.wrapperVault, isSigner: false, isWritable: true },
     { pubkey: a.wrapperVaultAuthority, isSigner: false, isWritable: false },
-    { pubkey: a.tokenProgram ?? TOKEN_PROGRAM_ID2, isSigner: false, isWritable: false },
+    { pubkey: assertClassicTokenProgram(a.tokenProgram ?? TOKEN_PROGRAM_ID2), isSigner: false, isWritable: false },
     { pubkey: a.wrapperProgram, isSigner: false, isWritable: false },
     ...a.stray ? [{ pubkey: a.stray, isSigner: false, isWritable: true }] : []
   ];
@@ -3769,7 +3782,7 @@ function adminCloseSlabAccounts(a) {
     { pubkey: a.wrapperVault, isSigner: false, isWritable: true },
     { pubkey: a.wrapperVaultAuthority, isSigner: false, isWritable: false },
     { pubkey: a.poolDestToken, isSigner: false, isWritable: true },
-    { pubkey: a.tokenProgram ?? TOKEN_PROGRAM_ID2, isSigner: false, isWritable: false },
+    { pubkey: assertClassicTokenProgram(a.tokenProgram ?? TOKEN_PROGRAM_ID2), isSigner: false, isWritable: false },
     { pubkey: a.collateralMint, isSigner: false, isWritable: true },
     { pubkey: a.poolVault, isSigner: false, isWritable: true },
     { pubkey: a.wrapperProgram, isSigner: false, isWritable: false }
@@ -12728,9 +12741,9 @@ function normalizeEndpoint(ep) {
 function endpointLabel(ep) {
   if (ep.label) return ep.label;
   try {
-    return new URL(ep.url).hostname;
+    return new URL(ep.url).hostname || "endpoint";
   } catch {
-    return ep.url.slice(0, 40);
+    return "endpoint";
   }
 }
 function isRetryable(err, codes) {
@@ -12760,28 +12773,41 @@ function computeDelay(attempt, config) {
   const half = Math.floor(raw / 2);
   return half + Math.floor(Math.random() * (raw - half + 1));
 }
+var RpcTimeoutError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RpcTimeoutError";
+  }
+};
 function rejectAfter(ms, message) {
   let timer;
   const promise = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer = setTimeout(() => reject(new RpcTimeoutError(message)), ms);
   });
   return { promise, cancel: () => clearTimeout(timer) };
 }
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+var REDACTED_URL_PLACEHOLDER = "[unparseable-url]";
+var OPAQUE_TOKEN = /^[A-Za-z0-9_\-.~%]{20,}$/;
 function redactUrl(raw) {
   try {
     const u = new URL(raw);
+    if (!/^(https?|wss?):$/.test(u.protocol)) return REDACTED_URL_PLACEHOLDER;
+    u.username = "";
+    u.password = "";
+    u.hash = "";
     const sensitive = /^(api[-_]?key|access[-_]?token|auth[-_]?token|token|secret|key|password|bearer|credential|jwt)$/i;
-    for (const k of [...u.searchParams.keys()]) {
-      if (sensitive.test(k)) {
+    for (const [k, v] of [...u.searchParams.entries()]) {
+      if (sensitive.test(k) || OPAQUE_TOKEN.test(v)) {
         u.searchParams.set(k, "***");
       }
     }
+    u.pathname = u.pathname.split("/").map((seg) => OPAQUE_TOKEN.test(seg) ? "***" : seg).join("/");
     return u.toString();
   } catch {
-    return raw;
+    return REDACTED_URL_PLACEHOLDER;
   }
 }
 var RpcPool = class _RpcPool {
@@ -12832,17 +12858,26 @@ var RpcPool = class _RpcPool {
    * Execute a function against a pooled connection with automatic retry
    * and failover.
    *
-   * @param fn - Async function that receives a `Connection` and returns a result.
+   * Timeout semantics (#351): when the SDK's `requestTimeoutMs` fires, `fn` is not cancelled by
+   * the race itself, so it may still be running. The `signal` passed as `fn`'s second argument is
+   * aborted at that point (honour it where you can). With `opts.idempotent === true` the pool then
+   * fails over / retries; otherwise (default) it throws {@link RpcTimeoutError} immediately and
+   * never runs a second copy, so non-idempotent calls (sendTransaction) cannot double-execute.
+   * Errors thrown BY `fn` mean it has settled and keep the existing retry/failover behaviour.
+   *
+   * @param fn - Async function that receives a `Connection` and an `AbortSignal` (aborted on SDK timeout).
+   * @param opts - `{ idempotent: true }` to allow failover/retry after a timeout (reads only).
    * @returns The result of `fn`.
-   * @throws The last error if all retries and failovers are exhausted.
+   * @throws {RpcTimeoutError} on timeout of a non-idempotent call; otherwise the last error if all retries and failovers are exhausted.
    *
    * @example
    * ```ts
-   * const balance = await pool.call(c => c.getBalance(pubkey));
-   * const markets = await pool.call(c => discoverMarkets(c, programId, opts));
+   * const balance = await pool.call(c => c.getBalance(pubkey), { idempotent: true });
+   * const sig = await pool.call(c => c.sendRawTransaction(raw)); // non-idempotent: no timeout failover
    * ```
    */
-  async call(fn) {
+  async call(fn, opts = {}) {
+    const idempotent = opts.idempotent === true;
     const maxAttempts = this.retryConfig ? this.retryConfig.maxRetries + 1 : 1;
     let lastError;
     const triedEndpoints = /* @__PURE__ */ new Set();
@@ -12856,9 +12891,10 @@ var RpcPool = class _RpcPool {
       }
       const ep = this.endpoints[epIdx];
       const timeout = rejectAfter(this.requestTimeoutMs, `RPC request timed out after ${this.requestTimeoutMs}ms (${ep.label})`);
+      const ac = new AbortController();
       try {
         const result = await Promise.race([
-          fn(ep.connection),
+          fn(ep.connection, ac.signal),
           timeout.promise
         ]);
         ep.failures = 0;
@@ -12868,6 +12904,9 @@ var RpcPool = class _RpcPool {
       } catch (err) {
         lastError = err;
         ep.failures++;
+        if (err instanceof RpcTimeoutError) {
+          ac.abort(err);
+        }
         if (ep.failures >= _RpcPool.UNHEALTHY_THRESHOLD) {
           ep.healthy = false;
           ep.unhealthySince = ep.unhealthySince ?? Date.now();
@@ -12876,6 +12915,9 @@ var RpcPool = class _RpcPool {
               `[RpcPool] Endpoint ${ep.label} marked unhealthy after ${ep.failures} consecutive failures`
             );
           }
+        }
+        if (err instanceof RpcTimeoutError && !idempotent) {
+          throw err;
         }
         const retryable = this.retryConfig ? isRetryable(err, this.retryConfig.retryableStatusCodes) : false;
         if (!retryable) {
@@ -13071,7 +13113,8 @@ var _internal = {
   computeDelay,
   resolveRetryConfig,
   normalizeEndpoint,
-  endpointLabel
+  endpointLabel,
+  redactUrl
 };
 
 // src/solana/market-lifecycle.ts
@@ -15681,7 +15724,7 @@ function combineAbortSignals(signals) {
   return ctrl.signal;
 }
 var SUPPORTED_DEX_IDS = /* @__PURE__ */ new Set(["pumpswap", "raydium", "meteora"]);
-function parseDexScreenerPairs(json) {
+function parseDexScreenerPairs(json, mint) {
   if (!isRecord(json)) return [];
   const rawPairs = json.pairs;
   if (!Array.isArray(rawPairs)) return [];
@@ -15689,6 +15732,7 @@ function parseDexScreenerPairs(json) {
   for (const pair of rawPairs) {
     if (!isRecord(pair)) continue;
     if (pair.chainId !== "solana") continue;
+    if (!isRecord(pair.baseToken) || pair.baseToken.address !== mint) continue;
     const dexId = String(pair.dexId || "").toLowerCase();
     if (!SUPPORTED_DEX_IDS.has(dexId)) continue;
     let liquidity = 0;
@@ -15811,7 +15855,7 @@ async function fetchDexSources(mint, signal) {
     );
     if (!resp.ok) return [];
     const json = await resp.json();
-    return parseDexScreenerPairs(json);
+    return parseDexScreenerPairs(json, mint);
   } catch {
     return [];
   }
@@ -16364,6 +16408,7 @@ export {
   RESTORE_IM_BUFFER_BPS_V22,
   R_GAP_MIN_LIQUIDATION_SLOTS,
   RpcPool,
+  RpcTimeoutError,
   SEEDS_V22,
   SLAB_MAGIC,
   SLAB_TIERS,
@@ -16499,6 +16544,7 @@ export {
   assertBandBlockV22,
   assertBatchLegsV22,
   assertBondConfigV22,
+  assertClassicTokenProgram,
   assertGrowthBatchLegs,
   assertRentBlockV22,
   assertUtilBonusZeroV22,
