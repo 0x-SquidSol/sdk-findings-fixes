@@ -21,6 +21,7 @@ import {
   encodeResolveStalePermissionlessV22,
   buildResolveStalePermissionlessIxV22,
   staleResolveStatusV22,
+  staleResolveErrorContextV22,
   ACCOUNTS_RESOLVE_STALE_PERMISSIONLESS_V22,
   IX_TAG,
   PROGRAM_IDS,
@@ -274,14 +275,61 @@ describe("Q-5 tag 39 ResolveStalePermissionless (wrapper RC 6c078a0e)", () => {
 describe("P-4 error 104 copy", () => {
   it("keeps the on-chain name and says the close would beat the market price", () => {
     expect(PERCOLATOR_ERRORS[104]!.name).toBe("PriceBandPinned");
-    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/pinned at the band edge/);
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/hasn't caught up yet/);
     expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/better price than the market/);
-    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/once the price catches up/);
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/Closing in the other direction/);
   });
   it("negative control: no longer promises closing resumes in a few seconds", () => {
     expect(PERCOLATOR_ERRORS[104]!.hint).not.toMatch(/closing resumes in a few seconds/);
     const p = parseErrorFromLogs([`Program ${FX.programs.wrapper} failed: custom program error: 0x68`])!;
     expect(p).toMatchObject({ program: "wrapper", code: 104, name: "PriceBandPinned" });
     expect(p.hint).toMatch(/better price than the market/);
+  });
+});
+
+// ============================================================================
+// Minor (QA 2026-10-11): matcher unknown code, 104 wording, 27 on tag 39
+// ============================================================================
+describe("Minor QA items", () => {
+  it("104 copy is true when the price is only lagging: it does not say pinned", () => {
+    expect(PERCOLATOR_ERRORS[104]!.hint).not.toMatch(/pinned/i);
+    expect(PERCOLATOR_ERRORS[104]!.hint).toMatch(/Try again shortly/);
+  });
+
+  it("a code the matcher does not define (9) is explained, never given the wrapper's name", () => {
+    const p = parseErrorFromLogs([`Program ${FX.programs.matcher} failed: custom program error: 0x9`])!;
+    expect(p).toMatchObject({ program: "matcher", code: 9, name: "Unknown(9)" });
+    expect(p.hint).toMatch(/does not define \(its own codes are 8001-8005\)/);
+    expect(p.name).not.toBe(PERCOLATOR_ERRORS[9]!.name);
+  });
+  it("negative control: a defined matcher code keeps its own hint, and the wrapper's 9 is unchanged", () => {
+    expect(parseErrorFromLogs([`Program ${FX.programs.matcher} failed: custom program error: 0x1f42`])!.hint).toMatch(/^Matcher refused/);
+    expect(parseErrorFromLogs([`Program ${FX.programs.wrapper} failed: custom program error: 0x9`])!.name).toBe("InvalidInstruction");
+    expect(parseErrorFromLogs(["Program 9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin failed: custom program error: 0xff"])!.hint).toBeUndefined();
+  });
+
+  const pengu = FX.resolveTag39.find((r) => r.label!.startsWith("tag39 PENGU"))!;
+  it("27 on tag 39 (real devnet PENGU refusal) says how many slots are left", () => {
+    const p = parseErrorFromLogs(pengu.logs, { context: { action: "resolve", staleSlotsRemaining: 17_272n } })!;
+    expect(p).toMatchObject({ program: "wrapper", code: 27, name: "OracleStale" });
+    expect(p.hint).toBe("This market's price has not been stale for long enough to resolve yet: 17,272 more slots (about 116 min) without a price update are needed. A new price update restarts the wait.");
+  });
+  it("staleResolveStatusV22 gives slotsRemaining and the context helper carries it", () => {
+    const v0 = staleResolveStatusV22(acct("solV0Market"), BigInt(FX.accounts.capturedAtSlot));
+    expect(v0.slotsRemaining).toBe(0n);
+    const early = staleResolveStatusV22(acct("solV0Market"), v0.maturesAtSlot! - 100n);
+    expect(early).toMatchObject({ refusalCode: 27, slotsRemaining: 100n });
+    expect(staleResolveErrorContextV22(early)).toEqual({ action: "resolve", staleSlotsRemaining: 100n });
+    expect(getContextualErrorHint(27, staleResolveErrorContextV22(early))).toMatch(/100 more slots \(under a minute\)/);
+  });
+  it("disabled window, unknown remaining, and already-resolved (21) wording", () => {
+    expect(getContextualErrorHint(27, { action: "resolve", staleSlotsRemaining: null })).toMatch(/turned off/);
+    expect(getContextualErrorHint(27, { action: "resolve" })).toMatch(/not been stale for long enough/);
+    expect(getContextualErrorHint(21, { action: "resolve" })).toBe("This market is already resolved.");
+  });
+  it("negative control: without the resolve context 27 keeps the generic stale-price hint", () => {
+    expect(parseErrorFromLogs(pengu.logs)!.hint).toBe(PERCOLATOR_ERRORS[27]!.hint);
+    expect(getContextualErrorHint(27, { action: "trade" })).toBe(PERCOLATOR_ERRORS[27]!.hint);
+    expect(getContextualErrorHint(21, { action: "trade" })).toBe(PERCOLATOR_ERRORS[21]!.hint);
   });
 });

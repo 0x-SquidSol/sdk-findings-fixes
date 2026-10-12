@@ -4931,7 +4931,9 @@ var PERCOLATOR_ERRORS = {
     // while the band is pinned/lagged (`reject_band_favourable_close_view`, wrapper RC 6c078a0e): a long reducing while
     // target < pinned price, a short reducing while target > pinned price. The opposite close is allowed (the closer
     // takes the worse price). 104 is also an accrual refusal (price outside the band / duration pin).
-    hint: "The price is pinned at the band edge; this close would get a better price than the market. Try again once the price catches up. (Closing in the other direction, at the worse price, is allowed.)"
+    // Minor (QA 2026-10-11): the favourable-close refusal applies whenever the price is LAGGING its target
+    // (`asset_price_lagged_view`), not only when it is pinned at the band edge, so the copy does not say "pinned".
+    hint: "The market price hasn't caught up yet, so a close on this side would get a better price than the market. Try again shortly. (Closing in the other direction, at the worse price, is allowed.)"
   },
   105: {
     name: "PriceBandConfigInvalid",
@@ -5069,6 +5071,11 @@ function decodeForProgram(kind, code) {
       return PERCOLATOR_ERRORS[code];
   }
 }
+function unlistedCodeHint(program, code) {
+  if (program === "matcher") return `The matcher program returned code ${code}, which it does not define (its own codes are 8001-8005). If this was a trade, check the wrapper's error on the same transaction; otherwise the matcher build may not match this SDK.`;
+  if (program === "stake" || program === "nft") return `The ${program} program returned code ${code}, which is not in this SDK's ${program} error table; the program build may be newer than this SDK.`;
+  return void 0;
+}
 function getContextualErrorHint(code, context) {
   if (code === 9 && context?.action === "trade") {
     return "Trade refused: your max fee must cover the market's base fee plus the matcher's fee (and stay at or below the market maximum), the fill must meet your limit price, and an account can hold at most 4 positions. Sign the fee from computeTradeFeeBpsToSignV22() and retry, or close a position first.";
@@ -5076,6 +5083,18 @@ function getContextualErrorHint(code, context) {
   if (code === 19 && context?.action === "withdraw" && (context.openLegs ?? 0) > 0) {
     return "Close your open positions first, then withdraw. Withdrawals from an account with open positions are refused.";
   }
+  if (code === 27 && context?.action === "resolve") {
+    const rem = context.staleSlotsRemaining;
+    if (rem === null) return "This market cannot be resolved this way: permissionless resolve is turned off for it.";
+    if (rem !== void 0 && BigInt(rem) > 0n) {
+      const n = BigInt(rem);
+      const mins = Number(n) / 150;
+      const approx = mins >= 1 ? `about ${Math.ceil(mins)} min` : "under a minute";
+      return `This market's price has not been stale for long enough to resolve yet: ${n.toLocaleString("en-US")} more slots (${approx}) without a price update are needed. A new price update restarts the wait.`;
+    }
+    return "This market's price has not been stale for long enough to resolve yet. A new price update restarts the wait; try again later.";
+  }
+  if (code === 21 && context?.action === "resolve") return "This market is already resolved.";
   return PERCOLATOR_ERRORS[code]?.hint;
 }
 function parseErrorFromLogs(logs, opts) {
@@ -5107,7 +5126,7 @@ function parseErrorFromLogs(logs, opts) {
       return {
         code,
         name: info?.name ?? `Unknown(${code})`,
-        hint,
+        hint: hint ?? unlistedCodeHint(program, code),
         program,
         ...programId !== void 0 ? { programId } : {}
       };
@@ -11061,7 +11080,11 @@ function staleResolveStatusV22(marketData, nowSlot) {
   if (mode !== 0) refusalCode = 21;
   else if (nowSlot < currentSlot) refusalCode = 19;
   else if (!matured) refusalCode = 27;
-  return { mode, staleSlots, lastGoodOracleSlot: lastGood, maturesAtSlot, canResolve: refusalCode === null, refusalCode };
+  const slotsRemaining = maturesAtSlot === null ? null : maturesAtSlot > nowSlot ? maturesAtSlot - nowSlot : 0n;
+  return { mode, staleSlots, lastGoodOracleSlot: lastGood, maturesAtSlot, slotsRemaining, canResolve: refusalCode === null, refusalCode };
+}
+function staleResolveErrorContextV22(status) {
+  return { action: "resolve", staleSlotsRemaining: status.slotsRemaining };
 }
 
 // src/solana/pda.ts
@@ -17038,6 +17061,7 @@ export {
   stakeRealLpSupply,
   stakeRealSeniorLp,
   stakeSeniorTotalLp,
+  staleResolveErrorContextV22,
   staleResolveStatusV22,
   stripLighthouseFromTransaction,
   stripLighthouseInstructions,
