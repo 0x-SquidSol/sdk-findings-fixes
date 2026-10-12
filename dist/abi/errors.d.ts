@@ -62,8 +62,14 @@ export type ErrorProgramIds = Partial<Record<Exclude<ErrorProgramKind, "token" |
  * `openLegs` is the number of open positions on the account (e.g. from parsePortfolioV17).
  */
 export interface ErrorContext {
-    action?: "trade" | "withdraw" | "deposit" | "other";
+    action?: "trade" | "withdraw" | "deposit" | "resolve" | "other";
     openLegs?: number;
+    /**
+     * For `action: "resolve"` (tag 39): slots still to wait before the market can be resolved, or null when
+     * permissionless resolve is disabled on the market. Take it from `staleResolveStatusV22(...).slotsRemaining`
+     * (or pass `staleResolveErrorContextV22(status)` as the whole context).
+     */
+    staleSlotsRemaining?: bigint | number | null;
 }
 /** Options for {@link parseErrorFromLogs}. */
 export interface ParseErrorOptions {

@@ -21,6 +21,7 @@ import { concatBytes, encU8, encU64 } from "./encode.js";
 import { IX_TAG } from "./instructions.js";
 import { resolveMarketGeometry } from "./layout.js";
 import { parseWrapperConfigV17 } from "../solana/slab.js";
+import type { ErrorContext } from "./errors.js";
 
 /** Account list of tag 39 (one account). */
 export const ACCOUNTS_RESOLVE_STALE_PERMISSIONLESS_V22 = Object.freeze([
@@ -81,6 +82,8 @@ export interface StaleResolveStatusV22 {
   lastGoodOracleSlot: bigint;
   /** Slot at which the market matures, or null when disabled. */
   maturesAtSlot: bigint | null;
+  /** Slots still to wait until maturity at `nowSlot` (0 when matured), or null when disabled. */
+  slotsRemaining: bigint | null;
   /** True when tag 39 would resolve the market at `nowSlot`. */
   canResolve: boolean;
   /** The refusal code tag 39 would return (21 resolved, 19 slot behind, 27 not matured), or null. */
@@ -113,5 +116,23 @@ export function staleResolveStatusV22(marketData: Uint8Array, nowSlot: bigint): 
   if (mode !== 0) refusalCode = 21;
   else if (nowSlot < currentSlot) refusalCode = 19;
   else if (!matured) refusalCode = 27;
-  return { mode, staleSlots, lastGoodOracleSlot: lastGood, maturesAtSlot, canResolve: refusalCode === null, refusalCode };
+  const slotsRemaining = maturesAtSlot === null ? null : maturesAtSlot > nowSlot ? maturesAtSlot - nowSlot : 0n;
+  return { mode, staleSlots, lastGoodOracleSlot: lastGood, maturesAtSlot, slotsRemaining, canResolve: refusalCode === null, refusalCode };
+}
+
+/**
+ * The error context for a failed tag 39, so `parseErrorFromLogs` / `getContextualErrorHint` can say how long
+ * is left instead of the generic stale-price text for 27.
+ *
+ * @param status  From {@link staleResolveStatusV22}.
+ * @returns `{ action: "resolve", staleSlotsRemaining }`.
+ * @example
+ * ```ts
+ * const st = staleResolveStatusV22(info.data, slot);
+ * const err = parseErrorFromLogs(sim.value.logs ?? [], { context: staleResolveErrorContextV22(st) });
+ * // 27 -> "This market's price has not been stale for long enough to resolve yet: 17,271 more slots ..."
+ * ```
+ */
+export function staleResolveErrorContextV22(status: Pick<StaleResolveStatusV22, "slotsRemaining">): ErrorContext {
+  return { action: "resolve", staleSlotsRemaining: status.slotsRemaining };
 }

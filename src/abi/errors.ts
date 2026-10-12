@@ -549,7 +549,9 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
     // while the band is pinned/lagged (`reject_band_favourable_close_view`, wrapper RC 6c078a0e): a long reducing while
     // target < pinned price, a short reducing while target > pinned price. The opposite close is allowed (the closer
     // takes the worse price). 104 is also an accrual refusal (price outside the band / duration pin).
-    hint: "The price is pinned at the band edge; this close would get a better price than the market. Try again once the price catches up. (Closing in the other direction, at the worse price, is allowed.)",
+    // Minor (QA 2026-10-11): the favourable-close refusal applies whenever the price is LAGGING its target
+    // (`asset_price_lagged_view`), not only when it is pinned at the band edge, so the copy does not say "pinned".
+    hint: "The market price hasn't caught up yet, so a close on this side would get a better price than the market. Try again shortly. (Closing in the other direction, at the worse price, is allowed.)",
   },
   105: {
     name: "PriceBandConfigInvalid",
@@ -680,8 +682,14 @@ export type ErrorProgramIds = Partial<Record<Exclude<ErrorProgramKind, "token" |
  * `openLegs` is the number of open positions on the account (e.g. from parsePortfolioV17).
  */
 export interface ErrorContext {
-  action?: "trade" | "withdraw" | "deposit" | "other";
+  action?: "trade" | "withdraw" | "deposit" | "resolve" | "other";
   openLegs?: number;
+  /**
+   * For `action: "resolve"` (tag 39): slots still to wait before the market can be resolved, or null when
+   * permissionless resolve is disabled on the market. Take it from `staleResolveStatusV22(...).slotsRemaining`
+   * (or pass `staleResolveErrorContextV22(status)` as the whole context).
+   */
+  staleSlotsRemaining?: bigint | number | null;
 }
 
 /** Options for {@link parseErrorFromLogs}. */
@@ -750,6 +758,17 @@ function decodeForProgram(kind: ErrorProgramKind, code: number): ErrorInfo | und
 }
 
 /**
+ * Hint for a code a known non-wrapper program does not define. The matcher (percolator-match 2b08537a) defines
+ * only Custom 8001..8005 and otherwise returns built-in errors, so e.g. "matcher 9" is not a matcher error: say so
+ * instead of returning a bare Unknown(9) (and never borrow the wrapper's name for it).
+ */
+function unlistedCodeHint(program: ErrorProgramKind, code: number): string | undefined {
+  if (program === "matcher") return `The matcher program returned code ${code}, which it does not define (its own codes are 8001-8005). If this was a trade, check the wrapper's error on the same transaction; otherwise the matcher build may not match this SDK.`;
+  if (program === "stake" || program === "nft") return `The ${program} program returned code ${code}, which is not in this SDK's ${program} error table; the program build may be newer than this SDK.`;
+  return undefined;
+}
+
+/**
  * A hint for a wrapper error code that takes the caller's context into account. Codes with one meaning
  * return their table hint unchanged.
  *
@@ -770,6 +789,18 @@ export function getContextualErrorHint(code: number, context?: ErrorContext): st
   if (code === 19 && context?.action === "withdraw" && (context.openLegs ?? 0) > 0) {
     return "Close your open positions first, then withdraw. Withdrawals from an account with open positions are refused.";
   }
+  if (code === 27 && context?.action === "resolve") {
+    const rem = context.staleSlotsRemaining;
+    if (rem === null) return "This market cannot be resolved this way: permissionless resolve is turned off for it.";
+    if (rem !== undefined && BigInt(rem) > 0n) {
+      const n = BigInt(rem);
+      const mins = Number(n) / 150; // ~2.5 slots/s
+      const approx = mins >= 1 ? `about ${Math.ceil(mins)} min` : "under a minute";
+      return `This market's price has not been stale for long enough to resolve yet: ${n.toLocaleString("en-US")} more slots (${approx}) without a price update are needed. A new price update restarts the wait.`;
+    }
+    return "This market's price has not been stale for long enough to resolve yet. A new price update restarts the wait; try again later.";
+  }
+  if (code === 21 && context?.action === "resolve") return "This market is already resolved.";
   return PERCOLATOR_ERRORS[code]?.hint;
 }
 
@@ -823,7 +854,7 @@ export function parseErrorFromLogs(logs: string[], opts?: ParseErrorOptions): Pa
       return {
         code,
         name: info?.name ?? `Unknown(${code})`,
-        hint,
+        hint: hint ?? unlistedCodeHint(program, code),
         program,
         ...(programId !== undefined ? { programId } : {}),
       };

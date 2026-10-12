@@ -17,6 +17,7 @@
  * A price push before resolution moves `last_good_oracle_slot` and un-matures the market.
  */
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
+import type { ErrorContext } from "./errors.js";
 /** Account list of tag 39 (one account). */
 export declare const ACCOUNTS_RESOLVE_STALE_PERMISSIONLESS_V22: readonly [Readonly<{
     name: "market";
@@ -61,6 +62,8 @@ export interface StaleResolveStatusV22 {
     lastGoodOracleSlot: bigint;
     /** Slot at which the market matures, or null when disabled. */
     maturesAtSlot: bigint | null;
+    /** Slots still to wait until maturity at `nowSlot` (0 when matured), or null when disabled. */
+    slotsRemaining: bigint | null;
     /** True when tag 39 would resolve the market at `nowSlot`. */
     canResolve: boolean;
     /** The refusal code tag 39 would return (21 resolved, 19 slot behind, 27 not matured), or null. */
@@ -79,3 +82,17 @@ export interface StaleResolveStatusV22 {
  * ```
  */
 export declare function staleResolveStatusV22(marketData: Uint8Array, nowSlot: bigint): StaleResolveStatusV22;
+/**
+ * The error context for a failed tag 39, so `parseErrorFromLogs` / `getContextualErrorHint` can say how long
+ * is left instead of the generic stale-price text for 27.
+ *
+ * @param status  From {@link staleResolveStatusV22}.
+ * @returns `{ action: "resolve", staleSlotsRemaining }`.
+ * @example
+ * ```ts
+ * const st = staleResolveStatusV22(info.data, slot);
+ * const err = parseErrorFromLogs(sim.value.logs ?? [], { context: staleResolveErrorContextV22(st) });
+ * // 27 -> "This market's price has not been stale for long enough to resolve yet: 17,271 more slots ..."
+ * ```
+ */
+export declare function staleResolveErrorContextV22(status: Pick<StaleResolveStatusV22, "slotsRemaining">): ErrorContext;
