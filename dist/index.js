@@ -1022,12 +1022,12 @@ async function derivePythPriceUpdateAccount(feedId, shardId = 0) {
   if (!Number.isInteger(shardId) || shardId < 0 || shardId > 65535) {
     throw new Error(`derivePythPriceUpdateAccount: shardId must be a u16, got ${shardId}`);
   }
-  const { PublicKey: PublicKey31 } = await import("@solana/web3.js");
+  const { PublicKey: PublicKey32 } = await import("@solana/web3.js");
   const shardBuf = new Uint8Array(2);
   new DataView(shardBuf.buffer).setUint16(0, shardId, true);
-  const [pda] = PublicKey31.findProgramAddressSync(
+  const [pda] = PublicKey32.findProgramAddressSync(
     [shardBuf, feedId],
-    new PublicKey31(PYTH_RECEIVER_PROGRAM_ID)
+    new PublicKey32(PYTH_RECEIVER_PROGRAM_ID)
   );
   return pda.toBase58();
 }
@@ -5079,6 +5079,9 @@ function unlistedCodeHint(program, code) {
 function getContextualErrorHint(code, context) {
   if (code === 9 && context?.action === "trade") {
     return "Trade refused: your max fee must cover the market's base fee plus the matcher's fee (and stay at or below the market maximum), the fill must meet your limit price, and an account can hold at most 4 positions. Sign the fee from computeTradeFeeBpsToSignV22() and retry, or close a position first.";
+  }
+  if (code === 19 && context?.action === "trade" && context.healthCheckStale === true) {
+    return "This account's health check is out of date for this market \u2014 the trade needs to refresh both sides first. Build it with buildMultiAssetTradeIxsV22 (refresh the market maker, then this account, then the market maker again, then trade).";
   }
   if (code === 19 && context?.action === "withdraw" && (context.openLegs ?? 0) > 0) {
     return "Close your open positions first, then withdraw. Withdrawals from an account with open positions are refused.";
@@ -15168,9 +15171,62 @@ function buildInitLpShareMetadataIxV22(a) {
   return new TransactionInstruction12({ programId: a.programId, keys, data: Buffer.from(encodeInitLpShareMetadataV22(ticker)) });
 }
 
+// src/solana/v22-multi-asset-trade.ts
+import { TransactionInstruction as TransactionInstruction13 } from "@solana/web3.js";
+var WRAPPER_PRE_CRANK_MIN_LEGS_V22 = WRAPPER_MAX_PORTFOLIO_ASSETS_V22 > 1 ? WRAPPER_MAX_PORTFOLIO_ASSETS_V22 - 1 : 1;
+var MULTI_ASSET_TRADE_COMPUTE_UNITS_V22 = 14e5;
+var MULTI_ASSET_TRADE_MAX_EXTRA_CRANKS_V22 = 4;
+function buildRefreshCrankIxV22(programId, market, cranker, portfolio, observations = []) {
+  return new TransactionInstruction13({
+    programId,
+    keys: buildAccountMetas(ACCOUNTS_PERMISSIONLESS_CRANK_BASE, { owner: cranker, market, portfolio }),
+    data: Buffer.from(encodePermissionlessCrank({ nowSlot: 0n, observations: observations.map((assetIndex) => ({ assetIndex, oracleAccounts: 0 })) }))
+  });
+}
+function assemble(base) {
+  const multi = base.path === "multiAsset";
+  const budgetIxs = multi ? computeBudgetPrelude(MULTI_ASSET_TRADE_COMPUTE_UNITS_V22) : [];
+  const crankIxs = base.cranks.map((c) => buildRefreshCrankIxV22(base.programId, base.market, base.cranker, c.portfolio, c.observations));
+  return { ...base, budgetIxs, instructions: [...budgetIxs, ...crankIxs, base.tradeIx], ...multi ? { computeUnitLimit: MULTI_ASSET_TRADE_COMPUTE_UNITS_V22 } : {} };
+}
+function buildMultiAssetTradeIxsV22(i) {
+  const g = resolveMarketGeometry(i.marketData, { parser: "buildMultiAssetTradeIxsV22", strictLength: false });
+  const marketSlots = new DataView(i.marketData.buffer, i.marketData.byteOffset, i.marketData.byteLength).getUint32(g.groupOff + g.layout.group.config + g.layout.group.maxMarketSlotsInConfig, true);
+  const takerActiveLegs = parsePortfolioV17(i.takerData).legs.filter((l) => l.active).length;
+  const lpActiveLegs = parsePortfolioV17(i.lpData).legs.filter((l) => l.active).length;
+  const needs = marketSlots > 1 && Math.max(takerActiveLegs, lpActiveLegs) >= WRAPPER_PRE_CRANK_MIN_LEGS_V22;
+  const path = i.forcePath ?? (needs ? "multiAsset" : "simple");
+  const observe = i.observeAssets ? [...i.observeAssets] : Array.from({ length: marketSlots }, (_, k) => k);
+  const cranks = path === "simple" ? [] : [
+    { role: "lpObserve", portfolio: i.lpPortfolio, observations: observe },
+    ...(i.stalePeers ?? []).filter((p) => !p.equals(i.takerPortfolio) && !p.equals(i.lpPortfolio)).map((p) => ({ role: "peer", portfolio: p, observations: [] })),
+    { role: "taker", portfolio: i.takerPortfolio, observations: [] },
+    { role: "lp", portfolio: i.lpPortfolio, observations: [] }
+  ];
+  return assemble({ path, programId: i.programId, market: i.market, cranker: i.cranker, takerPortfolio: i.takerPortfolio, lpPortfolio: i.lpPortfolio, cranks, tradeIx: i.tradeIx, marketSlots, takerActiveLegs, lpActiveLegs, extraCranks: 0 });
+}
+function refineMultiAssetTradePlanV22(plan, err) {
+  const ie = err?.InstructionError;
+  const inner = ie?.[1];
+  const code = typeof inner === "object" && inner !== null && typeof inner.Custom === "number" ? inner.Custom : null;
+  if (!ie) return { action: "fail", plan, code, reason: "not an instruction error" };
+  const at = ie[0] - plan.budgetIxs.length;
+  const base = { path: plan.path, programId: plan.programId, market: plan.market, cranker: plan.cranker, takerPortfolio: plan.takerPortfolio, lpPortfolio: plan.lpPortfolio, tradeIx: plan.tradeIx, marketSlots: plan.marketSlots, takerActiveLegs: plan.takerActiveLegs, lpActiveLegs: plan.lpActiveLegs };
+  if (code === 22 && at >= 0 && at < plan.cranks.length) {
+    if (at === 0 && plan.cranks[0].role === "lpObserve") return { action: "wait", plan, reason: "the market was already accrued this slot; retry next slot" };
+    const cranks = plan.cranks.filter((_, k) => k !== at);
+    return { action: "retry", plan: assemble({ ...base, cranks, extraCranks: plan.extraCranks }), reason: `crank ${at} (${plan.cranks[at].role}) is already current; dropped` };
+  }
+  if (code === 19 && at === plan.cranks.length && plan.path === "multiAsset" && plan.extraCranks < MULTI_ASSET_TRADE_MAX_EXTRA_CRANKS_V22) {
+    const extra = plan.extraCranks % 2 === 0 ? { role: "taker", portfolio: plan.takerPortfolio, observations: [] } : { role: "lp", portfolio: plan.lpPortfolio, observations: [] };
+    return { action: "retry", plan: assemble({ ...base, cranks: [...plan.cranks, extra], extraCranks: plan.extraCranks + 1 }), reason: `health check still out of date; appended a ${extra.role} refresh` };
+  }
+  return { action: "fail", plan, code, reason: code === null ? "refused" : `refused with ${code}` };
+}
+
 // src/runtime/lighthouse.ts
-import { PublicKey as PublicKey29, Transaction as Transaction3 } from "@solana/web3.js";
-var LIGHTHOUSE_PROGRAM_ID = new PublicKey29(
+import { PublicKey as PublicKey30, Transaction as Transaction3 } from "@solana/web3.js";
+var LIGHTHOUSE_PROGRAM_ID = new PublicKey30(
   "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95"
 );
 var LIGHTHOUSE_PROGRAM_ID_STR = "L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95";
@@ -15437,7 +15493,7 @@ function computeWarmupMaxPositionSize(initialMarginBps, totalCapital, currentSlo
 }
 
 // src/validation.ts
-import { PublicKey as PublicKey30 } from "@solana/web3.js";
+import { PublicKey as PublicKey31 } from "@solana/web3.js";
 var U16_MAX3 = 65535;
 var U64_MAX5 = BigInt("18446744073709551615");
 var I64_MIN = BigInt("-9223372036854775808");
@@ -15478,7 +15534,7 @@ function safeBigInt(val, caller) {
 }
 function validatePublicKey(value, field) {
   try {
-    return new PublicKey30(value);
+    return new PublicKey31(value);
   } catch {
     throw new ValidationError(
       field,
@@ -16255,6 +16311,8 @@ export {
   MPL_MAX_NAME_LEN_V22,
   MPL_MAX_SYMBOL_LEN_V22,
   MPL_MAX_URI_LEN_V22,
+  MULTI_ASSET_TRADE_COMPUTE_UNITS_V22,
+  MULTI_ASSET_TRADE_MAX_EXTRA_CRANKS_V22,
   NFT_ERRORS,
   NFT_IX_TAG,
   NFT_PROGRAM_ID,
@@ -16422,6 +16480,7 @@ export {
   WRAPPER_ACCOUNT_MAGIC,
   WRAPPER_BATCH_MAX_LEGS,
   WRAPPER_MAX_PORTFOLIO_ASSETS_V22,
+  WRAPPER_PRE_CRANK_MIN_LEGS_V22,
   WSOL_MINT,
   _internal,
   a4CapacityLockOkP2b,
@@ -16502,9 +16561,11 @@ export {
   buildLpVaultCrankFeesIxBoundV22,
   buildMatcherConfigureBackingFeeCapIx,
   buildMatcherConfigureSetParamsIx,
+  buildMultiAssetTradeIxsV22,
   buildNftAccountMetas,
   buildRebalanceReduceIx,
   buildRecoverTerminalInsuranceIx,
+  buildRefreshCrankIxV22,
   buildRequestRedeemLpSharesIxV22,
   buildRescueDepositIxV22,
   buildResolveStalePermissionlessIxV22,
@@ -17021,6 +17082,7 @@ export {
   recoverFlushedInsuranceAccounts,
   recoverTerminalInsuranceAccounts,
   redemptionDataSizesV22,
+  refineMultiAssetTradePlanV22,
   refreshWeightV22,
   registerStaticMarkets,
   rentPercentPerDayV22,

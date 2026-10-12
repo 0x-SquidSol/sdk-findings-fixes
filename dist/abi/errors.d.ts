@@ -70,6 +70,11 @@ export interface ErrorContext {
      * (or pass `staleResolveErrorContextV22(status)` as the whole context).
      */
     staleSlotsRemaining?: bigint | number | null;
+    /**
+     * For `action: "trade"`: the trade is on a multi-asset market with a portfolio at >= 3 legs, where 19 means a
+     * health certificate is not at the market's current epochs (Q-7; see buildMultiAssetTradeIxsV22).
+     */
+    healthCheckStale?: boolean;
 }
 /** Options for {@link parseErrorFromLogs}. */
 export interface ParseErrorOptions {

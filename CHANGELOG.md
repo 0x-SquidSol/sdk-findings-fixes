@@ -4,6 +4,7 @@
 - **Changed:** `parseErrorFromLogs(logs, opts?)` attributes the error to the failing program (`program`, `programId`) and uses that program's table: stake (`STAKE_ERRORS` + `STAKE_ERRORS_V5`, names in `STAKE_ERROR_NAMES`), nft (`NFT_ERRORS`), matcher (`MATCHER_V2_ERRORS`), SPL Token (`SPL_TOKEN_ERRORS`). Stake 28/29/33/41 used to decode as wrapper names. Unknown programs keep the legacy wrapper decoding (`program: "unknown"`). `opts.programIds` and `opts.context` are new; `getContextualErrorHint` added.
 - **Changed:** wrapper 9 and 19 hints. 9 names the trade causes (fee cap below base + matcher fee or above the maximum, limit price missed, 5th position); 19 no longer claims a stale mark and, with `{ action: "withdraw", openLegs > 0 }`, says to close positions first.
 - **Added:** `computeTradeFeeBpsToSignV22`, `readTradeFeeInputsV22`, `matcherFeeWorstCaseBpsV22` (fee to sign = base + matcher fee + margin, bounded by `max_trading_fee_bps`; verified against wrapper RC 6c078a0e `handle_trade_cpi` and matcher 2b08537a `v2::requested_fee_bps`).
+- **Added (Q-7):** `buildMultiAssetTradeIxsV22`, `refineMultiAssetTradePlanV22`, `buildRefreshCrankIxV22` (multi-asset market, >= 3 legs: refresh LP / taker / LP then trade, 1.4M CU); error context `healthCheckStale` for 19; `staleResolveErrorContextV22`, `staleSlotsRemaining` context for 27 on tag 39.
 - **Added:** tag 39 `encodeResolveStalePermissionless` (alias `…V22`), `ACCOUNTS_RESOLVE_STALE_PERMISSIONLESS_V22`, `buildResolveStalePermissionlessIxV22`, `staleResolveStatusV22`.
 
 ## 9.0.0-candidate: BREAKING

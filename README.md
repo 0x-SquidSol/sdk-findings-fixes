@@ -48,6 +48,27 @@ if (status.canResolve) {
 After resolution, traders exit through CloseResolved (tag 30). A price push before resolution moves the
 market's last good oracle slot and un-matures it.
 
+### Trading on a multi-asset market (3+ positions)
+
+On a multi-asset market, once the trader or the market maker holds 3 or more positions, every trade (closes too)
+needs both sides refreshed in the same transaction, or the program returns 19. `buildMultiAssetTradeIxsV22` decides
+and builds it (`[budget 1.4M CU, refresh LP observing all assets, refresh trader, refresh LP, trade]`; a single-asset
+market or fewer than 3 positions returns the trade alone):
+
+```ts
+let plan = buildMultiAssetTradeIxsV22({ programId, market, marketData, cranker: wallet, takerPortfolio, takerData, lpPortfolio, lpData, tradeIx });
+for (let n = 0; n < 8; n++) {
+  const sim = await connection.simulateTransaction(toTx(plan.instructions), { sigVerify: false });
+  if (!sim.value.err) break;
+  const next = refineMultiAssetTradePlanV22(plan, sim.value.err); // drops a refresh refused 22, appends one on 19
+  if (next.action === "fail") throw new Error(parseErrorFromLogs(sim.value.logs ?? [], { context: { action: "trade", healthCheckStale: true } })?.hint);
+  if (next.action === "wait") await sleep(700);
+  plan = next.plan;
+}
+```
+
+For an open, pass `stalePeers` (other positioned portfolios that are stale on that asset), otherwise the program returns 121.
+
 ### Errors by program
 
 `parseErrorFromLogs(logs, { context })` decodes the first failing program's error with that program's table

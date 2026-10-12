@@ -690,6 +690,11 @@ export interface ErrorContext {
    * (or pass `staleResolveErrorContextV22(status)` as the whole context).
    */
   staleSlotsRemaining?: bigint | number | null;
+  /**
+   * For `action: "trade"`: the trade is on a multi-asset market with a portfolio at >= 3 legs, where 19 means a
+   * health certificate is not at the market's current epochs (Q-7; see buildMultiAssetTradeIxsV22).
+   */
+  healthCheckStale?: boolean;
 }
 
 /** Options for {@link parseErrorFromLogs}. */
@@ -785,6 +790,9 @@ function unlistedCodeHint(program: ErrorProgramKind, code: number): string | und
 export function getContextualErrorHint(code: number, context?: ErrorContext): string | undefined {
   if (code === 9 && context?.action === "trade") {
     return "Trade refused: your max fee must cover the market's base fee plus the matcher's fee (and stay at or below the market maximum), the fill must meet your limit price, and an account can hold at most 4 positions. Sign the fee from computeTradeFeeBpsToSignV22() and retry, or close a position first.";
+  }
+  if (code === 19 && context?.action === "trade" && context.healthCheckStale === true) {
+    return "This account's health check is out of date for this market — the trade needs to refresh both sides first. Build it with buildMultiAssetTradeIxsV22 (refresh the market maker, then this account, then the market maker again, then trade).";
   }
   if (code === 19 && context?.action === "withdraw" && (context.openLegs ?? 0) > 0) {
     return "Close your open positions first, then withdraw. Withdrawals from an account with open positions are refused.";
