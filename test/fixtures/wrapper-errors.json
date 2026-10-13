@@ -1,6 +1,6 @@
 {
   "prog": "c8501d153ed1a7bd9b1bc3343b89f47096838ead",
-  "count": 125,
+  "count": 128,
   "errors": {
     "0": "InvalidMagic",
     "1": "InvalidVersion",
@@ -126,6 +126,9 @@
     "121": "EngineLossStale",
     "122": "EarnExitWouldUnderBackClaims",
     "123": "BondDepositAboveCap",
-    "124": "BondSlippage"
+    "124": "BondSlippage",
+    "125": "G9AllowlistTimelock",
+    "126": "PositionCapReached",
+    "127": "CounterpartyPositionCapReached"
   }
 }

@@ -5016,6 +5016,22 @@ var PERCOLATOR_ERRORS = {
     name: "BondSlippage",
     hint: "The bond price moved past your minimum; retry or lower it."
   },
+  // R-10 (G9 allowlist timelock) and v2.2 QA item P-1 (named position-cap refusal), percolator-prog
+  // fix/v22-p1-position-cap-error: explicit discriminants 125..=127, appended after 124. 126/127 are the
+  // names for what used to surface as the generic Custom(9) on a position-cap refusal; a bare 9 still
+  // decodes as before (cap < 4 markets and other refusals still answer 9/17).
+  125: {
+    name: "G9AllowlistTimelock",
+    hint: "This feed-allowlist change is still in its waiting period. Operators: propose, wait the delay, then commit; removals alone apply immediately."
+  },
+  126: {
+    name: "PositionCapReached",
+    hint: "This account already holds the maximum number of positions on this market. Close one first."
+  },
+  127: {
+    name: "CounterpartyPositionCapReached",
+    hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later."
+  },
   // P2b E7 (percolator-prog #525, engine #276): explicit discriminants 120..=122; each was Custom(21).
   120: {
     name: "EngineAdlReduceOnly",
