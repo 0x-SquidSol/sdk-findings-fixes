@@ -485,8 +485,10 @@ export const GROWTH_RATCHET_EPOCH_SLOTS = 9_000n;
 
 /** Effective depth: `min(depth, depthPrev)`, and 0 when the push is older than {@link DEPTH_MAX_AGE_SLOTS}. */
 export function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, nowSlot: bigint): bigint {
-  const age = nowSlot > depthSlot ? nowSlot - depthSlot : 0n;
-  if (age > DEPTH_MAX_AGE_SLOTS) return 0n;
+  // Mirrors growth_v19::effective_depth_e6: either read 0 → absent; a depth slot after `now`
+  // (clock went backwards) or older than DEPTH_MAX_AGE_SLOTS → absent (fail closed).
+  if (depthE6 === 0n || depthPrevE6 === 0n) return 0n;
+  if (depthSlot > nowSlot || nowSlot - depthSlot > DEPTH_MAX_AGE_SLOTS) return 0n;
   return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
 }
 
@@ -504,11 +506,12 @@ export function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot
  * ```
  */
 export function depthTier(effectiveDepth: bigint, depthSource: number): number {
-  if (depthSource === DEPTH_SOURCE.None) return 0;
+  // Mirrors growth_v19::depth_tier: only keeper-attested depth earns a tier, capped at 1 (I-D3);
+  // any other source (none, or the unbuilt on-chain source) is tier 0 (fail closed).
+  if (depthSource !== DEPTH_SOURCE.Attested) return 0;
   let t = 0;
   for (const th of DEPTH_TIER_THRESHOLDS_E6) if (effectiveDepth >= th) t++;
-  if (depthSource !== DEPTH_SOURCE.OnChainPool && t > DEPTH_ATTESTED_MAX_TIER) t = DEPTH_ATTESTED_MAX_TIER;
-  return t;
+  return t > DEPTH_ATTESTED_MAX_TIER ? DEPTH_ATTESTED_MAX_TIER : t;
 }
 
 /** Depth ceiling `L_depth` (x100): tier 0 = `L_launch`, 1 = 5x, 2 = 10x, 3 = 20x. */
@@ -707,7 +710,7 @@ export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: b
   const graduationOn = enforced && tier >= 1;
   let nextUnlock: NextUnlock = { kind: "none" };
   if (enforced && !forceDown) {
-    const maxTier = g.depthSource === DEPTH_SOURCE.OnChainPool ? 3 : DEPTH_ATTESTED_MAX_TIER;
+    const maxTier = DEPTH_ATTESTED_MAX_TIER; // only attested depth exists on chain (tiers 2–3 unreachable)
     if (tier < maxTier) {
       const t2 = growthTargetCeilingX100({ ...base, tier: tier + 1 });
       if (t2 > target) nextUnlock = { kind: "depth", thresholdUsd: Number((DEPTH_TIER_THRESHOLDS_E6[tier] as bigint) / 1_000_000n), leverageX100: t2 };

@@ -4992,6 +4992,8 @@ export function encodePushAuthMark(args: PushAuthMarkArgs): Uint8Array {
   if (args.depth === undefined) return head;
   const mode: number = args.depth.mode;
   if (mode !== 0 && mode !== 1) throw new Error(`PushAuthMark depth mode must be 0 (none) or 1 (attested), got ${mode}`);
+  // On chain, mode 0 with a non-zero depth is refused with 128 too.
+  if (mode === 0 && BigInt(args.depth.depthE6) !== 0n) throw new Error('PushAuthMark depth mode 0 (none) must carry depth 0');
   return concatBytes(head, encU8(mode), encU64(args.depth.depthE6));
 }
 

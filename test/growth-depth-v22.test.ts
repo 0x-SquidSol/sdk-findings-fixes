@@ -62,21 +62,23 @@ describe("effective depth and tier", () => {
     expect(effectiveDepthE6(500_000n * M, 10_000n * M, 100n, 110n)).toBe(10_000n * M);
     expect(effectiveDepthE6(10_000n * M, 500_000n * M, 100n, 110n)).toBe(10_000n * M);
   });
-  it("fresh at age 150, absent at 151; a clock behind the push is fresh", () => {
+  it("fresh at age 150, absent at 151; a clock behind the push is absent (Rust: fail closed)", () => {
     expect(DEPTH_MAX_AGE_SLOTS).toBe(150n);
     expect(effectiveDepthE6(30_000n * M, 30_000n * M, 100n, 250n)).toBe(30_000n * M);
     expect(effectiveDepthE6(30_000n * M, 30_000n * M, 100n, 251n)).toBe(0n);
-    expect(effectiveDepthE6(30_000n * M, 30_000n * M, 100n, 90n)).toBe(30_000n * M);
+    expect(effectiveDepthE6(30_000n * M, 30_000n * M, 100n, 90n)).toBe(0n);
+    expect(effectiveDepthE6(30_000n * M, 0n, 100n, 110n)).toBe(0n); // first push: prev 0 → absent
   });
-  it("tier boundaries $25k / $100k / $500k for an on-chain source", () => {
-    const t = (usd: bigint) => depthTier(usd * M, DEPTH_SOURCE.OnChainPool);
-    expect([t(24_999n), t(25_000n), t(99_999n), t(100_000n), t(499_999n), t(500_000n)]).toEqual([0, 1, 1, 2, 2, 3]);
+  it("tier boundaries: attested reaches tier 1 at $25k and stops; the unbuilt on-chain source is tier 0", () => {
+    const t = (usd: bigint) => depthTier(usd * M, DEPTH_SOURCE.Attested);
+    expect([t(24_999n), t(25_000n), t(99_999n), t(100_000n), t(499_999n), t(500_000n)]).toEqual([0, 1, 1, 1, 1, 1]);
+    expect(depthTier(500_000n * M, DEPTH_SOURCE.OnChainPool)).toBe(0);
   });
   it("keeper-attested depth is capped at tier 1; no source is tier 0", () => {
     expect(depthTier(10_000_000n * M, DEPTH_SOURCE.Attested)).toBe(1);
     expect(depthTier(24_999n * M, DEPTH_SOURCE.Attested)).toBe(0);
     expect(depthTier(10_000_000n * M, DEPTH_SOURCE.None)).toBe(0);
-    expect(depthTier(10_000_000n * M, 7)).toBe(1); // unknown source: still never above the attested cap
+    expect(depthTier(10_000_000n * M, 7)).toBe(0); // unknown source: tier 0 (Rust fails closed)
   });
   it("L_depth, lambda_depth, kappa tables", () => {
     expect([0, 1, 2, 3].map((t) => lDepthX100(t, 300))).toEqual([300, 500, 1000, 2000]);
@@ -244,6 +246,8 @@ describe("PushAuthMark tag 63", () => {
   });
   it("refuses a mode the program answers with error 128", () => {
     expect(() => encodePushAuthMark({ ...a, depth: { mode: 2 as 0 | 1, depthE6: 1n } })).toThrow(/depth mode/);
+    expect(() => encodePushAuthMark({ ...a, depth: { mode: 0, depthE6: 5n } })).toThrow(/mode 0/); // on chain: 128
+    expect(encodePushAuthMark({ ...a, depth: { mode: 0, depthE6: 0n } }).length).toBe(44);
     expect(PERCOLATOR_ERRORS[128]?.name).toBe("DepthInputInvalid");
     expect(decodeError(128)?.name).toBe("DepthInputInvalid");
   });
