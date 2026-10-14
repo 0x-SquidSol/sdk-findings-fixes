@@ -3594,7 +3594,21 @@ export interface PushAuthMarkArgs {
     nowSlot: bigint | string;
     markE6: bigint | string;
     observationSequence: bigint | string;
+    /**
+     * v2.2 G8 depth input. Omitted => the 35-byte form, which ZEROES the stored depth on-chain (absent depth is never
+     * stale-but-trusted). Present => the 44-byte form `[...35 B][depth_mode u8][depth_e6 u64 LE]`.
+     * `mode` 0 = none, 1 = keeper-attested; any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is
+     * rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
+     */
+    depth?: {
+        mode: 0 | 1;
+        depthE6: bigint | string;
+    };
 }
+/** Length of the legacy PushAuthMark body. */
+export declare const PUSH_AUTH_MARK_LEN = 35;
+/** Length of the v2.2 PushAuthMark body with the depth input. */
+export declare const PUSH_AUTH_MARK_DEPTH_LEN = 44;
 export declare function encodePushAuthMark(args: PushAuthMarkArgs): Uint8Array;
 /**
  * MatcherInitPassive — 78-byte `InitParams` payload sent to the MATCHER

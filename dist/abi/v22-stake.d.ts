@@ -219,6 +219,10 @@ export interface StakePoolV5 extends StakePoolV5Fields {
     juniorTotalLp: bigint;
     /** `_reserved[61]` (absolute 381): R-1 dead-share floor flags; 0 = legacy. See `stakeDeadLp`. */
     floorFlags: number;
+    /** `total_fees_earned` (offset 256): counted in the pool value. */
+    totalFeesEarned: bigint;
+    /** `_reserved[51..59]` (absolute 371): realized (forfeited) junior loss, subtracted from the pool value (issue #161). */
+    realizedJuniorLoss: bigint;
 }
 /**
  * Decode a `StakePool` v5 account. Checks the length (`>= 480`), the discriminator and the version byte (`== 5`)
@@ -268,3 +272,43 @@ export declare const STAKE_ERROR_NAMES: Readonly<Record<number, string>>;
  * ```
  */
 export declare function decodeStakeErrorV5(code: number): ErrorInfo | undefined;
+/** The booked fields `StakePool::total_pool_value()` reads. */
+export interface StakePoolValueFields {
+    totalDeposited: bigint;
+    totalWithdrawn: bigint;
+    totalFlushed: bigint;
+    totalReturned: bigint;
+    totalFeesEarned: bigint;
+    realizedJuniorLoss: bigint;
+}
+/** Result of {@link stakePoolValue}. All atoms. */
+export interface StakePoolValue {
+    /** `StakePool::total_pool_value()`: the vault-resident booked value (already net of everything flushed to insurance). */
+    liquid: bigint;
+    /** `floor(units_stake * insurance / units_total)`: the pool's stake-class insurance units at the reading passed. */
+    deployed: bigint;
+    /** `liquid + deployed`: the value the program prices LP shares against (`pool_value_v5`). */
+    total: bigint;
+}
+/**
+ * v5 pool value INCLUDING the insurance the pool has deployed into the wrapper. Mirrors stake `math::deployed_value` and
+ * `math::pool_value_v5`, with `liquid` mirroring `StakePool::total_pool_value()` (deposited - withdrawn - flushed + returned +
+ * fees - realized junior loss, in a signed wide intermediate). Pass the EXIT reading (`snapInsuranceFreeAtoms`, what withdrawals and
+ * the sync use) for what a leaver is paid, or the ENTRY reading (`snapInsuranceMintAtoms`, what deposits mint against) for deposit
+ * pricing. The deployed part comes back to the vault through a sync recovery, so a payout must still fit `liquid`.
+ *
+ * @param pool       Decoded v5 pool (`decodeStakePoolV5`) or any object with the six booked fields.
+ * @param insUnits   The wrapper `InsuranceUnitsV20` (`decodeInsuranceUnitsV20`): `unitsStake`, `unitsTotal`.
+ * @param insurance  The insurance reading, atoms (`snapInsuranceFreeAtoms` or `snapInsuranceMintAtoms`).
+ * @returns `{ liquid, deployed, total }`, or `null` where the program fails closed (negative or u64-overflowing value,
+ *          `unitsStake > unitsTotal`, a multiply beyond u128).
+ * @example
+ * ```ts
+ * const v = stakePoolValue(decodeStakePoolV5(pool.data), decodeInsuranceUnitsV20(units.data), units.snapInsuranceFreeAtoms);
+ * if (v) show(v.total);
+ * ```
+ */
+export declare function stakePoolValue(pool: StakePoolValueFields, insUnits: {
+    unitsStake: bigint;
+    unitsTotal: bigint;
+}, insurance: bigint): StakePoolValue | null;

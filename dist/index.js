@@ -1747,9 +1747,11 @@ function encodeConfigureAuthMark(args) {
     encU64(args.observationSequence)
   );
 }
+var PUSH_AUTH_MARK_LEN = 35;
+var PUSH_AUTH_MARK_DEPTH_LEN = 44;
 function encodePushAuthMark(args) {
   requirePositiveU64(args.markE6, "markE6");
-  return concatBytes(
+  const head = concatBytes(
     encU8(IX_TAG.PushAuthMark),
     encU16(args.assetIndex),
     encU64(args.marketId),
@@ -1757,6 +1759,10 @@ function encodePushAuthMark(args) {
     encU64(args.markE6),
     encU64(args.observationSequence)
   );
+  if (args.depth === void 0) return head;
+  const mode = args.depth.mode;
+  if (mode !== 0 && mode !== 1) throw new Error(`PushAuthMark depth mode must be 0 (none) or 1 (attested), got ${mode}`);
+  return concatBytes(head, encU8(mode), encU64(args.depth.depthE6));
 }
 function encodeMatcherInitPassive(args) {
   requirePositiveU64(args.lpAccountId, "lpAccountId");
@@ -3955,6 +3961,8 @@ function decodeStakePoolV5(data) {
     totalReturned: u644(208),
     totalWithdrawn: u644(216),
     poolMode: data[F.poolMode],
+    totalFeesEarned: u644(256),
+    realizedJuniorLoss: u644(F.reserved + 51),
     juniorTotalLp: u644(F.reserved + 41),
     floorFlags: data[F.reserved + STAKE_FLOOR_FLAGS_RESERVED_INDEX],
     riskMode,
@@ -4027,6 +4035,23 @@ var STAKE_ERROR_NAMES = Object.freeze({
 });
 function decodeStakeErrorV5(code) {
   return STAKE_ERRORS_V5[code];
+}
+var U64_MAX_V5 = (1n << 64n) - 1n;
+var U128_MAX_V5 = (1n << 128n) - 1n;
+function stakePoolValue(pool, insUnits, insurance) {
+  const liquidWide = pool.totalDeposited - pool.totalWithdrawn - pool.totalFlushed + pool.totalReturned + pool.totalFeesEarned - pool.realizedJuniorLoss;
+  if (liquidWide < 0n || liquidWide > U64_MAX_V5) return null;
+  let deployed = 0n;
+  if (insUnits.unitsTotal !== 0n) {
+    if (insUnits.unitsStake > insUnits.unitsTotal) return null;
+    const prod = insUnits.unitsStake * insurance;
+    if (prod > U128_MAX_V5) return null;
+    deployed = prod / insUnits.unitsTotal;
+    if (deployed > U64_MAX_V5) return null;
+  }
+  const total = liquidWide + deployed;
+  if (total > U64_MAX_V5) return null;
+  return { liquid: liquidWide, deployed, total };
 }
 
 // src/abi/matcher-v2.ts
@@ -5031,6 +5056,12 @@ var PERCOLATOR_ERRORS = {
   127: {
     name: "CounterpartyPositionCapReached",
     hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later."
+  },
+  // v2.2 growth G8 (spec v22-growth-overnight-2026-10-14 section 1.3): explicit discriminant 128, appended after 127. A
+  // PushAuthMark (tag 63) 44-byte push whose depth_mode is not 0 (none) or 1 (keeper-attested).
+  128: {
+    name: "DepthInputInvalid",
+    hint: "The price update carried an invalid liquidity reading."
   },
   // P2b E7 (percolator-prog #525, engine #276): explicit discriminants 120..=122; each was Custom(21).
   120: {
@@ -6100,6 +6131,7 @@ var ASSET_GROWTH_FIELD_OFF = Object.freeze({
   utilFeeMaxBps: 40,
   reserved: 42
 });
+var ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({ depthSource: 44, depthE6: 56, depthSlot: 64, depthPrevE6: 72 });
 var GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
 var GROWTH_UTIL_FEE_HARD_MAX_BPS = 2e3;
 var R_GAP_MIN_LIQUIDATION_SLOTS = 50n;
@@ -6127,6 +6159,7 @@ function divCeil(a, b) {
 function decodeAssetGrowthRecordV19(rec) {
   if (rec.length !== ASSET_GROWTH_LEN) throw new Error(`AssetGrowthV19 record must be ${ASSET_GROWTH_LEN} bytes, got ${rec.length}`);
   const F = ASSET_GROWTH_FIELD_OFF;
+  const D = ASSET_GROWTH_DEPTH_FIELD_OFF;
   const version = rec[F.version];
   if (version === 0) return null;
   const v = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
@@ -6145,7 +6178,11 @@ function decodeAssetGrowthRecordV19(rec) {
     cushionShareBps: v.getUint16(F.cushionShareBps, true),
     version,
     flags: rec[F.flags],
-    utilFeeMaxBps: v.getUint16(F.utilFeeMaxBps, true)
+    utilFeeMaxBps: v.getUint16(F.utilFeeMaxBps, true),
+    depthSource: rec[D.depthSource],
+    depthE6: v.getBigUint64(D.depthE6, true),
+    depthSlot: v.getBigUint64(D.depthSlot, true),
+    depthPrevE6: v.getBigUint64(D.depthPrevE6, true)
   };
 }
 function decodeAssetGrowthFromSlotV19(slot) {
@@ -6229,11 +6266,119 @@ function conservativeEquity(capital, pnl, feeCredits) {
   const c = capital + (pnl < 0n ? pnl : 0n) + (feeCredits < 0n ? feeCredits : 0n);
   return c > 0n ? c : 0n;
 }
+var DEPTH_MAX_AGE_SLOTS = 150n;
+var DEPTH_SOURCE = Object.freeze({ None: 0, Attested: 1, OnChainPool: 2 });
+var DEPTH_TIER_THRESHOLDS_E6 = Object.freeze([25000000000n, 100000000000n, 500000000000n]);
+var DEPTH_ATTESTED_MAX_TIER = 1;
+var BAND_MAX_BPS = 2000n;
+var GROWTH_RATCHET_STEP_X100 = 100;
+var GROWTH_RATCHET_EPOCH_SLOTS = 9000n;
+function effectiveDepthE6(depthE6, depthPrevE6, depthSlot, nowSlot) {
+  const age = nowSlot > depthSlot ? nowSlot - depthSlot : 0n;
+  if (age > DEPTH_MAX_AGE_SLOTS) return 0n;
+  return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
+}
+function depthTier(effectiveDepth, depthSource) {
+  if (depthSource === DEPTH_SOURCE.None) return 0;
+  let t = 0;
+  for (const th of DEPTH_TIER_THRESHOLDS_E6) if (effectiveDepth >= th) t++;
+  if (depthSource !== DEPTH_SOURCE.OnChainPool && t > DEPTH_ATTESTED_MAX_TIER) t = DEPTH_ATTESTED_MAX_TIER;
+  return t;
+}
+function lDepthX100(tier, lLaunchX100) {
+  switch (tier) {
+    case 1:
+      return 500;
+    case 2:
+      return 1e3;
+    case 3:
+      return 2e3;
+    default:
+      return lLaunchX100;
+  }
+}
+function lambdaDepthBps(tier) {
+  return tier >= 3 ? 3e4 : tier === 2 ? 2e4 : 1e4;
+}
+function kappaDepth(tier) {
+  return tier >= 3 ? 2e4 : tier >= 1 ? 1e4 : 5e3;
+}
+function bandRGapBps(bandBps) {
+  const d = big2("bandBps", bandBps);
+  if (d <= 0n || d > BAND_MAX_BPS) return null;
+  const num = (GROWTH_BPS + d) * (GROWTH_BPS + d);
+  const g = divCeil(num, GROWTH_BPS - d) - GROWTH_BPS;
+  return g > 0xffffn ? null : g;
+}
+function clampEnforced(bandBps, rGapBps) {
+  const b = big2("bandBps", bandBps);
+  if (b === 0n) return false;
+  const g = bandRGapBps(b);
+  return g !== null && g === big2("rGapBps", rGapBps);
+}
+function capitalDoublings(cM, cLaunch) {
+  if (cLaunch === 0n || cM < cLaunch) return 0;
+  let steps = 0;
+  let level = cLaunch;
+  while (level * 2n <= cM && steps < 128) {
+    level *= 2n;
+    steps++;
+  }
+  return steps;
+}
+function growthTargetCeilingX100(i) {
+  const launch = Math.min(i.lLaunchX100, i.lTierX100);
+  if (i.forceDown === true || !clampEnforced(i.bandBps, i.rGapBps) || i.tier < 1) return launch;
+  const steps = capitalDoublings(i.cM, i.cLaunchAtoms);
+  const byCapital = i.lLaunchX100 + steps * GROWTH_RATCHET_STEP_X100;
+  const byDepth = Math.min(lDepthX100(i.tier, i.lLaunchX100), byCapital);
+  return Math.min(i.lTierX100, Math.max(i.lLaunchX100, byDepth));
+}
+function nCapQWithDepth(i) {
+  const posScale = i.posScale ?? GROWTH_POS_SCALE;
+  const lambdaEff = Math.min(i.lambdaBps, lambdaDepthBps(i.tier));
+  const n = nCapQ(i.cM, lambdaEff, i.priceE6, posScale);
+  if (n === null || i.effectiveDepth === 0n) return n;
+  const num = i.effectiveDepth * BigInt(kappaDepth(i.tier)) * posScale;
+  if (num > U128_MAX2) return null;
+  const cap = num / (GROWTH_BPS * i.priceE6);
+  return cap < n ? cap : n;
+}
+function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
+  const eff = effectiveDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, nowSlot);
+  const tier = depthTier(eff, g.depthSource);
+  const enforced = clampEnforced(bandBps, g.rGapBps);
+  const base = { lLaunchX100: g.lLaunchX100, lTierX100: g.lTierX100, cM, cLaunchAtoms: g.cLaunchAtoms, tier, bandBps, rGapBps: g.rGapBps, forceDown };
+  const target = growthTargetCeilingX100(base);
+  const launch = Math.min(g.lLaunchX100, g.lTierX100);
+  const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
+  const ceiling = Math.min(stored, target);
+  const graduationOn = enforced && tier >= 1;
+  let nextUnlock = { kind: "none" };
+  if (enforced && !forceDown) {
+    const maxTier = g.depthSource === DEPTH_SOURCE.OnChainPool ? 3 : DEPTH_ATTESTED_MAX_TIER;
+    if (tier < maxTier) {
+      const t2 = growthTargetCeilingX100({ ...base, tier: tier + 1 });
+      if (t2 > target) nextUnlock = { kind: "depth", thresholdUsd: Number(DEPTH_TIER_THRESHOLDS_E6[tier] / 1000000n), leverageX100: t2 };
+    }
+    if (nextUnlock.kind === "none" && g.cLaunchAtoms > 0n) {
+      const need = g.cLaunchAtoms << BigInt(capitalDoublings(cM, g.cLaunchAtoms) + 1);
+      const t2 = growthTargetCeilingX100({ ...base, cM: need });
+      if (t2 > target) nextUnlock = { kind: "capital", thresholdUsd: Number(need / 1000000n), leverageX100: t2 };
+      else if (tier < maxTier) {
+        const both = growthTargetCeilingX100({ ...base, cM: need, tier: tier + 1 });
+        if (both > target) nextUnlock = { kind: "depth", thresholdUsd: Number(DEPTH_TIER_THRESHOLDS_E6[tier] / 1000000n), leverageX100: both, alsoRequiresCapitalUsd: Number(need / 1000000n) };
+      }
+    }
+  }
+  return { tier, effectiveDepthE6: eff, clampEnforced: enforced, graduationOn, targetX100: target, ceilingX100: ceiling, nextUnlock };
+}
 function quoteMaxLeverage(input, side) {
   const lp = input.lpEffectivePositionQ;
   const crowd = side === "long" ? lp <= 0n : lp >= 0n;
   const g = input.growth;
   const e = input.engineImrBps;
+  let meta = {};
   const out = (p) => ({
     side,
     crowd,
@@ -6247,6 +6392,11 @@ function quoteMaxLeverage(input, side) {
     headroomQ: null,
     reduceOnlyCapacityExempt: true,
     utilisationFeeBps: null,
+    ceilingX100: 0,
+    tier: 0,
+    nextUnlock: { kind: "none" },
+    graduationOn: false,
+    ...meta,
     ...p
   });
   const lev = (imr) => {
@@ -6258,12 +6408,14 @@ function quoteMaxLeverage(input, side) {
     if (e === 0n || e > GROWTH_MAX_IMR_BPS) return closed("invalid-config");
     return out({ imrBps: e, maxLeverageX100: lev(e) });
   }
-  const lCeil = Math.min(g.lLaunchX100, g.lTierX100);
+  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
+  const view2 = input.v22 ? growthCeilingView(g, input.v22.bandBps, input.v22.nowSlot, cM, input.bankruptcyHlockActive) : null;
+  const lCeil = view2 ? view2.ceilingX100 : Math.min(g.lLaunchX100, g.lTierX100);
+  meta = { ceilingX100: lCeil, tier: view2?.tier ?? 0, nextUnlock: view2?.nextUnlock ?? { kind: "none" }, graduationOn: view2?.graduationOn ?? false };
   const base = ceilingImrBps(e, lCeil);
   if (base === null) return closed("invalid-config");
   if (!input.assetBound) return closed("not-bound", { headroomQ: 0n });
-  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
-  const nCap = nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
+  const nCap = view2 ? nCapQWithDepth({ cM, lambdaBps: g.lambdaBps, tier: view2.tier, priceE6: input.priceE6, effectiveDepth: view2.effectiveDepthE6, posScale: input.posScale }) : nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
   const usersOi = usersSideOiQ(side === "long" ? input.oiEffLongQ : input.oiEffShortQ, lp, side === "long");
   const util = nCap === null ? null : utilizationBps(usersOi, nCap);
   const info = { nCapQ: nCap, utilizationBps: util };
@@ -16140,6 +16292,7 @@ export {
   ALLOC_BUFFER_MIN_BPS_P2B,
   ALLOC_MIN_JUNIOR_BPS_P2B,
   ASSET_AUTH_KIND,
+  ASSET_GROWTH_DEPTH_FIELD_OFF,
   ASSET_GROWTH_FIELD_OFF,
   ASSET_GROWTH_LEN,
   ASSET_GROWTH_SLOT_OFF,
@@ -16169,6 +16322,7 @@ export {
   BAND_EVICT_MAX_VICTIM_MULTIPLE_V22,
   BAND_EVICT_NOTIONAL_MULTIPLE_V22,
   BAND_GENESIS_FLOOR_MULTIPLE_V22,
+  BAND_MAX_BPS,
   BAND_MAX_POSITIONS_PER_SIDE_V22,
   BAND_MIN_EPOCH_SLOTS_V22,
   BAND_MIN_LEG_NOTIONAL_TOKENS_V22,
@@ -16207,6 +16361,10 @@ export {
   DEPLOY_TARGET_DEFAULT_BPS_V5,
   DEPLOY_TARGET_MAX_BPS_V5,
   DEPLOY_TARGET_TIMELOCK_MIN_SLOTS_V5,
+  DEPTH_ATTESTED_MAX_TIER,
+  DEPTH_MAX_AGE_SLOTS,
+  DEPTH_SOURCE,
+  DEPTH_TIER_THRESHOLDS_E6,
   ENGINE_ASSET_SLOT_OFF_V18,
   ENGINE_BOUND_SCALE,
   ENGINE_CONFIG_MAX_TRADING_FEE_BPS_OFF,
@@ -16247,6 +16405,8 @@ export {
   GROWTH_PIN_MATCHER_KIND,
   GROWTH_PIN_MAX_REQUESTED_FEE_BPS,
   GROWTH_POS_SCALE,
+  GROWTH_RATCHET_EPOCH_SLOTS,
+  GROWTH_RATCHET_STEP_X100,
   GROWTH_U64_MAX,
   GROWTH_UTIL_FEE_DEFAULT_BPS,
   GROWTH_UTIL_FEE_HARD_MAX_BPS,
@@ -16400,6 +16560,8 @@ export {
   PROGRAM_ID_V17,
   PUBLIC_B_CHUNK_ATOMS_UNLIMITED,
   PUMPSWAP_PROGRAM_ID,
+  PUSH_AUTH_MARK_DEPTH_LEN,
+  PUSH_AUTH_MARK_LEN,
   PYTH_PUSH_ORACLE_PROGRAM_ID,
   PYTH_RECEIVER_PROGRAM_ID,
   PYTH_SOLANA_FEEDS,
@@ -16576,6 +16738,7 @@ export {
   bandFloorStuckV22,
   bandGenesisPriceOkV22,
   bandMinWideAnchorV22,
+  bandRGapBps,
   bandWidthOkV22,
   bindInsuranceAuthorityAccounts,
   bondAtomsForRedemptionV22,
@@ -16648,9 +16811,11 @@ export {
   buildWithdrawJuniorTrancheIxP3,
   buildWithdrawJuniorTrancheIxV22,
   burnAssetAdminAccounts,
+  capitalDoublings,
   ceilingImrBps,
   checkPhaseTransition,
   checkRpcHealth,
+  clampEnforced,
   classifyLighthouseError,
   classifyRedemptionSimulationV22,
   clearStaticMarkets,
@@ -16731,6 +16896,7 @@ export {
   defaultMinPayoutV22,
   depositAccounts,
   depositJuniorAccounts,
+  depthTier,
   deriveBondPositionV22,
   deriveBondTrancheV22,
   deriveCanonicalVault,
@@ -16773,6 +16939,7 @@ export {
   discoverMarketsViaStaticBundle,
   displayPriceV22,
   dynImrBps,
+  effectiveDepthE6,
   encBool,
   encI128,
   encI64,
@@ -17030,7 +17197,9 @@ export {
   getProgramId,
   getStakeProgramId,
   getStaticMarkets,
+  growthCeilingView,
   growthMatcherCapsV3,
+  growthTargetCeilingX100,
   imrBpsForLeverageX100,
   initPoolAccounts,
   insMintAdmissibleV22,
@@ -17057,7 +17226,10 @@ export {
   isV17Account,
   isV17MarketAccount,
   isValidChainlinkOracle,
+  kappaDepth,
   knownWrapperVersions,
+  lDepthX100,
+  lambdaDepthBps,
   layoutHasBandRentV22,
   leverageX100ForImrBps,
   liquidityNotionalE6,
@@ -17080,6 +17252,7 @@ export {
   mulDivCeilV22,
   mulDivFloorV22,
   nCapQ,
+  nCapQWithDepth,
   nonboundPotAvailableE3P2b,
   nonboundPotEntryAvailableP2b,
   nonboundPotFromRecordsP2b,
@@ -17181,6 +17354,7 @@ export {
   stakeGroupBProxyAccounts,
   stakeHasRealLpHolders,
   stakeMetasV5,
+  stakePoolValue,
   stakeRealJuniorLp,
   stakeRealLpSupply,
   stakeRealSeniorLp,
