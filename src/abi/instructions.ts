@@ -4965,12 +4965,23 @@ export interface PushAuthMarkArgs {
   nowSlot: bigint | string;
   markE6: bigint | string;
   observationSequence: bigint | string;
+  /**
+   * v2.2 G8 depth input. Omitted => the 35-byte form, which ZEROES the stored depth on-chain (absent depth is never
+   * stale-but-trusted). Present => the 44-byte form `[...35 B][depth_mode u8][depth_e6 u64 LE]`.
+   * `mode` 0 = none, 1 = keeper-attested; any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is
+   * rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
+   */
+  depth?: { mode: 0 | 1; depthE6: bigint | string };
 }
+
+/** Length of the legacy PushAuthMark body. */
+export const PUSH_AUTH_MARK_LEN = 35;
+/** Length of the v2.2 PushAuthMark body with the depth input. */
+export const PUSH_AUTH_MARK_DEPTH_LEN = 44;
 
 export function encodePushAuthMark(args: PushAuthMarkArgs): Uint8Array {
   requirePositiveU64(args.markE6, "markE6");
-
-  return concatBytes(
+  const head = concatBytes(
     encU8(IX_TAG.PushAuthMark),
     encU16(args.assetIndex),
     encU64(args.marketId),
@@ -4978,6 +4989,10 @@ export function encodePushAuthMark(args: PushAuthMarkArgs): Uint8Array {
     encU64(args.markE6),
     encU64(args.observationSequence),
   );
+  if (args.depth === undefined) return head;
+  const mode: number = args.depth.mode;
+  if (mode !== 0 && mode !== 1) throw new Error(`PushAuthMark depth mode must be 0 (none) or 1 (attested), got ${mode}`);
+  return concatBytes(head, encU8(mode), encU64(args.depth.depthE6));
 }
 
 // ============================================================================
