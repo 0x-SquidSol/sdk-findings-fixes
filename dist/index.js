@@ -3207,7 +3207,10 @@ var STAKE_ERRORS = {
   26: "Timelock not elapsed \u2014 CommitCooldownIncrease was called before the required timelock window had passed since ProposeCooldownIncrease; LP holders are still inside their exit window",
   27: "No pending cooldown proposal \u2014 CommitCooldownIncrease / CancelCooldownIncrease called with no active ProposeCooldownIncrease proposal outstanding",
   28: "Deposit below minimum liquidity \u2014 the first deposit into an EMPTY pool, senior tranche or junior tranche must exceed MINIMUM_LIQUIDITY (1,000 atoms) so a permanent dead-share floor can be locked for that sub-pool (N7 anti-inflation hardening; each sub-pool locks its own floor); nothing is locked on refusal; deposit a larger amount",
-  29: "No real LP holders \u2014 AccrueFees refused because the pool's LP supply is only the N7 MINIMUM_LIQUIDITY dead-share floor (real_lp_supply() == 0: total_lp_supply minus the per-sub-pool dead floors, 0, 1,000 or 2,000 shares on a tranche pool). Fees booked now would belong to shares nobody can redeem; nothing is booked and the fee tokens stay in the vault until the first accrual after a real staker deposits (F3 dead-share guard, percolator-stake feat/p1-stake-f3-dead-share-guard).",
+  // percolator-stake `NoRealLpHolders` = 29 (src/error.rs:93, raised in processor.rs:2960 by AccrueFees): the pool's LP supply is only
+  // the N7 dead-share floor (real_lp_supply() == 0: total_lp_supply minus the per-sub-pool dead floors), so there is nobody to pay fees to.
+  // Nothing is booked; the fee tokens stay in the vault until the first accrual after a real staker deposits.
+  29: "No real LP holders yet: nobody has staked in this pool, so there are no fees to share. Nothing was changed. Fees are booked after the first real deposit.",
   30: "Market not terminal (F-9) \u2014 RecoverTerminalInsurance (tag 29) needs the wrapper market Resolved or a CloseSlab tombstone, and a non-zero amount needs Resolved (not Closed); AdminCloseSlab (tag 30) needs Resolved. While Live, use RecoverFlushedInsurance (tag 23)",
   32: "Unsupported wrapper layout (F-9, NOT retryable) \u2014 the bound wrapper market account is not the layout this stake program pins (magic, VERSION 18, kind, minimum length, a known mode byte), so its engine mode cannot be trusted. RecoverTerminalInsurance (29), AdminCloseSlab (30) and the mode-0 Deposit/DepositJunior path refuse. A wrapper layout bump needs a coordinated stake upgrade; retrying will not help",
   31: "Nothing to recover (F-9) \u2014 RecoverTerminalInsurance moved no tokens and booked nothing (amount 0, no stray account, no unbooked vault surplus). Keepers should treat this as done"
@@ -3932,7 +3935,7 @@ function decodeStakePoolV5(data) {
   const version = data[F.version];
   if (version !== STAKE_POOL_VERSION_V5) throw new Error(`decodeStakePoolV5: unsupported pool version ${version} !== ${STAKE_POOL_VERSION_V5}`);
   const v = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const u644 = (o) => v.getBigUint64(o, true);
+  const u645 = (o) => v.getBigUint64(o, true);
   const pk = (o) => new PublicKey6(data.subarray(o, o + 32));
   const riskMode = data[F.riskMode];
   const deployTargetBps = v.getUint16(F.deployTargetBps, true);
@@ -3947,26 +3950,26 @@ function decodeStakePoolV5(data) {
     lpMint: pk(104),
     vault: pk(F.vault),
     percolatorProgram: pk(F.percolatorProgram),
-    totalDeposited: u644(168),
-    totalLpSupply: u644(176),
-    cooldownSlots: u644(184),
-    depositCap: u644(192),
-    totalFlushed: u644(200),
-    totalReturned: u644(208),
-    totalWithdrawn: u644(216),
+    totalDeposited: u645(168),
+    totalLpSupply: u645(176),
+    cooldownSlots: u645(184),
+    depositCap: u645(192),
+    totalFlushed: u645(200),
+    totalReturned: u645(208),
+    totalWithdrawn: u645(216),
     poolMode: data[F.poolMode],
-    juniorTotalLp: u644(F.reserved + 41),
+    juniorTotalLp: u645(F.reserved + 41),
     floorFlags: data[F.reserved + STAKE_FLOOR_FLAGS_RESERVED_INDEX],
     riskMode,
     consentVersion: data[F.consentVersion],
     deployTargetBps,
     liquidBufferBps: v.getUint16(F.liquidBufferBps, true),
     hysteresisBps,
-    lastSyncSlot: u644(F.lastSyncSlot),
-    pendingTargetBps: u644(F.pendingTargetBps),
-    pendingTargetSlot: u644(F.pendingTargetSlot),
-    syncCooldownSlots: u644(F.syncCooldownSlots),
-    creatorForwardedAtoms: u644(F.creatorForwardedAtoms),
+    lastSyncSlot: u645(F.lastSyncSlot),
+    pendingTargetBps: u645(F.pendingTargetBps),
+    pendingTargetSlot: u645(F.pendingTargetSlot),
+    syncCooldownSlots: u645(F.syncCooldownSlots),
+    creatorForwardedAtoms: u645(F.creatorForwardedAtoms),
     pendingTargetByProtocol: data[F.v5Reserved] === 1
   };
 }
@@ -4562,11 +4565,15 @@ var PERCOLATOR_ERRORS = {
   },
   28: {
     name: "OracleConfTooWide",
-    hint: "Oracle confidence interval too wide. Wait for more stable market conditions."
+    // Wrapper `OracleConfTooWide` (percolator-prog v16_program.rs:11285, :11414): the Pyth confidence interval exceeds the
+    // market's `conf_filter_bps`. Plain user text; nothing moved.
+    hint: "The price feed is too uncertain right now, so the market is not accepting this action. Nothing was changed. Wait a moment and try again."
   },
   29: {
     name: "InvalidOracleKey",
-    hint: "Oracle account key does not match the market's configured oracle feed ID."
+    // Wrapper `InvalidOracleKey` (percolator-prog v16_program.rs:11274, :11370, :11433): the price account (or Pyth feed id)
+    // passed with the instruction is not the one this market is configured to use. Plain user text; nothing moved.
+    hint: "The price account sent with this transaction is not the one this market uses. Nothing was changed. Refresh the page and try again; if it keeps happening, the app is out of date."
   },
   // ── Fork LP-vault errors (30-41) ─────────────────────────────────────────────
   30: {
@@ -4891,7 +4898,10 @@ var PERCOLATOR_ERRORS = {
   },
   93: {
     name: "GrowthCapacityFull",
-    hint: "New positions on this side are paused: the market's capacity is full. Reducing or closing your position is always allowed. growth-v19: a crowd-side risk-increasing fill would take the LP past its capacity N_cap = lambda * C_m / P (refused only when u > 1; u == 1 is admitted at 100% IMR), the LP's capital is 0, the price is 0, or the market's bankruptcy h-lock is latched."
+    // Wrapper `GrowthCapacityFull` = 93 (percolator-prog v16_program.rs:1678, raised at :41601): a crowd-side
+    // risk-increasing fill would take the LP past its capacity N_cap = lambda * C_m / P, the LP's capital or the price is 0,
+    // or the market's bankruptcy h-lock is latched. The thin side, reductions and closes stay open.
+    hint: "New positions on this side are paused: the market's capacity is full. Reducing or closing your position is always allowed. You can also open on the other side, or try again later when room frees up."
   },
   94: {
     name: "GrowthInvalidConfig",
@@ -5127,6 +5137,7 @@ function getContextualErrorHint(code, context) {
     return "This market's price has not been stale for long enough to resolve yet. A new price update restarts the wait; try again later.";
   }
   if (code === 21 && context?.action === "resolve") return "This market is already resolved.";
+  if (code === 19 && context?.action === "resolve") return "The network clock is behind this market's last update. Wait a few seconds and try again.";
   return PERCOLATOR_ERRORS[code]?.hint;
 }
 function parseErrorFromLogs(logs, opts) {
@@ -6045,11 +6056,11 @@ function assetRiskLimitsAccountOffsetP1(assetIndex, layout = LAYOUT_V21) {
 function decodeAssetRiskLimitsRecordP1(rec) {
   if (rec.length !== ASSET_RISK_LIMITS_LEN_P1) throw new Error(`AssetRiskLimitsV17 record must be 64 bytes, got ${rec.length}`);
   const v = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
-  const u1285 = (o) => v.getBigUint64(o + 8, true) << 64n | v.getBigUint64(o, true);
+  const u1286 = (o) => v.getBigUint64(o + 8, true) << 64n | v.getBigUint64(o, true);
   const F = ASSET_RISK_LIMITS_FIELD_OFF_P1;
   return {
-    sideOiCapQ: u1285(F.sideOiCapQ),
-    lpFloorAtoms: u1285(F.lpFloorAtoms),
+    sideOiCapQ: u1286(F.sideOiCapQ),
+    lpFloorAtoms: u1286(F.lpFloorAtoms),
     lpExposureKBps: v.getUint32(F.lpExposureKBps, true),
     execBandBps: v.getUint16(F.execBandBps, true),
     matcherExtMode: rec[F.matcherExtMode],
@@ -6340,10 +6351,10 @@ function encodeInitMarketV19(args, rGapBps, lLaunchX100) {
   u16nz("rGapBps", rGapBps);
   u16nz("lLaunchX100", lLaunchX100);
   const legacy = encodeInitMarket(args);
-  const dv7 = new DataView(legacy.buffer, legacy.byteOffset, legacy.byteLength);
-  const mmr = dv7.getBigUint64(INIT_MARKET_MMR_OFF, true);
-  const liqFee = dv7.getBigUint64(INIT_MARKET_LIQ_FEE_OFF, true);
-  const move = dv7.getBigUint64(INIT_MARKET_MAX_PRICE_MOVE_OFF, true);
+  const dv8 = new DataView(legacy.buffer, legacy.byteOffset, legacy.byteLength);
+  const mmr = dv8.getBigUint64(INIT_MARKET_MMR_OFF, true);
+  const liqFee = dv8.getBigUint64(INIT_MARKET_LIQ_FEE_OFF, true);
+  const move = dv8.getBigUint64(INIT_MARKET_MAX_PRICE_MOVE_OFF, true);
   const floor = rGapFloorBps(move);
   if (BigInt(rGapBps) < floor) throw new Error(`rGapBps ${rGapBps} is below the floor ${floor} (= maxPriceMoveBpsPerSlot ${move} * ${R_GAP_MIN_LIQUIDATION_SLOTS}); the wrapper refuses with GrowthInvalidConfig (94)`);
   if (mmr < BigInt(rGapBps) + liqFee) throw new Error(`maintenanceMarginBps ${mmr} must be >= rGapBps ${rGapBps} + liquidationFeeBps ${liqFee}; the wrapper refuses with GrowthInvalidConfig (94)`);
@@ -6521,6 +6532,7 @@ var VAULT_LP_EXT_ACCOUNT_LEN_P2B = 16 + VAULT_LP_EXT_BODY_LEN_P2B;
 var VAULT_LP_EXT_VERSION_P2B = 1;
 var VAULT_LP_EXT_SEED_P2B = "vault_lp_ext";
 var LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B = 161;
+var LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B = 162;
 var ALLOC_ALPHA_DEFAULT_BPS_P2B = 5e3;
 var ALLOC_ALPHA_MAX_BPS_P2B = 5e3;
 var ALLOC_BUFFER_DEFAULT_BPS_P2B = 3e3;
@@ -6553,6 +6565,10 @@ var ACCOUNTS_VAULT_LP_ALLOCATE_P2B = [
   { name: "siblingLedger", signer: false, writable: true },
   { name: "vaultLpExt", signer: false, writable: true },
   { name: "systemProgram", signer: false, writable: false }
+];
+var ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B = [
+  ...ACCOUNTS_VAULT_LP_ALLOCATE_P2B,
+  { name: "bondTranche", signer: false, writable: false }
 ];
 function assertVaultLpDialsP2b(d) {
   int3("allocAlphaBps", d.allocAlphaBps, 0, ALLOC_ALPHA_MAX_BPS_P2B);
@@ -7796,8 +7812,8 @@ function u64(b, o) {
   return new DataView(b.buffer, b.byteOffset, b.byteLength).getBigUint64(o, true);
 }
 function i128(b, o) {
-  const dv7 = new DataView(b.buffer, b.byteOffset, b.byteLength);
-  return dv7.getBigInt64(o + 8, true) << 64n | dv7.getBigUint64(o, true);
+  const dv8 = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  return dv8.getBigInt64(o + 8, true) << 64n | dv8.getBigUint64(o, true);
 }
 function key(b, o) {
   return new PublicKey13(b.slice(o, o + 32));
@@ -11057,8 +11073,8 @@ function readTradeFeeInputsV22(marketData, assetIndex, matcherCtxData) {
   const g = resolveMarketGeometry(marketData, { parser: "readTradeFeeInputsV22", strictLength: false });
   const cfgOff = g.groupOff + g.layout.group.config + ENGINE_CONFIG_MAX_TRADING_FEE_BPS_OFF;
   if (marketData.length < cfgOff + 8) throw new Error("readTradeFeeInputsV22: market account too short for the engine config");
-  const dv7 = new DataView(marketData.buffer, marketData.byteOffset, marketData.byteLength);
-  const maxTradingFeeBps = dv7.getBigUint64(cfgOff, true);
+  const dv8 = new DataView(marketData.buffer, marketData.byteOffset, marketData.byteLength);
+  const maxTradingFeeBps = dv8.getBigUint64(cfgOff, true);
   const tradeFeeBaseBps = parseWrapperConfigV17(marketData).tradeFeeBps;
   const risk = decodeAssetRiskLimitsP1(marketData, assetIndex);
   const out = {
@@ -11098,11 +11114,12 @@ function buildResolveStalePermissionlessIxV22(programId, market, nowSlot) {
     data: Buffer.from(encodeResolveStalePermissionless(nowSlot))
   });
 }
-function staleResolveStatusV22(marketData, nowSlot) {
+function staleResolveStatusV22(marketData, clusterSlot, wireNowSlot) {
+  const nowSlot = clusterSlot;
   const g = resolveMarketGeometry(marketData, { parser: "staleResolveStatusV22", strictLength: false });
-  const dv7 = new DataView(marketData.buffer, marketData.byteOffset, marketData.byteLength);
+  const dv8 = new DataView(marketData.buffer, marketData.byteOffset, marketData.byteLength);
   const mode = marketData[g.groupOff + g.layout.group.mode];
-  const currentSlot = dv7.getBigUint64(g.groupOff + g.layout.group.currentSlot, true);
+  const currentSlot = dv8.getBigUint64(g.groupOff + g.layout.group.currentSlot, true);
   const cfg = parseWrapperConfigV17(marketData);
   const staleSlots = cfg.permissionlessResolveStaleSlots;
   const lastGood = cfg.lastGoodOracleSlot;
@@ -11113,10 +11130,152 @@ function staleResolveStatusV22(marketData, nowSlot) {
   else if (nowSlot < currentSlot) refusalCode = 19;
   else if (!matured) refusalCode = 27;
   const slotsRemaining = maturesAtSlot === null ? null : maturesAtSlot > nowSlot ? maturesAtSlot - nowSlot : 0n;
-  return { mode, staleSlots, lastGoodOracleSlot: lastGood, maturesAtSlot, slotsRemaining, canResolve: refusalCode === null, refusalCode };
+  const wire = wireNowSlot === void 0 ? null : BigInt(wireNowSlot);
+  return {
+    mode,
+    staleSlots,
+    lastGoodOracleSlot: lastGood,
+    maturesAtSlot,
+    slotsRemaining,
+    evaluatedAtSlot: nowSlot,
+    wireNowSlot: wire,
+    wireNowSlotIgnored: wire !== null && wire !== nowSlot,
+    canResolve: refusalCode === null,
+    refusalCode
+  };
 }
 function staleResolveErrorContextV22(status) {
   return { action: "resolve", staleSlotsRemaining: status.slotsRemaining };
+}
+
+// src/abi/v22-funding.ts
+var FUNDING_DEN_V22 = 1000000000n;
+var ADL_ONE_V22 = 1000000000000000n;
+var FUNDING_SLOTS_PER_DAY_V22 = SLOTS_PER_YEAR_V22 / 365n;
+var OFF_CFG_MAX_ACCRUAL_DT = 118;
+var OFF_CFG_MAX_ABS_FUNDING = 126;
+var OFF_CFG_MIN_FUNDING_LIFETIME = 134;
+var A_EFFECTIVE_PRICE = 25;
+var A_FUND_PX_LAST = 33;
+var A_SLOT_LAST = 41;
+var A_A_LONG = 49;
+var A_A_SHORT = 65;
+var A_K_LONG = 81;
+var A_K_SHORT = 97;
+var A_F_LONG = 113;
+var A_F_SHORT = 129;
+var A_KF_EPOCH_LONG = 145;
+var A_KF_EPOCH_SHORT = 153;
+var A_OI_LONG = 289;
+var A_OI_SHORT = 305;
+var P_ORACLE_MODE = 0;
+var P_MARK_EWMA = 168;
+var P_FUNDING_MARK = 432;
+var P_FUNDING_MARK_PENDING = 440;
+var P_FUNDING_MARK_PENDING_SLOT = 448;
+var V_LP_NET_Q = 32;
+var V_SKEW_SLOPE = 72;
+var V_SKEW_MAX = 80;
+var V_FLAGS = 90;
+var PRICE_MANAGED_MODES = /* @__PURE__ */ new Set([1, 2, 3]);
+var dv5 = (d) => new DataView(d.buffer, d.byteOffset, d.byteLength);
+var u643 = (d, o) => dv5(d).getBigUint64(o, true);
+var u1283 = (d, o) => dv5(d).getBigUint64(o + 8, true) << 64n | dv5(d).getBigUint64(o, true);
+var i1283 = (d, o) => (dv5(d).getBigInt64(o + 8, true) << 64n) + dv5(d).getBigUint64(o, true);
+function premiumFundingRateE9V22(markE6, indexE6, maxAbsRateE9) {
+  if (maxAbsRateE9 === 0n || markE6 === 0n || indexE6 === 0n || markE6 === indexE6) return 0n;
+  const diff = markE6 > indexE6 ? markE6 - indexE6 : indexE6 - markE6;
+  const premium = diff * FUNDING_DEN_V22 / indexE6;
+  const bounded = premium < maxAbsRateE9 ? premium : maxAbsRateE9;
+  return markE6 > indexE6 ? bounded : -bounded;
+}
+function skewFundingRateE9V22(lpNetQ, oiSideQ, slopeE9, maxE9) {
+  if (slopeE9 === 0n || maxE9 === 0n || lpNetQ === 0n || oiSideQ === 0n) return 0n;
+  const abs = lpNetQ < 0n ? -lpNetQ : lpNetQ;
+  const share = abs > oiSideQ ? oiSideQ : abs;
+  const mag = slopeE9 * share / oiSideQ;
+  const capped = mag > maxE9 ? maxE9 : mag;
+  return lpNetQ < 0n ? capped : -capped;
+}
+function combineFundingRateE9V22(premiumE9, skewE9, maxAbsE9) {
+  const sum = premiumE9 + skewE9;
+  if (sum > maxAbsE9) return maxAbsE9;
+  if (sum < -maxAbsE9) return -maxAbsE9;
+  return sum;
+}
+function decodeMarketFundingV22(marketData) {
+  const g = resolveMarketGeometry(marketData, { parser: "decodeMarketFundingV22", strictLength: false });
+  if (g.layout.version !== 19) {
+    throw new UnknownLayoutError("UNKNOWN_VERSION", "decodeMarketFundingV22", `needs a v2.2 market (VERSION 19), got VERSION ${g.layout.version}`, { version: g.layout.version });
+  }
+  const cfg = g.groupOff + g.layout.group.config;
+  const maxAbs = u643(marketData, cfg + OFF_CFG_MAX_ABS_FUNDING);
+  const assets = [];
+  for (let i = 0; i < g.slotCount; i++) {
+    const ws = g.slotOff(i);
+    const es = g.engineOff(i);
+    const wrapperProfile = ws + g.layout.wrapperSlot.oracleProfile;
+    const vaultLp = ws + g.layout.wrapperSlot.vaultLp;
+    const oracleMode = marketData[wrapperProfile + P_ORACLE_MODE];
+    const effective = u643(marketData, es + A_EFFECTIVE_PRICE);
+    const slotLast = u643(marketData, es + A_SLOT_LAST);
+    const oiL = u1283(marketData, es + A_OI_LONG);
+    const oiS = u1283(marketData, es + A_OI_SHORT);
+    const mark = u643(marketData, wrapperProfile + P_FUNDING_MARK);
+    const markEwma = u643(marketData, wrapperProfile + P_MARK_EWMA);
+    const pendingE6 = u643(marketData, wrapperProfile + P_FUNDING_MARK_PENDING);
+    const pendingSlot = u643(marketData, wrapperProfile + P_FUNDING_MARK_PENDING_SLOT);
+    const activeMark = mark !== 0n ? mark : markEwma;
+    const bound = (marketData[vaultLp + V_FLAGS] & 1) === 1;
+    const slope = u643(marketData, vaultLp + V_SKEW_SLOPE);
+    const skewMax = u643(marketData, vaultLp + V_SKEW_MAX);
+    const lpNetQ = i1283(marketData, vaultLp + V_LP_NET_Q);
+    const managed = PRICE_MANAGED_MODES.has(oracleMode);
+    const premium = managed ? premiumFundingRateE9V22(activeMark, effective, maxAbs) : 0n;
+    const skew = managed && maxAbs !== 0n && bound && slope !== 0n ? skewFundingRateE9V22(lpNetQ, oiL > oiS ? oiL : oiS, slope, skewMax) : 0n;
+    const rate = managed && maxAbs !== 0n ? combineFundingRateE9V22(premium, skew, maxAbs) : 0n;
+    assets.push({
+      assetIndex: i,
+      kLong: i1283(marketData, es + A_K_LONG),
+      kShort: i1283(marketData, es + A_K_SHORT),
+      fLongNum: i1283(marketData, es + A_F_LONG),
+      fShortNum: i1283(marketData, es + A_F_SHORT),
+      kfEpochLong: u643(marketData, es + A_KF_EPOCH_LONG),
+      kfEpochShort: u643(marketData, es + A_KF_EPOCH_SHORT),
+      aLong: u1283(marketData, es + A_A_LONG),
+      aShort: u1283(marketData, es + A_A_SHORT),
+      fundPxLast: u643(marketData, es + A_FUND_PX_LAST),
+      effectivePriceE6: effective,
+      slotLast,
+      oiEffLongQ: oiL,
+      oiEffShortQ: oiS,
+      oracleMode,
+      fundingMarkE6: activeMark,
+      pendingMark: pendingE6 !== 0n && pendingSlot > slotLast,
+      vaultLpBound: bound,
+      lpNetQ,
+      skewSlopeE9: slope,
+      skewMaxE9: skewMax,
+      premiumRateE9PerSlot: premium,
+      skewRateE9PerSlot: skew,
+      rateE9PerSlot: rate,
+      payer: rate > 0n ? "longs" : rate < 0n ? "shorts" : "none",
+      fundingActive: oiL !== 0n && oiS !== 0n
+    });
+  }
+  return {
+    maxAbsFundingE9PerSlot: maxAbs,
+    minFundingLifetimeSlots: u643(marketData, cfg + OFF_CFG_MIN_FUNDING_LIFETIME),
+    maxAccrualDtSlots: u643(marketData, cfg + OFF_CFG_MAX_ACCRUAL_DT),
+    assets
+  };
+}
+function fundingRatePercentPerDayV22(rateE9PerSlot) {
+  return Number(rateE9PerSlot) / 1e9 * Number(FUNDING_SLOTS_PER_DAY_V22) * 100;
+}
+function impliedFundingRateE9V22(deltaFShortNum, dtSlots, priceE6, aShort = ADL_ONE_V22) {
+  if (dtSlots <= 0n || priceE6 <= 0n || aShort <= 0n) return 0n;
+  return deltaFShortNum * FUNDING_DEN_V22 / (dtSlots * priceE6 * aShort);
 }
 
 // src/solana/pda.ts
@@ -11431,17 +11590,17 @@ var ALL_SLAB_SIZES = [
 ];
 var SLAB_DATA_SIZE = SLAB_TIERS.large.dataSize;
 var HEADER_SLICE_LENGTH = 1940;
-function dv5(data) {
+function dv6(data) {
   return new DataView(data.buffer, data.byteOffset, data.byteLength);
 }
 function readU16LE3(data, off) {
-  return dv5(data).getUint16(off, true);
+  return dv6(data).getUint16(off, true);
 }
 function readU64LE3(data, off) {
-  return dv5(data).getBigUint64(off, true);
+  return dv6(data).getBigUint64(off, true);
 }
 function readI64LE2(data, off) {
-  return dv5(data).getBigInt64(off, true);
+  return dv6(data).getBigInt64(off, true);
 }
 function readU128LE2(buf, offset) {
   const lo = readU64LE3(buf, offset);
@@ -12166,7 +12325,7 @@ function computeRaydiumClmmPriceE6(data) {
   if (data.length < RAYDIUM_CLMM_MIN_LEN) {
     throw new Error(`Raydium CLMM data too short: ${data.length} < ${RAYDIUM_CLMM_MIN_LEN}`);
   }
-  const dv7 = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const dv8 = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const decimals0 = data[233];
   const decimals1 = data[234];
   if (decimals0 > MAX_TOKEN_DECIMALS || decimals1 > MAX_TOKEN_DECIMALS) {
@@ -12174,7 +12333,7 @@ function computeRaydiumClmmPriceE6(data) {
       `Raydium CLMM: decimals out of range (${decimals0}, ${decimals1}); max ${MAX_TOKEN_DECIMALS}`
     );
   }
-  const sqrtPriceX64 = readU128LE3(dv7, 253);
+  const sqrtPriceX64 = readU128LE3(dv8, 253);
   if (sqrtPriceX64 === 0n) {
     throw new Error(
       "Raydium CLMM pool has sqrt_price_x64 = 0 \u2014 uninitialized; refusing to report a price"
@@ -12209,9 +12368,9 @@ function computeMeteoraDlmmPriceE6(data, decimalsBase, decimalsQuote) {
   }
   assertTokenDecimals("Meteora DLMM", "base", decimalsBase);
   assertTokenDecimals("Meteora DLMM", "quote", decimalsQuote);
-  const dv7 = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const binStep = dv7.getUint16(80, true);
-  const activeId = dv7.getInt32(76, true);
+  const dv8 = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const binStep = dv8.getUint16(80, true);
+  const activeId = dv8.getInt32(76, true);
   if (binStep === 0) {
     throw new Error(
       "Meteora DLMM pair has binStep = 0 \u2014 uninitialized; refusing to report a price"
@@ -12259,14 +12418,14 @@ function computeMeteoraDlmmPriceE6(data, decimalsBase, decimalsQuote) {
     return result / (1000000000000n * 10n ** BigInt(-diff));
   }
 }
-function readU64LE4(dv7, offset) {
-  const lo = BigInt(dv7.getUint32(offset, true));
-  const hi = BigInt(dv7.getUint32(offset + 4, true));
+function readU64LE4(dv8, offset) {
+  const lo = BigInt(dv8.getUint32(offset, true));
+  const hi = BigInt(dv8.getUint32(offset + 4, true));
   return lo | hi << 32n;
 }
-function readU128LE3(dv7, offset) {
-  const lo = readU64LE4(dv7, offset);
-  const hi = readU64LE4(dv7, offset + 8);
+function readU128LE3(dv8, offset) {
+  const lo = readU64LE4(dv8, offset);
+  const hi = readU64LE4(dv8, offset + 8);
   return lo | hi << 64n;
 }
 
@@ -12583,9 +12742,9 @@ function readU64LEAt(data, off) {
 }
 function readU128LEAt(data, off) {
   if (off + 16 > data.length) throw new Error(`readU128LEAt: out of bounds at ${off}`);
-  const dv7 = new DataView(data.buffer, data.byteOffset + off, 16);
-  const lo = dv7.getBigUint64(0, true);
-  const hi = dv7.getBigUint64(8, true);
+  const dv8 = new DataView(data.buffer, data.byteOffset + off, 16);
+  const lo = dv8.getBigUint64(0, true);
+  const hi = dv8.getBigUint64(8, true);
   return hi << 64n | lo;
 }
 var V17_GROUP_CONFIG_REL = 32;
@@ -13296,11 +13455,11 @@ function readAssetPricesP3(marketData, assetIndex) {
 function view(d) {
   return new DataView(d.buffer, d.byteOffset, d.byteLength);
 }
-function u1283(v, o) {
+function u1284(v, o) {
   return v.getBigUint64(o + 8, true) << 64n | v.getBigUint64(o, true);
 }
-function i1283(v, o) {
-  const x = u1283(v, o);
+function i1284(v, o) {
+  const x = u1284(v, o);
   return x >= 1n << 127n ? x - (1n << 128n) : x;
 }
 function key2(d, o) {
@@ -13316,18 +13475,18 @@ function decodeVaultLpStateP3(data) {
     registry: key2(data, O.registry),
     lpPortfolio: key2(data, O.lpPortfolio),
     juniorOwner: key2(data, O.juniorOwner),
-    seniorClaimAtoms: u1283(v, O.seniorClaimAtoms),
-    juniorDepositedAtoms: u1283(v, O.juniorDepositedAtoms),
-    juniorWithdrawnAtoms: u1283(v, O.juniorWithdrawnAtoms),
-    seniorFeeCreditedAtoms: u1283(v, O.seniorFeeCreditedAtoms),
-    recalledAtoms: u1283(v, O.recalledAtoms),
+    seniorClaimAtoms: u1284(v, O.seniorClaimAtoms),
+    juniorDepositedAtoms: u1284(v, O.juniorDepositedAtoms),
+    juniorWithdrawnAtoms: u1284(v, O.juniorWithdrawnAtoms),
+    seniorFeeCreditedAtoms: u1284(v, O.seniorFeeCreditedAtoms),
+    recalledAtoms: u1284(v, O.recalledAtoms),
     assetIndex: v.getUint16(O.assetIndex, true),
     juniorFloorBps: v.getUint16(O.juniorFloorBps, true),
     seniorFeeShareBps: v.getUint16(O.seniorFeeShareBps, true),
     version: data[O.version],
     bump: data[O.bump],
-    seniorDrawnAtoms: u1283(v, O.seniorDrawnAtoms),
-    seniorDrawOutstandingAtoms: u1283(v, O.seniorDrawOutstandingAtoms)
+    seniorDrawnAtoms: u1284(v, O.seniorDrawnAtoms),
+    seniorDrawOutstandingAtoms: u1284(v, O.seniorDrawOutstandingAtoms)
   };
   const padZero = data.subarray(O.padding, O.padding + 8).every((b) => b === 0);
   if (st.version !== 1 || st.juniorFloorBps < 1e3 || st.juniorFloorBps > 1e4 || st.seniorFeeShareBps !== 1e4 || !padZero) {
@@ -13341,10 +13500,10 @@ function decodeAssetVaultLpDrawP3(marketData, assetIndex) {
   if (marketData.length < off + ASSET_VAULT_LP_DRAW_LEN_P3) throw new Error(`AssetVaultLpDrawV18: market data too short for asset ${assetIndex}`);
   const v = view(marketData);
   const r2 = {
-    pendingOutEvenAtoms: u1283(v, off),
-    pendingOutOddAtoms: u1283(v, off + 16),
-    outstandingMirrorAtoms: u1283(v, off + 32),
-    pendingMovedAtoms: u1283(v, off + 48)
+    pendingOutEvenAtoms: u1284(v, off),
+    pendingOutOddAtoms: u1284(v, off + 16),
+    outstandingMirrorAtoms: u1284(v, off + 32),
+    pendingMovedAtoms: u1284(v, off + 48)
   };
   return { ...r2, hasPendingDraw: r2.pendingMovedAtoms !== 0n || r2.pendingOutEvenAtoms !== 0n || r2.pendingOutOddAtoms !== 0n };
 }
@@ -13357,8 +13516,8 @@ function decodeAssetVaultLpRecordP3(rec) {
   const bound = (flags & ASSET_VAULT_LP_FLAG_BOUND_P3) !== 0;
   const out = {
     vaultLpPortfolio: zero32(F.vaultLpPortfolio) ? null : key2(rec, F.vaultLpPortfolio),
-    lpNetQ: i1283(v, F.lpNetQ),
-    levCapQ: u1283(v, F.levCapQ),
+    lpNetQ: i1284(v, F.lpNetQ),
+    levCapQ: u1284(v, F.levCapQ),
     lpNetSlot: v.getBigUint64(F.lpNetSlot, true),
     skewSlopeE9: v.getBigUint64(F.skewSlopeE9, true),
     skewMaxE9: v.getBigUint64(F.skewMaxE9, true),
@@ -13668,10 +13827,10 @@ function decodeResolvedPayoutReceiptP3(portfolioData) {
   const present = portfolioData[o + 64] !== 0;
   const finalized = portfolioData[o + 65] !== 0;
   return {
-    priorBoundContributionNum: u1283(v, o),
-    liveReleasedFaceAtReceipt: u1283(v, o + 16),
-    terminalPositiveClaimFace: u1283(v, o + 32),
-    paidEffective: u1283(v, o + 48),
+    priorBoundContributionNum: u1284(v, o),
+    liveReleasedFaceAtReceipt: u1284(v, o + 16),
+    terminalPositiveClaimFace: u1284(v, o + 32),
+    paidEffective: u1284(v, o + 48),
     present,
     finalized,
     open: present && !finalized
@@ -13752,11 +13911,11 @@ var ENGINE_ASSET_SLOT_OFF_V18 = Object.freeze({
 });
 var ENGINE_BOUND_SCALE = 1000000000000n;
 var MARKET_MODE_V18 = Object.freeze({ Live: 0, Resolved: 1, Recovery: 2 });
-function u1284(d, o) {
+function u1285(d, o) {
   const v = new DataView(d.buffer, d.byteOffset, d.byteLength);
   return v.getBigUint64(o + 8, true) << 64n | v.getBigUint64(o, true);
 }
-function u643(d, o) {
+function u644(d, o) {
   return new DataView(d.buffer, d.byteOffset, d.byteLength).getBigUint64(o, true);
 }
 var min = (a, b) => a < b ? a : b;
@@ -13780,16 +13939,16 @@ function decodeTerminalInsuranceCapacity(marketData, assetIndex = 0) {
   if (!Number.isInteger(assetIndex) || assetIndex < 0 || marketData.length < slotBase + E.insuranceReservationShort + 16) {
     throw new Error(`market account too short for asset ${assetIndex}`);
   }
-  const vault = u1284(marketData, H + hdr.vault);
-  const insurance = u1284(marketData, H + hdr.insurance);
-  const sourceReserved = u1284(marketData, H + hdr.sourceInsuranceCreditReservedTotalAtoms);
+  const vault = u1285(marketData, H + hdr.vault);
+  const insurance = u1285(marketData, H + hdr.insurance);
+  const sourceReserved = u1285(marketData, H + hdr.sourceInsuranceCreditReservedTotalAtoms);
   const globalAvailable = subSat(insurance, sourceReserved);
   const mode = marketData[H + hdr.mode];
   const dom = (side) => {
     const L = side === "long";
-    const budget = u1284(marketData, slotBase + (L ? E.insuranceDomainBudgetLong : E.insuranceDomainBudgetShort));
-    const spent = u1284(marketData, slotBase + (L ? E.insuranceDomainSpentLong : E.insuranceDomainSpentShort));
-    const reservedAtoms = ceilDiv2(u1284(marketData, slotBase + (L ? E.insuranceReservationLong : E.insuranceReservationShort)), ENGINE_BOUND_SCALE);
+    const budget = u1285(marketData, slotBase + (L ? E.insuranceDomainBudgetLong : E.insuranceDomainBudgetShort));
+    const spent = u1285(marketData, slotBase + (L ? E.insuranceDomainSpentLong : E.insuranceDomainSpentShort));
+    const reservedAtoms = ceilDiv2(u1285(marketData, slotBase + (L ? E.insuranceReservationLong : E.insuranceReservationShort)), ENGINE_BOUND_SCALE);
     const budgetRemaining = subSat(subSat(budget, spent), reservedAtoms);
     return {
       domain: assetIndex * 2 + (L ? 0 : 1),
@@ -13809,11 +13968,11 @@ function decodeTerminalInsuranceCapacity(marketData, assetIndex = 0) {
     resolved: mode === MARKET_MODE_V18.Resolved,
     vault,
     insurance,
-    cTot: u1284(marketData, H + hdr.cTot),
-    materializedPortfolioCount: u643(marketData, H + hdr.materializedPortfolioCount),
+    cTot: u1285(marketData, H + hdr.cTot),
+    materializedPortfolioCount: u644(marketData, H + hdr.materializedPortfolioCount),
     sourceInsuranceCreditReservedTotalAtoms: sourceReserved,
     globalAvailable,
-    headerBudgetRemainingTotal: u1284(marketData, H + hdr.insuranceDomainBudgetRemainingTotal),
+    headerBudgetRemainingTotal: u1285(marketData, H + hdr.insuranceDomainBudgetRemainingTotal),
     assetBudgetRemaining: subSat(domains[0].budget, domains[0].spent) + subSat(domains[1].budget, domains[1].spent),
     domains,
     terminalCapacity: min(min(sum, globalAvailable), vault)
@@ -13909,7 +14068,13 @@ function isLpVaultRegistryExtP2b(registryData) {
   if (b !== 0 && b !== 1) throw new Error(`registry ext flag must be 0|1, got ${b}`);
   return b === 1;
 }
-function dv6(d) {
+function isLpVaultRegistryBondP2b(registryData) {
+  if (registryData.length <= LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B) throw new Error("registry account too short for the bond flag");
+  const b = registryData[LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B];
+  if (b !== 0 && b !== 1) throw new Error(`registry bond flag must be 0|1, got ${b}`);
+  return b === 1;
+}
+function dv7(d) {
   return new DataView(d.buffer, d.byteOffset, d.byteLength);
 }
 function u128At(v, o) {
@@ -13917,7 +14082,7 @@ function u128At(v, o) {
 }
 function decodeVaultLpExtV19(data) {
   if (data.length < VAULT_LP_EXT_ACCOUNT_LEN_P2B) throw new Error(`VaultLpExtV19: need ${VAULT_LP_EXT_ACCOUNT_LEN_P2B} bytes, got ${data.length}`);
-  const v = dv6(data);
+  const v = dv7(data);
   if (v.getBigUint64(0, true) !== V17_MAGIC) throw new Error("VaultLpExtV19: invalid v17 magic");
   resolveLayout(data, { parser: "VaultLpExtV19" });
   if (data[V17_KIND_OFF] !== KIND_VAULT_LP_EXT_P2B) throw new Error(`VaultLpExtV19: kind ${data[V17_KIND_OFF]} != ${KIND_VAULT_LP_EXT_P2B}`);
@@ -13948,10 +14113,11 @@ async function fetchVaultLpExtP2b(conn, programId, market) {
   if (!info) return null;
   return decodeVaultLpExtV19(new Uint8Array(info.data));
 }
-function buildVaultLpAllocateIxP2b(m, cranker, amount = U128_MAX_P2B) {
+function buildVaultLpAllocateIxP2b(m, cranker, amount = U128_MAX_P2B, opts = {}) {
+  const bond = opts.bondTranche === true;
   return new TransactionInstruction8({
     programId: m.programId,
-    keys: buildAccountMetas(ACCOUNTS_VAULT_LP_ALLOCATE_P2B, {
+    keys: buildAccountMetas(bond ? ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B : ACCOUNTS_VAULT_LP_ALLOCATE_P2B, {
       cranker,
       market: m.market,
       registry: deriveLpVaultRegistry(m.programId, m.market)[0],
@@ -13960,7 +14126,8 @@ function buildVaultLpAllocateIxP2b(m, cranker, amount = U128_MAX_P2B) {
       ledger: deriveLpBackingLedger(m.programId, m.market, m.registryDomain)[0],
       siblingLedger: deriveLpBackingLedger(m.programId, m.market, m.registryDomain ^ 1)[0],
       vaultLpExt: deriveVaultLpExtP2b(m.programId, m.market)[0],
-      systemProgram: SystemProgram5.programId
+      systemProgram: SystemProgram5.programId,
+      ...bond ? { bondTranche: deriveBondTrancheV22(m.programId, m.market)[0] } : {}
     }),
     data: Buffer.from(encodeVaultLpAllocateP2b(amount))
   });
@@ -14008,7 +14175,7 @@ function buildExecuteRedemptionIxNonBoundP2b(m, cranker, redeemer, redeemerDest,
 }
 function decodeBackingDomainLedgerP2b(data) {
   if (data.length !== BACKING_DOMAIN_LEDGER_ACCOUNT_LEN_P2B) throw new Error(`BackingDomainLedger: need exactly ${BACKING_DOMAIN_LEDGER_ACCOUNT_LEN_P2B} bytes, got ${data.length}`);
-  const v = dv6(data);
+  const v = dv7(data);
   if (v.getBigUint64(0, true) !== V17_MAGIC) throw new Error("BackingDomainLedger: invalid v17 magic");
   resolveLayout(data, { parser: "BackingDomainLedger" });
   if (data[V17_KIND_OFF] !== KIND_BACKING_DOMAIN_LEDGER_P2B) throw new Error(`BackingDomainLedger: kind ${data[V17_KIND_OFF]} != ${KIND_BACKING_DOMAIN_LEDGER_P2B}`);
@@ -14044,7 +14211,7 @@ function readPotEngineRecordsP2b(marketData, domain) {
   const scOff = engineBase + (short ? g.layout.engineSlot.sourceCreditShort : g.layout.engineSlot.sourceCreditLong);
   const bkOff = engineBase + (short ? g.layout.engineSlot.backingShort : g.layout.engineSlot.backingLong);
   if (marketData.length < bkOff + 97 || marketData.length < scOff + SOURCE_CREDIT_LEN_P2B) throw new Error(`market account too short for domain ${domain}`);
-  const v = dv6(marketData);
+  const v = dv7(marketData);
   const S = SOURCE_CREDIT_FIELD_OFF_P2B;
   const K = BACKING_BUCKET_FIELD_OFF_P2B;
   return {
@@ -16110,6 +16277,7 @@ export {
   ACCOUNTS_UPDATE_HYPERP_MARK,
   ACCOUNTS_UPDATE_MAINTENANCE_FEE_PER_SLOT,
   ACCOUNTS_UPDATE_TRADE_FEE_POLICY,
+  ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B,
   ACCOUNTS_VAULT_LP_ALLOCATE_P2B,
   ACCOUNTS_VAULT_LP_CONVERT_PNL_P3,
   ACCOUNTS_VAULT_LP_RECALL_P3,
@@ -16132,6 +16300,7 @@ export {
   ACCOUNT_KIND,
   ACCOUNT_TAILS_V22,
   ADL_EPISODE_FIELD_OFF,
+  ADL_ONE_V22,
   ADL_WIND_DOWN_DEFAULT_MAX_EPISODE_SLOTS,
   ADL_WIND_DOWN_MAX_MARK_AGE_SLOTS,
   ALLOC_ALPHA_DEFAULT_BPS_P2B,
@@ -16228,6 +16397,8 @@ export {
   FILL_REC_LEN_V22,
   FLOOR_JUNIOR,
   FLOOR_SENIOR,
+  FUNDING_DEN_V22,
+  FUNDING_SLOTS_PER_DAY_V22,
   G9_DELAY_SLOTS_V22,
   G9_EPOCH_CAP_BPS_V22,
   G9_EPOCH_SLOTS_V22,
@@ -16299,6 +16470,7 @@ export {
   LP_SHARE_URI_BASE_MAINNET_V22,
   LP_SHARE_URI_PATH_V22,
   LP_VAULT_MINIMUM_LIQUIDITY_P3,
+  LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B,
   LP_VAULT_REGISTRY_BOUND_FLAG_OFF_P3,
   LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B,
   LaunchBundleTooLargeError,
@@ -16654,6 +16826,7 @@ export {
   classifyLighthouseError,
   classifyRedemptionSimulationV22,
   clearStaticMarkets,
+  combineFundingRateE9V22,
   commitSlotForPendingTargetV5,
   compileV1Message,
   computeBudgetInstructions,
@@ -16711,6 +16884,7 @@ export {
   decodeG9FeedAllowlistV22,
   decodeInsuranceUnitsV20,
   decodeLpRedemptionV22,
+  decodeMarketFundingV22,
   decodeMatcherCallExt,
   decodeMatcherRequestedFeeBps,
   decodeMatcherReturn,
@@ -17014,6 +17188,7 @@ export {
   flushToInsuranceAccounts,
   forcedRecoveryMinutesV22,
   formatResult,
+  fundingRatePercentPerDayV22,
   g9DelayElapsedV22,
   g9EpochRoomV22,
   g9PhaseV22,
@@ -17031,6 +17206,7 @@ export {
   getStakeProgramId,
   getStaticMarkets,
   growthMatcherCapsV3,
+  impliedFundingRateE9V22,
   imrBpsForLeverageX100,
   initPoolAccounts,
   insMintAdmissibleV22,
@@ -17048,6 +17224,7 @@ export {
   isLighthouseFailureInLogs,
   isLighthouseInstruction,
   isLpShareTickerV22,
+  isLpVaultRegistryBondP2b,
   isLpVaultRegistryBoundP3,
   isLpVaultRegistryExtP2b,
   isMatcherCtxV2,
@@ -17124,6 +17301,7 @@ export {
   portfolioAccountLenV22,
   portfolioFilterForLayout,
   potPhysicalNetAtomsP2b,
+  premiumFundingRateE9V22,
   previewGrowthOpenFee,
   priorityFeeLamportsFromMicroPerCu,
   qToTokenQV22,
@@ -17174,6 +17352,7 @@ export {
   signV1Message,
   simulateOrSend,
   simulateV1,
+  skewFundingRateE9V22,
   slabDataSize,
   slabDataSizeV1,
   stakeDeadLp,

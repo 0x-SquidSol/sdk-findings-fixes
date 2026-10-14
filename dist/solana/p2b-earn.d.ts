@@ -41,6 +41,19 @@ export declare function deriveVaultLpExtP2b(programId: PublicKey, market: Public
  * ```
  */
 export declare function isLpVaultRegistryExtP2b(registryData: Uint8Array): boolean;
+/**
+ * True if an LP-vault registry has its "BondTrancheV20 exists" flag set (`_reserved[2] == 1`, account byte 162).
+ * While set, tag 103 (and 78 bound / 97 / 102 Resolved) REQUIRE the bond tranche account.
+ *
+ * @param registryData  Raw LpVaultRegistry account bytes.
+ * @returns Whether the bond tranche exists.
+ * @throws If the flag byte is neither 0 nor 1 (the program rejects it too) or the account is short.
+ * @example
+ * ```ts
+ * const ix = buildVaultLpAllocateIxP2b(m, cranker, U128_MAX_P2B, { bondTranche: isLpVaultRegistryBondP2b(reg.data) });
+ * ```
+ */
+export declare function isLpVaultRegistryBondP2b(registryData: Uint8Array): boolean;
 /** Decoded `VaultLpExtV19`. */
 export interface VaultLpExtV19 {
     marketGroup: PublicKey;
@@ -93,20 +106,28 @@ export declare function fetchVaultLpExtP2b(conn: Pick<Connection, "getAccountInf
  * (the first call creates it, the cranker paying rent). `amount` defaults to `u128::MAX`: the
  * program clamps to `min(alpha*C_eff - allocated, drawable - buffer*C_eff)`.
  *
- * Compute: tag 103 runs a full certificate refresh of the vault LP; budget it like tag 77
+ * On a BOND market (registry bond flag set, see {@link isLpVaultRegistryBondP2b}) the program requires the
+ * `["bond_tranche", market]` account at `[9]` (fail closed): pass `opts.bondTranche: true`. Without it the deployed
+ * wrapper returns NotEnoughAccountKeys (devnet 6kpg2wi7, SOL market, simulated 2026-10-14).
+ *
+ * Compute: tag 103 runs a full certificate refresh of the vault LP (~230k CU on devnet); budget it like tag 77
  * ({@link RECOMMENDED_CU_P3}). Send it only on a bound market (`isLpVaultRegistryBoundP3`); Custom 100
  * means "no room right now", not a failure of the client.
  *
  * @param m        Market context (`registryDomain`, `lpPortfolio`).
  * @param cranker  Signer; pays the ext rent on the first call.
  * @param amount   Atoms requested (default `u128::MAX`).
- * @returns Instruction.
+ * @param opts     `bondTranche: true` appends the bond tranche PDA at `[9]` (required on a bond market).
+ * @returns Instruction (9 accounts, or 10 with the bond tranche).
  * @example
  * ```ts
- * const ix = buildVaultLpAllocateIxP2b(m, keeper.publicKey);
+ * const bond = isLpVaultRegistryBondP2b(registryAccount.data);
+ * const ix = buildVaultLpAllocateIxP2b(m, keeper.publicKey, U128_MAX_P2B, { bondTranche: bond });
  * ```
  */
-export declare function buildVaultLpAllocateIxP2b(m: VaultLpMarketP3, cranker: PublicKey, amount?: bigint): TransactionInstruction;
+export declare function buildVaultLpAllocateIxP2b(m: VaultLpMarketP3, cranker: PublicKey, amount?: bigint, opts?: {
+    bondTranche?: boolean;
+}): TransactionInstruction;
 /**
  * Build tag 99 in its dials form (81 bytes, 6 accounts): the legacy risk fields plus the allocation
  * and cushion dials; creates the ext on first use. Upgrade-authority only; the authority pays rent.
