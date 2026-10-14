@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest";
 import {
   ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, decodeAssetGrowthRecordV19,
-  depthPushUpdate, depthRateLimited, usableDepthE6, rentSnapshotNCapQ, collateralDecimalsOf, wholeTokenAtoms, DEPTH_BOOTSTRAP_DIV, depthEpoch,
+  depthPushUpdate, depthRateLimited, usableDepthE6, rentSnapshotNCapQ, collateralDecimalsOf, wholeTokenAtoms, DEPTH_BOOTSTRAP_DIV, depthRiseStamp, depthRiseWindowOpen, growthCollateralDecimalsOk,
   DEPTH_EVER, DEPTH_PREV_REAL, freshDepthE6, DEPTH_SOURCE, depthSourceOf, depthEver, depthSourceByteOk, effectiveDepthE6, stickyDepthE6, capDepthE6,
   tierThresholdsE6, depthTierFor, attestedMaxTierEff, venueTier, bookDepthFromPins, bookCapacityE6, bookDepthE6, bookTier, combinedTier,
   tierLeverage, lTableX100, tierConfigOk, attestedMaxTierOk, mergeTierConfigAtBind, validateTierConfig,
@@ -176,7 +176,7 @@ describe("validateTierConfig (client-side, calm messages)", () => {
   });
 });
 
-const st = (d: bigint, p: bigint, s: bigint): DepthState => ({ depthE6: d, depthPrevE6: p, depthSlot: s, depthSource: d === 0n ? 0 : 1, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 });
+const st = (d: bigint, p: bigint, s: bigint): DepthState => ({ depthE6: d, depthPrevE6: p, depthSlot: s, depthSource: d === 0n ? 0 : 1, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 });
 const tri = (x: DepthState): [bigint, bigint, bigint] => [x.depthE6, x.depthPrevE6, x.depthSlot];
 
 describe("depthPushUpdate (Rust W-L2 + R2.1 sticky vectors)", () => {
@@ -199,7 +199,7 @@ describe("depthPushUpdate (Rust W-L2 + R2.1 sticky vectors)", () => {
     expect(tri(dpu(st(T1, 3n, 10n), 3, 2n * T1, 11n))).toEqual([0n, T1, 11n]);
   });
   it("W-M1 sticky bookkeeping", () => {
-    let s = dpu({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 }, a, 4n * T1, 100n);
+    let s = dpu({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 }, a, 4n * T1, 100n);
     s = dpu(s, a, 2n * T1, 101n);
     expect(depthEver(s.depthSource)).toBe(true);
     expect([s.lastGoodE6, s.lastGoodSlot]).toEqual([2n * T1, 101n]);
@@ -230,7 +230,7 @@ describe("depthPushUpdate (Rust W-L2 + R2.1 sticky vectors)", () => {
 describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_reading_closes_at_once)", () => {
   const a = DEPTH_SOURCE.Attested;
   const fresh = (x: DepthState, now: bigint): bigint | null => freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now);
-  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 };
+  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 };
   it("attested 0 and DEX 0 are Some(0) at once; positive after a real 0 stays 0 until its own min-of-two", () => {
     let s = dpu(empty, a, 4n * T1, 100n);
     s = dpu(s, a, 4n * T1, 101n);
@@ -248,8 +248,10 @@ describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_read
     expect(fresh(p2, 104n)).toBe(4n * T1); // the fresh min-of-two is restored ...
     expect(p2.lastGoodE6).toBe(0n); // ... but the rate-limited depth does not rise again in the epoch of its last rise
     expect(usableDepthE6(fresh(p2, 104n), p2.lastGoodE6)).toBe(0n);
-    const p3 = dpu(p2, a, 4n * T1, 9_000n, T1 - 1n);
-    expect(p3.lastGoodE6).toBe((T1 - 1n) / DEPTH_BOOTSTRAP_DIV); // next epoch: the bootstrap floor
+    // D-L2: the window is 9,000 slots after the last rise (slot 101, stamp 1 -> 64..127)
+    expect(dpu(p2, a, 4n * T1, 127n + 9_000n - 1n, T1 - 1n).lastGoodE6).toBe(0n); // one slot before the window: no rise
+    const p3 = dpu(p2, a, 4n * T1, 127n + 9_000n, T1 - 1n);
+    expect(p3.lastGoodE6).toBe((T1 - 1n) / DEPTH_BOOTSTRAP_DIV); // window open: the bootstrap floor
   });
   it("absent (35 B / mode 0) is NOT zero: sticky last good", () => {
     let s = dpu(empty, a, 4n * T1, 100n);
@@ -375,7 +377,7 @@ describe("target / ceiling / ratchet (Rust g8_target_ceiling_ratchet_and_force_d
 interface RecOver {
   lambda?: number; lLaunch?: number; lTier?: number; ceil?: number; ceilSlot?: bigint; cLaunch?: bigint; rGap?: number;
   src?: number; attested?: number; depth?: bigint; prev?: bigint; slot?: bigint; lastGood?: bigint; lastGoodSlot?: bigint;
-  th?: [number, number, number]; lv?: [number, number, number]; dec?: number; riseEpoch?: number;
+  th?: [number, number, number]; lv?: [number, number, number]; dec?: number; riseSlot64?: number;
 }
 function g(o: RecOver): AssetGrowthV19 {
   const b = new Uint8Array(ASSET_GROWTH_LEN);
@@ -397,7 +399,7 @@ function g(o: RecOver): AssetGrowthV19 {
   v.setBigUint64(80, o.lastGood ?? 0n, true);
   v.setBigUint64(88, o.lastGoodSlot ?? 0n, true);
   b[46] = (o.dec ?? 6) + 1;
-  new DataView(b.buffer).setUint32(114, o.riseEpoch ?? 0, true);
+  new DataView(b.buffer).setUint32(114, o.riseSlot64 ?? 0, true);
   (o.th ?? [0, 0, 0]).forEach((x, i) => v.setUint32(96 + 4 * i, x, true));
   (o.lv ?? [0, 0, 0]).forEach((x, i) => v.setUint16(108 + 2 * i, x, true));
   return decodeAssetGrowthRecordV19(b)!;
@@ -591,9 +593,9 @@ describe("R2-L2: thresholds are whole collateral tokens scaled by the mint decim
     const b = new Uint8Array(ASSET_GROWTH_LEN);
     b[38] = 1; b[46] = 10; b.set([0x2a, 0x01, 0, 0], 114);
     const r = decodeAssetGrowthRecordV19(b)!;
-    expect([r.collateralDecimalsP1, r.collateralDecimals, r.depthRiseEpoch]).toEqual([10, 9, 298]);
+    expect([r.collateralDecimalsP1, r.collateralDecimals, r.depthRiseSlot64]).toEqual([10, 9, 298]);
     expect(ASSET_GROWTH_DEPTH_FIELD_OFF.collateralDecimalsP1).toBe(46);
-    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthRiseEpoch).toBe(114);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthRiseSlot64).toBe(114);
     // a 9-decimal collateral market: $100k-equivalent depth is 100_000 tokens = 1e14 atoms
     const o = dex(100_000n, { dec: 9 });
     const v = growthCeilingView(g(o), BAND, NOW, null, false);
@@ -609,7 +611,7 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
   const seed = th[0] - 1n;
   const a = DEPTH_SOURCE.OnChainPool;
   const usable = (x: DepthState, now: bigint): bigint | null => usableDepthE6(freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now), x.lastGoodE6);
-  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 };
+  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 };
   it("the flash-liquidity scenario: a $500M reading for two adjacent slots adds nothing in the same epoch; honest pair takes it down at once", () => {
     const real = 2_000n * M, inflated = 500_000_000n * M;
     const s0 = dpu(empty, a, real, 1_000n, seed);
@@ -633,7 +635,7 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
     expect(st.lastGoodE6).toBe(seed); // the first reading is tier 0
     let prev = st.lastGoodE6;
     for (let k = 1n; k <= 6n; k++) {
-      const sl = 9_000n * (k + 1n);
+      const sl = 9_000n + 9_100n * k; // D-L2: >= 9,000 slots after the previous rise
       st = dpu(st, a, inflated, sl, seed);
       st = dpu(st, a, inflated, sl + 1n, seed);
       expect(st.lastGoodE6, `epoch ${k}`).toBe(prev * 2n);
@@ -651,13 +653,37 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
   });
   it("depthRateLimited primitives and the 2^e mutant", () => {
     const real = 2_000n * M;
-    expect(depthRateLimited(true, real, 0, 500_000_000n * M, 9_000n, seed).lastGoodE6).toBe(2n * real);
+    expect(depthRateLimited(true, real, 0, 500_000_000n * M, 63n + 9_000n, seed).lastGoodE6).toBe(2n * real);
     expect(depthRateLimited(true, seed, 0, 500_000_000n * M, 9_000n * 21n, seed).lastGoodE6).toBe(seed * 2n);
-    expect(depthRateLimited(true, 100n, 5, 50n, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseEpoch: 5 }); // down at once, clock kept
-    expect(depthRateLimited(false, 0n, 0, 9n * T1, 20_000n, seed)).toEqual({ lastGoodE6: seed, riseEpoch: 2 });
-    expect(depthEpoch(18_000n)).toBe(2);
+    expect(depthRateLimited(true, 100n, 5, 50n, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseSlot64: 5 }); // down at once, stamp kept
+    expect(depthRateLimited(false, 0n, 0, 9n * T1, 20_000n, seed)).toEqual({ lastGoodE6: seed, riseSlot64: 312 });
+    expect(depthRiseStamp(20_000n)).toBe(312);
+    expect(depthRiseStamp(1n << 60n)).toBe(0xffff_ffff);
+    expect(depthRiseWindowOpen(0xffff_ffff, 1n << 62n)).toBe(false); // a saturated stamp never opens
     const mutant = (lg: bigint, e: number): bigint => lg * (1n << BigInt(Math.min(e, 63)));
     expect(mutant(seed, 20) >= th[2]).toBe(true);
+  });
+  it("D-L2 straddle: 9,000 slots since the LAST RISE, not a calendar boundary (Rust vectors)", () => {
+    const big = 500_000_000n * M;
+    const a1 = depthRateLimited(true, seed, 0, big, 63n + 9_000n, seed);
+    expect(a1.lastGoodE6).toBe(2n * seed);
+    const a2 = depthRateLimited(true, a1.lastGoodE6, a1.riseSlot64, big, 63n + 9_001n, seed);
+    expect(a2.lastGoodE6).toBe(a1.lastGoodE6); // one slot later: no second doubling
+    const calendarMutant = (reSlot: bigint, slot: bigint): boolean => slot / 9_000n > reSlot / 9_000n;
+    expect(calendarMutant(8_999n, 9_000n)).toBe(true); // the round-2 gate would allow it
+    expect(depthRiseWindowOpen(depthRiseStamp(8_999n), 9_000n)).toBe(false);
+    expect(depthRiseWindowOpen(depthRiseStamp(8_999n), (8_999n / 64n) * 64n + 63n + 9_000n)).toBe(true);
+    expect(depthRiseWindowOpen(depthRiseStamp(8_999n), (8_999n / 64n) * 64n + 63n + 8_999n)).toBe(false);
+  });
+  it("D-L1: a saturated threshold is never met; >12-decimal collateral cannot carry a growth market", () => {
+    expect(depthTierFor(U64MAX, [U64MAX, U64MAX, U64MAX])).toBe(0);
+    expect(depthTierFor(U64MAX, [1n, 2n, U64MAX])).toBe(2);
+    expect(tierThresholdsE6([0, 0, 0], 12)[2]).toBe(500_000n * 1_000_000_000_000n);
+    expect([growthCollateralDecimalsOk(12), growthCollateralDecimalsOk(13), growthCollateralDecimalsOk(0)]).toEqual([true, false, true]);
+    const v = validateTierConfig({ lLaunchX100: 500, lTierX100: 2_000, collateral: { decimals: 13 } });
+    expect(v.ok).toBe(false);
+    expect(v.issues[0]).toMatchObject({ field: "collateral", code: "collateral-decimals", message: "This collateral has more than 12 decimals, so a leveraged market cannot use it." });
+    expect(validateTierConfig({ lLaunchX100: 500, lTierX100: 2_000, collateral: { decimals: 12 } }).ok).toBe(true);
   });
   it("R2-L1 rent snapshot", () => {
     expect(rentSnapshotNCapQ(0n, true)).toBe(1n);
@@ -667,13 +693,13 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
   });
   it("view: the depth is there but rate-limited -> tier from the usable depth, ETA from the doubling schedule", () => {
     // fresh $400k on-chain, last good rate-limited at $25k (tier 1), rise epoch 0, now in epoch 0; backing $600k
-    const o = dex(400_000n, { lastGood: 25_000n * M, riseEpoch: 0 });
+    const o = dex(400_000n, { lastGood: 25_000n * M, riseSlot64: 0 });
     const v = growthCeilingView(g(o), BAND, NOW, 600_000n * M, false);
     expect([v.venueTier, v.bookTier, v.tier]).toEqual([1, 3, 1]);
     expect(v.freshDepthE6).toBe(400_000n * M);
     expect(v.effectiveDepthE6).toBe(25_000n * M);
-    // tier 2 needs $100k: 25k -> 50k (epoch 1, slot 9000) -> 100k (epoch 2, slot 18000): 17,000 slots from slot 1000
-    expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_000n, depthEtaMinutes: 114 });
+    // tier 2 needs $100k: 25k -> 50k at slot 9,063 (window opens 63 + 9,000 after stamp 0) -> 100k at 18,087 (stamp 141): 17,087 slots from slot 1000
+    expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_087n, depthEtaMinutes: 114 });
     // capacity follows the usable depth, not the fresh one
     const q = quoteMaxLeverage(qin(g(o), 600_000n * M), "long");
     expect(q.capDepthE6).toBe(25_000n * M);

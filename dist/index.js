@@ -6175,7 +6175,7 @@ var ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({
   depthLastGoodSlot: 88,
   tierThresholdUsd: 96,
   tierLeverageX100: 108,
-  depthRiseEpoch: 114
+  depthRiseSlot64: 114
 });
 var GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
 var GROWTH_UTIL_FEE_HARD_MAX_BPS = 2e3;
@@ -6230,7 +6230,7 @@ function decodeAssetGrowthRecordV19(rec) {
     attestedMaxTier: rec[D.attestedMaxTier],
     collateralDecimalsP1: rec[D.collateralDecimalsP1],
     collateralDecimals: collateralDecimalsOf(rec[D.collateralDecimalsP1]),
-    depthRiseEpoch: v.getUint32(D.depthRiseEpoch, true),
+    depthRiseSlot64: v.getUint32(D.depthRiseSlot64, true),
     depthE6: v.getBigUint64(D.depthE6, true),
     depthSlot: v.getBigUint64(D.depthSlot, true),
     depthPrevE6: v.getBigUint64(D.depthPrevE6, true),
@@ -6398,14 +6398,14 @@ function depthPushUpdate(st, source, newDepthE6, nowSlot, seedE6) {
     s = src;
     prevReal = oldSource !== DEPTH_SOURCE.None ? DEPTH_PREV_REAL : 0;
   }
-  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseEpoch: st.riseEpoch };
+  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseSlot64: st.riseSlot64 };
   const f = freshDepthE6(d, prev, slot, out.depthSource, nowSlot);
   if (f !== null) {
-    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.riseEpoch, f, slot, seedE6);
+    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.riseSlot64, f, slot, seedE6);
     out.depthSource |= DEPTH_EVER;
     out.lastGoodE6 = lg.lastGoodE6;
     out.lastGoodSlot = slot;
-    out.riseEpoch = lg.riseEpoch;
+    out.riseSlot64 = lg.riseSlot64;
   }
   return out;
 }
@@ -6418,7 +6418,10 @@ function capDepthE6(depthSourceByte, fresh, lastGoodE6, lastGoodSlot, nowSlot) {
   if (depthEver(depthSourceByte)) return stickyDepthE6(lastGoodE6, lastGoodSlot, nowSlot);
   return null;
 }
-var GROWTH_MAX_COLLATERAL_DECIMALS = 18;
+var GROWTH_MAX_COLLATERAL_DECIMALS = 12;
+function growthCollateralDecimalsOk(decimals) {
+  return Number.isInteger(decimals) && decimals >= 0 && decimals <= GROWTH_MAX_COLLATERAL_DECIMALS;
+}
 var DEPTH_BOOTSTRAP_DIV = 16n;
 function collateralDecimalsOf(storedP1) {
   return storedP1 === 0 ? 6 : storedP1 - 1;
@@ -6426,21 +6429,26 @@ function collateralDecimalsOf(storedP1) {
 function wholeTokenAtoms(decimals) {
   return 10n ** BigInt(Math.min(Math.max(decimals, 0), GROWTH_MAX_COLLATERAL_DECIMALS));
 }
-function depthEpoch(slot) {
-  const e = slot / DEPTH_STICKY_EPOCH_SLOTS;
+var DEPTH_RISE_STAMP_SLOTS = 64n;
+function depthRiseStamp(slot) {
+  const e = slot / DEPTH_RISE_STAMP_SLOTS;
   return e > 0xffffffffn ? 4294967295 : Number(e);
 }
-function depthRateLimited(ever, lastGoodE6, riseEpoch, r2, slot, seedE6) {
-  const e = depthEpoch(slot);
-  if (!ever) return { lastGoodE6: r2 < seedE6 ? r2 : seedE6, riseEpoch: e };
-  if (r2 <= lastGoodE6) return { lastGoodE6: r2, riseEpoch };
-  if (e > riseEpoch) {
+function depthRiseWindowOpen(riseSlot64, slot) {
+  const last = BigInt(riseSlot64) * DEPTH_RISE_STAMP_SLOTS + (DEPTH_RISE_STAMP_SLOTS - 1n);
+  return riseSlot64 !== 4294967295 && slot >= last + DEPTH_STICKY_EPOCH_SLOTS;
+}
+function depthRateLimited(ever, lastGoodE6, riseSlot64, r2, slot, seedE6) {
+  const e = depthRiseStamp(slot);
+  if (!ever) return { lastGoodE6: r2 < seedE6 ? r2 : seedE6, riseSlot64: e };
+  if (r2 <= lastGoodE6) return { lastGoodE6: r2, riseSlot64 };
+  if (depthRiseWindowOpen(riseSlot64, slot)) {
     const doubled = lastGoodE6 * 2n > U64_MAX2 ? U64_MAX2 : lastGoodE6 * 2n;
     const floor = seedE6 / DEPTH_BOOTSTRAP_DIV;
     const up = doubled > floor ? doubled : floor;
-    return { lastGoodE6: r2 < up ? r2 : up, riseEpoch: e };
+    return { lastGoodE6: r2 < up ? r2 : up, riseSlot64: e };
   }
-  return { lastGoodE6, riseEpoch };
+  return { lastGoodE6, riseSlot64 };
 }
 function usableDepthE6(fresh, lastGoodE6) {
   return fresh === null ? null : fresh < lastGoodE6 ? fresh : lastGoodE6;
@@ -6460,9 +6468,10 @@ function tierThresholdsE6(storedTokens, collateralDecimals = 6) {
 }
 function depthTierFor(depthE6, thresholdsE6) {
   if (depthE6 === 0n) return 0;
-  if (depthE6 >= thresholdsE6[2]) return 3;
-  if (depthE6 >= thresholdsE6[1]) return 2;
-  if (depthE6 >= thresholdsE6[0]) return 1;
+  const met = (t) => t !== U64_MAX2 && depthE6 >= t;
+  if (met(thresholdsE6[2])) return 3;
+  if (met(thresholdsE6[1])) return 2;
+  if (met(thresholdsE6[0])) return 1;
   return 0;
 }
 function attestedMaxTierEff(stored) {
@@ -6552,6 +6561,9 @@ var fmtAmount = (n, c) => c !== void 0 && (c.decimals ?? 6) === 6 && c.usdLike =
 var lev = (x100) => `${Number.isInteger(x100 / 100) ? x100 / 100 : (x100 / 100).toFixed(2).replace(/0+$/, "")}x`;
 function validateTierConfig(i) {
   const issues = [];
+  if (i.collateral?.decimals !== void 0 && !growthCollateralDecimalsOk(i.collateral.decimals)) {
+    issues.push({ field: "collateral", code: "collateral-decimals", message: `This collateral has more than ${GROWTH_MAX_COLLATERAL_DECIMALS} decimals, so a leveraged market cannot use it.` });
+  }
   const th = i.thresholdsUsd ?? [0, 0, 0];
   const lv = i.leverageX100 ?? [0, 0, 0];
   const isU = (v, max) => Number.isInteger(v) && v >= 0 && v <= max;
@@ -6704,27 +6716,26 @@ function graduationFallOnly(i) {
 function slotsToMinutes(slots) {
   return Number(divCeil(slots * BigInt(GROWTH_SLOT_MS), 60000n));
 }
-function depthRateEtaSlots(ever, lastGood, riseEpoch, fresh, threshold, nowSlot, seed) {
+function depthRateEtaSlots(ever, lastGood, riseSlot64, fresh, threshold, nowSlot, seed) {
   if (fresh < threshold) return null;
   let cur = lastGood;
-  let re = riseEpoch;
-  let e = depthEpoch(nowSlot);
+  let stamp = riseSlot64;
   if (!ever) {
     cur = fresh < seed ? fresh : seed;
-    re = e;
+    stamp = depthRiseStamp(nowSlot);
   }
   if (cur >= threshold) return 0n;
-  let k = Math.max(e, re + 1);
+  let slot = nowSlot;
   for (let n = 0; n < 80; n++) {
+    const open = BigInt(stamp) * DEPTH_RISE_STAMP_SLOTS + (DEPTH_RISE_STAMP_SLOTS - 1n) + DEPTH_STICKY_EPOCH_SLOTS;
+    if (stamp === 4294967295) return null;
+    if (open > slot) slot = open;
     const floor = seed / DEPTH_BOOTSTRAP_DIV;
     const doubled = cur * 2n;
     const up = doubled > floor ? doubled : floor;
     cur = fresh < up ? fresh : up;
-    if (cur >= threshold) {
-      const at = BigInt(k) * DEPTH_STICKY_EPOCH_SLOTS;
-      return at > nowSlot ? at - nowSlot : 0n;
-    }
-    k += 1;
+    stamp = depthRiseStamp(slot);
+    if (cur >= threshold) return slot - nowSlot;
   }
   return null;
 }
@@ -6762,7 +6773,7 @@ function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
       if (needDepth && t > attestedMaxTierEff(g.attestedMaxTier) && g.depthSource !== DEPTH_SOURCE.OnChainPool) out.needsOnChainDepth = true;
       const venueCanReach = depthSourceOf(dsByte) === DEPTH_SOURCE.OnChainPool || depthSourceOf(dsByte) === DEPTH_SOURCE.Attested && t <= attestedMaxTierEff(g.attestedMaxTier);
       if (needDepth && venueCanReach && freshRaw !== null && freshRaw >= depthAtoms) {
-        const eta = depthRateEtaSlots(g.depthEver, g.depthLastGoodE6, g.depthRiseEpoch, freshRaw, depthAtoms, nowSlot, thresholds[0] - 1n);
+        const eta = depthRateEtaSlots(g.depthEver, g.depthLastGoodE6, g.depthRiseSlot64, freshRaw, depthAtoms, nowSlot, thresholds[0] - 1n);
         if (eta !== null) {
           out.depthRateLimited = true;
           out.depthEtaSlots = eta;
@@ -6910,7 +6921,8 @@ function assertGrowthBatchLegs(legCount, anyGrowthLeg) {
 function u16nz(name, v) {
   if (!Number.isInteger(v) || v <= 0 || v > 65535) throw new Error(`${name} must be a non-zero u16, got ${v}`);
 }
-function encodeInitMarketV19(args, rGapBps, lLaunchX100) {
+function encodeInitMarketV19(args, rGapBps, lLaunchX100, collateralDecimals) {
+  if (collateralDecimals !== void 0 && !growthCollateralDecimalsOk(collateralDecimals)) throw new Error(`collateral with ${collateralDecimals} decimals cannot carry a growth market (max ${GROWTH_MAX_COLLATERAL_DECIMALS}); the wrapper answers 94 GrowthInvalidConfig`);
   u16nz("rGapBps", rGapBps);
   u16nz("lLaunchX100", lLaunchX100);
   const legacy = encodeInitMarket(args);
@@ -17009,6 +17021,7 @@ export {
   DEPTH_MAX_AGE_SLOTS,
   DEPTH_MODE,
   DEPTH_PREV_REAL,
+  DEPTH_RISE_STAMP_SLOTS,
   DEPTH_SOURCE,
   DEPTH_SOURCE_ACCOUNT_LEN_V22,
   DEPTH_SOURCE_BODY_LEN_V22,
@@ -17585,11 +17598,12 @@ export {
   depositAccounts,
   depositJuniorAccounts,
   depthCapQ,
-  depthEpoch,
   depthEver,
   depthNotionalCapE6,
   depthPushUpdate,
   depthRateLimited,
+  depthRiseStamp,
+  depthRiseWindowOpen,
   depthSourceByteOk,
   depthSourceOf,
   depthTierFor,
@@ -17903,6 +17917,7 @@ export {
   graduationOn,
   graduationRatchet,
   growthCeilingView,
+  growthCollateralDecimalsOk,
   growthMatcherCapsG8,
   growthMatcherCapsV3,
   imrBpsForLeverageX100,

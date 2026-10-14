@@ -78,7 +78,7 @@ export declare const ASSET_GROWTH_DEPTH_FIELD_OFF: Readonly<{
     readonly depthLastGoodSlot: 88;
     readonly tierThresholdUsd: 96;
     readonly tierLeverageX100: 108;
-    readonly depthRiseEpoch: 114;
+    readonly depthRiseSlot64: 114;
 }>;
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
 export declare const GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
@@ -150,8 +150,8 @@ export interface AssetGrowthV19 {
     collateralDecimalsP1: number;
     /** R2-L2: the collateral mint's decimals (byte 46; 6 when unset). Tier thresholds are whole collateral tokens scaled by this. */
     collateralDecimals: number;
-    /** R2-M1 (114, u32 LE): the ratchet epoch (`slot / 9,000`) of the last rise of {@link AssetGrowthV19.depthLastGoodE6}. */
-    depthRiseEpoch: number;
+    /** R2-M1 / D-L2 (114, u32 LE): the slot of the last rise of {@link AssetGrowthV19.depthLastGoodE6} in 64-slot units (`slot / 64`, saturating). */
+    depthRiseSlot64: number;
     /** R2.1 (96): per-market tier thresholds in WHOLE COLLATERAL TOKENS (T1, T2, T3; $ on 6-decimal USD collateral); 0 = default 25,000 / 100,000 / 500,000. */
     tierThresholdUsd: Triple<number>;
     /** R2.1 (108): per-tier max leverage x100 (L1, L2, L3); 0 = default `min(5x / 10x / 20x, L_tier)`. */
@@ -443,8 +443,8 @@ export interface DepthState {
     /** The RATE-LIMITED last good depth (R2-M1). */
     lastGoodE6: bigint;
     lastGoodSlot: bigint;
-    /** R2-M1: ratchet epoch of the last rise of `lastGoodE6` (bytes 114..118). */
-    riseEpoch: number;
+    /** R2-M1 / D-L2: stamp (`slot / 64`) of the last rise of `lastGoodE6` (bytes 114..118). */
+    riseSlot64: number;
 }
 /**
  * The wrapper's depth writer (every PushAuthMark form). Port of `depth_push_update`. `source` none / unknown is an ABSENT sample; a REAL reading
@@ -461,7 +461,7 @@ export interface DepthState {
  * @returns The new state.
  * @example
  * ```ts
- * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 }, 1, 0n, 100n, 24_999_999_999n).lastGoodE6; // 0n, DEPTH_EVER set
+ * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 }, 1, 0n, 100n, 24_999_999_999n).lastGoodE6; // 0n, DEPTH_EVER set
  * ```
  */
 export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint, seedE6: bigint): DepthState;
@@ -496,37 +496,69 @@ export declare function stickyDepthE6(lastGoodE6: bigint, lastGoodSlot: bigint, 
  * ```
  */
 export declare function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint | null;
-/** Largest collateral decimals the record accepts (`MAX_COLLATERAL_DECIMALS`; byte 46 holds decimals + 1). */
-export declare const GROWTH_MAX_COLLATERAL_DECIMALS = 18;
+/**
+ * D-L1: the largest collateral decimals a GROWTH market accepts (`MAX_COLLATERAL_DECIMALS` = 12; InitMarket refuses more with 94
+ * `GrowthInvalidConfig`; byte 46 holds decimals + 1 and the record validator bounds it at 13). Above it the tier thresholds and the depths they are
+ * compared with saturate u64.
+ */
+export declare const GROWTH_MAX_COLLATERAL_DECIMALS = 12;
+/**
+ * D-L1: whether a collateral mint with `decimals` can carry a growth / band market.
+ *
+ * @param decimals  The collateral mint's decimals.
+ * @returns `true` for 0..=12.
+ * @example
+ * ```ts
+ * growthCollateralDecimalsOk(9); // true
+ * growthCollateralDecimalsOk(13); // false: the wrapper answers 94
+ * ```
+ */
+export declare function growthCollateralDecimalsOk(decimals: number): boolean;
 /** `DEPTH_BOOTSTRAP_DIV`: the depth rate limiter's bootstrap floor is `T1 / 16` (the level a market climbs back to out of a real 0). */
 export declare const DEPTH_BOOTSTRAP_DIV = 16n;
 /** `collateral_decimals_of`: byte 46 is decimals + 1; 0 = a record written before R2-L2, read as 6. */
 export declare function collateralDecimalsOf(storedP1: number): number;
 /** `whole_token_atoms`: `10^decimals` (decimals clamped to 18). */
 export declare function wholeTokenAtoms(decimals: number): bigint;
-/** `depth_epoch`: the ratchet epoch of a slot, `slot / 9,000`, saturating at u32::MAX. */
-export declare function depthEpoch(slot: bigint): number;
+/** `DEPTH_RISE_STAMP_SLOTS`: the unit of the stored last-rise stamp (64 slots). */
+export declare const DEPTH_RISE_STAMP_SLOTS = 64n;
+/** `depth_rise_stamp`: the stored stamp of a rise at `slot`, `slot / 64`, saturating at u32::MAX. */
+export declare function depthRiseStamp(slot: bigint): number;
 /**
- * R2-M1 ("up slowly, down at once" for the depth itself): the rate-limited last good depth after a FRESH reading `r` at `slot`. The market's FIRST
- * fresh reading (`ever` false) is `min(r, seed)` (tier 0 whatever the pool shows); `r <= lastGood` -> `r` at once (a real 0 included, the rise clock is
- * kept); `r > lastGood` in a LATER epoch than the last rise -> `min(r, max(2 * lastGood, seed / 16))` (one doubling per epoch); otherwise unchanged.
- * `seed` = the market's T1 in atoms minus 1. Port of `depth_rate_limited`.
+ * D-L2: whether a new depth rise is allowed at `slot`: at least 9,000 slots after the LAST RISE, measured against the latest slot the stamp can stand
+ * for (`stamp * 64 + 63`), so the window is never shorter than 9,000 slots whatever the rounding and independent of calendar-epoch boundaries. A
+ * saturated stamp never opens the window (fails closed). Port of `depth_rise_window_open`.
+ *
+ * @param riseSlot64  Stored stamp ({@link AssetGrowthV19.depthRiseSlot64}).
+ * @param slot        Slot of the new reading's sample.
+ * @returns Whether a rise is allowed.
+ * @example
+ * ```ts
+ * depthRiseWindowOpen(depthRiseStamp(8_999n), 9_000n); // false: a calendar boundary is not a window
+ * ```
+ */
+export declare function depthRiseWindowOpen(riseSlot64: number, slot: bigint): boolean;
+/**
+ * R2-M1 + D-L2 ("up slowly, down at once" for the depth itself): the rate-limited last good depth after a FRESH reading `r` at `slot`. The market's FIRST
+ * fresh reading (`ever` false) is `min(r, seed)` (tier 0 whatever the pool shows); `r <= lastGood` -> `r` at once (a real 0 included, the rise stamp is
+ * kept); `r > lastGood` with the window open ({@link depthRiseWindowOpen}: >= 9,000 slots after the last rise) -> `min(r, max(2 * lastGood, seed / 16))`;
+ * otherwise unchanged. `seed` = the market's T1 in atoms minus 1. Port of `depth_rate_limited`.
  *
  * @param ever        `DEPTH_EVER` already set.
  * @param lastGoodE6  Stored rate-limited depth.
- * @param riseEpoch   Epoch of the last rise.
+ * @param riseSlot64  Stamp (`slot / 64`) of the last rise.
  * @param r           The fresh reading (collateral atoms).
  * @param slot        Slot of the reading's sample.
  * @param seedE6      T1 in atoms minus 1.
- * @returns `{ lastGoodE6, riseEpoch }`.
+ * @returns `{ lastGoodE6, riseSlot64 }`.
  * @example
  * ```ts
- * depthRateLimited(true, 2_000_000_000n, 0, 500_000_000_000_000n, 9_000n, 24_999_999_999n); // { lastGoodE6: 4_000_000_000n, riseEpoch: 1 }
+ * depthRateLimited(true, 2_000_000_000n, 0, 500_000_000_000_000n, 9_063n, 24_999_999_999n); // { lastGoodE6: 4_000_000_000n, riseSlot64: 141 }
  * ```
  */
-export declare function depthRateLimited(ever: boolean, lastGoodE6: bigint, riseEpoch: number, r: bigint, slot: bigint, seedE6: bigint): {
+export declare function depthRateLimited(ever: boolean, lastGoodE6: bigint, riseSlot64: number, r: bigint, slot: bigint, seedE6: bigint): {
     lastGoodE6: bigint;
-    riseEpoch: number;
+    riseSlot64: number;
 };
 /**
  * The depth every reader uses (tiers and the capacity cap): `min(fresh reading, rate-limited last good)`; `null` while there is no fresh reading
@@ -702,9 +734,9 @@ export declare function mergeTierConfigAtBind(stored: TierConfig, creator: TierC
 /** One problem found by {@link validateTierConfig}. */
 export interface TierConfigIssue {
     /** Which part is wrong. */
-    field: "thresholds" | "leverage" | "attestedMaxTier";
+    field: "thresholds" | "leverage" | "attestedMaxTier" | "collateral";
     /** Machine code. */
-    code: "not-an-integer" | "below-floor" | "not-rising" | "below-launch" | "above-market-maximum" | "out-of-range";
+    code: "not-an-integer" | "collateral-decimals" | "below-floor" | "not-rising" | "below-launch" | "above-market-maximum" | "out-of-range";
     /** Tier 1..3 the issue is about, when it is about one. */
     tier?: 1 | 2 | 3;
     /** Calm one-line message for the app (no bps, no x100). */
@@ -1290,13 +1322,14 @@ export declare function assertGrowthBatchLegs(legCount: number, anyGrowthLeg: bo
  * @param args           InitMarket arguments (same as {@link encodeInitMarket}).
  * @param rGapBps        Worst move between liquidation opportunities (bps), > 0.
  * @param lLaunchX100    Creator's starting leverage cap x100, > 0 (program also bounds it to the tier).
+ * @param collateralDecimals  Optional: the collateral mint's decimals; more than 12 throws (D-L1, the wrapper answers 94).
  * @returns Legacy bytes + 4 trailer bytes.
  * @example
  * ```ts
  * const data = encodeInitMarketV19(args, 500, 550);
  * ```
  */
-export declare function encodeInitMarketV19(args: InitMarketV17Args | InitMarketArgs, rGapBps: number, lLaunchX100: number): Uint8Array;
+export declare function encodeInitMarketV19(args: InitMarketV17Args | InitMarketArgs, rGapBps: number, lLaunchX100: number, collateralDecimals?: number): Uint8Array;
 /**
  * Tag 94 InitVaultLp with the growth trailer: `[94, u16 junior_floor_bps, u16 l_launch_x100]`
  * (5 bytes; `l_launch_x100` non-zero). Writes the creator's launch cap at bind on a growth asset.
