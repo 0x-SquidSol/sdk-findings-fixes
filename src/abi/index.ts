@@ -12,6 +12,7 @@ export * from "./p2b-earn.js";
 export * from "./layout.js";
 export * from "./v22-wire.js";
 export * from "./v22-state.js";
+export * from "./v22-depth-source.js";
 export * from "./v22-math.js";
 export * from "./v22-stake.js";
 export * from "./v22-lot.js";

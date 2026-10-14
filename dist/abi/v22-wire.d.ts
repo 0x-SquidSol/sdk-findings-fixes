@@ -48,6 +48,8 @@ export declare const IX_TAG_V22: Readonly<{
     readonly CommitG9FeedAllowlist: 121;
     /** #545: LP share mint name / symbol / uri (Metaplex), generic or ticker form. */
     readonly InitLpShareMetadata: 122;
+    /** R2.1 item 4 (dex-depth branch): upgrade-authority pin / clear of the market's on-chain DEX depth source. */
+    readonly SetDepthSource: 123;
 }>;
 /** Existing tags whose WIRE or ACCOUNT LIST the v2.2 stack extends. */
 export declare const IX_TAG_EXTENDED_V22: Readonly<{

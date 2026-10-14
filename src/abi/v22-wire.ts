@@ -55,6 +55,8 @@ export const IX_TAG_V22 = Object.freeze({
   CommitG9FeedAllowlist: 121,
   /** #545: LP share mint name / symbol / uri (Metaplex), generic or ticker form. */
   InitLpShareMetadata: 122,
+  /** R2.1 item 4 (dex-depth branch): upgrade-authority pin / clear of the market's on-chain DEX depth source. */
+  SetDepthSource: 123,
 } as const);
 
 /** Existing tags whose WIRE or ACCOUNT LIST the v2.2 stack extends. */

@@ -422,6 +422,10 @@
     {
       "name": "InitLpShareMetadata",
       "tag": 122
+    },
+    {
+      "name": "SetDepthSource",
+      "tag": 123
     }
   ],
   "version": "v17"

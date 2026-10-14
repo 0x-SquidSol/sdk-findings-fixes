@@ -4968,10 +4968,10 @@ export interface PushAuthMarkArgs {
   /**
    * v2.2 G8 depth input. Omitted => the 35-byte form, which ZEROES the stored depth on-chain (absent depth is never
    * stale-but-trusted). Present => the 44-byte form `[...35 B][depth_mode u8][depth_e6 u64 LE]`.
-   * `mode` 0 = none, 1 = keeper-attested; any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is
-   * rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
+   * `mode` 0 = none, 1 = keeper-attested, 2 = on-chain DEX pool (R2.1: `depthE6` must be 0 and the instruction needs four more accounts, see
+   * `buildPushAuthMarkDexIxV22`); any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
    */
-  depth?: { mode: 0 | 1; depthE6: bigint | string };
+  depth?: { mode: 0 | 1 | 2; depthE6: bigint | string };
 }
 
 /** Length of the legacy PushAuthMark body. */
@@ -4991,9 +4991,10 @@ export function encodePushAuthMark(args: PushAuthMarkArgs): Uint8Array {
   );
   if (args.depth === undefined) return head;
   const mode: number = args.depth.mode;
-  if (mode !== 0 && mode !== 1) throw new Error(`PushAuthMark depth mode must be 0 (none) or 1 (attested), got ${mode}`);
-  // On chain, mode 0 with a non-zero depth is refused with 128 too.
+  if (mode !== 0 && mode !== 1 && mode !== 2) throw new Error(`PushAuthMark depth mode must be 0 (none), 1 (attested) or 2 (on-chain pool), got ${mode}`);
+  // On chain, mode 0 and mode 2 with a non-zero depth are refused with 128 too.
   if (mode === 0 && BigInt(args.depth.depthE6) !== 0n) throw new Error('PushAuthMark depth mode 0 (none) must carry depth 0');
+  if (mode === 2 && BigInt(args.depth.depthE6) !== 0n) throw new Error('PushAuthMark depth mode 2 (on-chain pool) must carry depth 0; the program reads the pool');
   return concatBytes(head, encU8(mode), encU64(args.depth.depthE6));
 }
 

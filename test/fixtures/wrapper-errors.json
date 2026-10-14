@@ -1,6 +1,6 @@
 {
   "prog": "c8501d153ed1a7bd9b1bc3343b89f47096838ead",
-  "count": 129,
+  "count": 131,
   "errors": {
     "0": "InvalidMagic",
     "1": "InvalidVersion",
@@ -130,6 +130,8 @@
     "125": "G9AllowlistTimelock",
     "126": "PositionCapReached",
     "127": "CounterpartyPositionCapReached",
-    "128": "DepthInputInvalid"
+    "128": "DepthInputInvalid",
+    "129": "DepthSourceInvalid",
+    "130": "GrowthTierConfigInvalid"
   }
 }

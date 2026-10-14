@@ -69,9 +69,14 @@ export declare const ASSET_GROWTH_FIELD_OFF: Readonly<{
  */
 export declare const ASSET_GROWTH_DEPTH_FIELD_OFF: Readonly<{
     readonly depthSource: 44;
+    readonly attestedMaxTier: 45;
     readonly depthE6: 56;
     readonly depthSlot: 64;
     readonly depthPrevE6: 72;
+    readonly depthLastGoodE6: 80;
+    readonly depthLastGoodSlot: 88;
+    readonly tierThresholdUsd: 96;
+    readonly tierLeverageX100: 108;
 }>;
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
 export declare const GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
@@ -118,14 +123,28 @@ export interface AssetGrowthV19 {
     flags: number;
     /** N-2: stored utilisation-fee dial at `u = 1` (bps); 0 = {@link GROWTH_UTIL_FEE_DEFAULT_BPS}. */
     utilFeeMaxBps: number;
-    /** v2.2 G8: depth source, 0 = none, 1 = keeper-attested (PushAuthMark tag 63, 44 B form), 2 = on-chain pool (reserved, not built). */
+    /** v2.2 G8: source of the stored depth (byte 44 bits 0-1): 0 = none, 1 = keeper-attested (PushAuthMark mode 1), 2 = on-chain DEX pool (mode 2). */
     depthSource: number;
+    /** R2.1 (W-M1): byte 44 bit 7 `DEPTH_EVER`: a fresh effective depth was seen once; the depth cap then never switches off. */
+    depthEver: boolean;
+    /** Byte 44 bit 2 `DEPTH_PREV_REAL`: the sample before the stored one was a real reading (a 0 included), not an absent one. */
+    depthPrevReal: boolean;
+    /** R2.1: highest venue tier keeper-attested depth may earn (45; 0 = protocol default 1, max 3). */
+    attestedMaxTier: number;
     /** v2.2 G8: last pushed +-2% depth, USD e6 (collateral 6 decimals). 0 when absent. */
     depthE6: bigint;
     /** v2.2 G8: slot of the last depth push. */
     depthSlot: bigint;
     /** v2.2 G8: the depth before the last push (effective depth is the min of the two). */
     depthPrevE6: bigint;
+    /** R2.1 (80): the last fresh effective (min-of-two) depth, the sticky cap's input. */
+    depthLastGoodE6: bigint;
+    /** R2.1 (88): slot of that sample. */
+    depthLastGoodSlot: bigint;
+    /** R2.1 (96): per-market tier thresholds, whole USD (T1, T2, T3); 0 = protocol default $25k / $100k / $500k. */
+    tierThresholdUsd: Triple<number>;
+    /** R2.1 (108): per-tier max leverage x100 (L1, L2, L3); 0 = default `min(5x / 10x / 20x, L_tier)`. */
+    tierLeverageX100: Triple<number>;
 }
 /**
  * Decode one 120-byte `AssetGrowthV19` record.
@@ -305,46 +324,413 @@ export declare function utilizationBps(lpAbs: bigint, nCap: bigint): bigint | nu
  * ```
  */
 export declare function conservativeEquity(capital: bigint, pnl: bigint, feeCredits: bigint): bigint;
-/** G8: a depth reading older than this many slots counts as absent (tier 0). */
+/** G8: a depth reading older than this many slots counts as absent (`DEPTH_MAX_AGE_SLOTS`). */
 export declare const DEPTH_MAX_AGE_SLOTS = 150n;
-/** `AssetGrowthV19.depthSource` values. 2 (on-chain pool) is reserved and not built: tiers 2-3 are unreachable. */
+/** `AssetGrowthV19.depthSource` values (bits 0-1 of byte 44): 0 none, 1 keeper-attested (PushAuthMark mode 1), 2 on-chain DEX pool (mode 2). */
 export declare const DEPTH_SOURCE: Readonly<{
     readonly None: 0;
     readonly Attested: 1;
     readonly OnChainPool: 2;
 }>;
-/** Tier thresholds, USD e6 of +-2% depth (collateral 6 decimals): tier 1, 2, 3. */
-export declare const DEPTH_TIER_THRESHOLDS_E6: readonly [25000000000n, 100000000000n, 500000000000n];
-/** Highest tier a keeper-attested depth can reach (I-D3). */
+/** `DEPTH_SOURCE_MASK`: the source bits of byte 44. */
+export declare const DEPTH_SOURCE_MASK = 3;
+/** `DEPTH_EVER` (byte 44 bit 7): a fresh effective depth was seen at least once (sticky; cleared only by the wrapper's restart reset). */
+export declare const DEPTH_EVER = 128;
+/**
+ * `DEPTH_PREV_REAL` (byte 44 bit 2): the PREVIOUS sample (`depth_prev_e6`) was a REAL reading (source 1 or 2, a 0 included), not an absent one
+ * (35 B push, mode 0, never). With the source bits (which say the same of the CURRENT sample) a real reading of 0 is told apart from "absent".
+ */
+export declare const DEPTH_PREV_REAL = 4;
+/** PushAuthMark 44 B `depth_mode`: 0 none, 1 keeper-attested, 2 on-chain DEX pool (`depth_e6` must be 0, four trailing accounts). */
+export declare const DEPTH_MODE: Readonly<{
+    readonly None: 0;
+    readonly Attested: 1;
+    readonly OnChainDex: 2;
+}>;
+/** One whole USD of 6-decimal collateral, in atoms. */
+export declare const GROWTH_USD_ATOMS = 1000000n;
+/** Protocol-default tier thresholds, whole USD of +-2% depth (T1, T2, T3): what a stored 0 means. */
+export declare const TIER_THRESHOLD_DEFAULT_USD: readonly [number, number, number];
+/** Floors an explicit threshold may not go below (a creator cannot set $1 tiers), whole USD. */
+export declare const TIER_THRESHOLD_FLOOR_USD: readonly [number, number, number];
+/** Protocol-default per-tier maximum leverage x100 (5x / 10x / 20x, before `min(.., L_tier)`): what a stored 0 means. */
+export declare const TIER_LEVERAGE_DEFAULT_X100: readonly [number, number, number];
+/** `attested_max_tier` stored 0 = this default (1). */
+export declare const ATTESTED_MAX_TIER_DEFAULT = 1;
+/** Highest liquidity tier. */
+export declare const GROWTH_MAX_TIER = 3;
+/** The sticky cap halves once per this many slots of staleness (one ratchet epoch). */
+export declare const DEPTH_STICKY_EPOCH_SLOTS = 9000n;
+/** Tier thresholds at the protocol defaults, USD e6 (round-1 name, kept). */
+export declare const DEPTH_TIER_THRESHOLDS_E6: readonly [bigint, bigint, bigint];
+/** Highest tier a keeper-attested depth can reach by default (`ATTESTED_MAX_TIER_DEFAULT`); the upgrade authority can raise it to 3 per market. */
 export declare const DEPTH_ATTESTED_MAX_TIER = 1;
+/** `BOOK_DEPTH_BAND_BPS`: the band the book depth is measured in (+-2%). */
+export declare const BOOK_DEPTH_BAND_BPS = 200;
+/** `vault_lp_v18::PIN_TRADING_FEE_BPS` / `PIN_BASE_SPREAD_BPS` / `PIN_MAX_TOTAL_BPS` / `PIN_IMPACT_K_BPS`: the kind-2 matcher parameters tag 94 pins. */
+export declare const GROWTH_PIN_TRADING_FEE_BPS = 10;
+export declare const GROWTH_PIN_BASE_SPREAD_BPS = 10;
+export declare const GROWTH_PIN_MAX_TOTAL_BPS = 100;
+export declare const GROWTH_PIN_IMPACT_K_BPS = 50;
 /** Engine `MAX_BAND_BPS`. */
 export declare const BAND_MAX_BPS = 2000n;
-/** `RATCHET_STEP_X100` (1x per ratchet epoch / per doubling). */
+/** `RATCHET_STEP_X100` (+1x per ratchet epoch). */
 export declare const GROWTH_RATCHET_STEP_X100 = 100;
-/** `RATCHET_EPOCH_SLOTS`. */
+/** `RATCHET_EPOCH_SLOTS` (~1 h). */
 export declare const GROWTH_RATCHET_EPOCH_SLOTS = 9000n;
-/** Effective depth: `min(depth, depthPrev)`, and 0 when the push is older than {@link DEPTH_MAX_AGE_SLOTS}. */
+/** Nominal slot time used only for "in ~N min" display (the chain targets 400 ms). */
+export declare const GROWTH_SLOT_MS = 400;
+/** A fixed-size triple (tier 1, 2, 3). */
+export type Triple<T> = readonly [T, T, T];
+/** Source bits (0 none, 1 attested, 2 DEX) of `depth_source`. */
+export declare function depthSourceOf(depthSourceByte: number): number;
+/** Whether `DEPTH_EVER` is set. */
+export declare function depthEver(depthSourceByte: number): boolean;
+/** Record validator: only bits 0-1 (source <= 2), bit 2 ({@link DEPTH_PREV_REAL}) and bit 7 may be set. */
+export declare function depthSourceByteOk(depthSourceByte: number): boolean;
+/**
+ * Effective depth: `min(depth, depthPrev)` (a one-push spike buys nothing), and 0 (absent) when either read is 0, the last push
+ * is older than {@link DEPTH_MAX_AGE_SLOTS}, or `depthSlot` is after `now` (fail closed). Port of `effective_depth_e6`.
+ *
+ * @param depthE6      Stored depth (USD e6).
+ * @param depthPrevE6  The depth before it.
+ * @param depthSlot    Slot of the last push.
+ * @param nowSlot      Current slot.
+ * @returns Effective depth, 0n when absent.
+ * @example
+ * ```ts
+ * effectiveDepthE6(30_000_000_000n, 28_000_000_000n, 1_000n, 1_100n); // 28_000_000_000n
+ * ```
+ */
 export declare function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, nowSlot: bigint): bigint;
 /**
- * Liquidity tier of an effective depth: 0 below $25k (or absent / stale), 1 from $25k, 2 from $100k, 3 from $500k.
- * A keeper-attested (or unknown) source is capped at tier 1; source 0 (none) is tier 0.
+ * The FRESH reading the tiers and the capacity cap use (coordinator ruling "most conservative wins"). `null` = absent: stale (> 150 slots), a
+ * future stamp, the current sample absent (35 B push / mode 0 / never: source bits none), or the first REAL sample of a pair (previous one
+ * absent). Otherwise `min(current, previous)` where a REAL 0 counts as 0: a real reading of 0 (attested or DEX, depth 0) is `0n` AT ONCE;
+ * a later positive reading restores a positive value only after its own min-of-two. Port of `fresh_depth_e6`.
  *
- * @param effectiveDepth  {@link effectiveDepthE6} (USD e6).
- * @param depthSource     `AssetGrowthV19.depthSource`.
+ * @param depthE6          Stored depth.
+ * @param depthPrevE6      The depth before it.
+ * @param depthSlot        Slot of the last push.
+ * @param depthSourceByte  Byte 44 (source bits 0-1, {@link DEPTH_PREV_REAL} bit 2).
+ * @param nowSlot          Current slot.
+ * @returns The fresh reading (0n possible), or `null` when absent.
+ * @example
+ * ```ts
+ * freshDepthE6(0n, 5n, 100n, 1 | DEPTH_PREV_REAL, 100n); // 0n: a real zero closes opens at once
+ * freshDepthE6(0n, 5n, 100n, 0, 100n); // null: a 35 B push is absent, not zero
+ * ```
+ */
+export declare function freshDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, depthSourceByte: number, nowSlot: bigint): bigint | null;
+/** The stored depth state of one asset (`AssetGrowthV19` bytes 44, 56..96). */
+export interface DepthState {
+    depthE6: bigint;
+    depthSlot: bigint;
+    depthPrevE6: bigint;
+    /** Byte 44: bits 0-1 source of the stored depth (none = an absent sample), bit 2 {@link DEPTH_PREV_REAL}, bit 7 {@link DEPTH_EVER}. */
+    depthSource: number;
+    lastGoodE6: bigint;
+    lastGoodSlot: bigint;
+}
+/**
+ * The wrapper's depth writer (every PushAuthMark form). Port of `depth_push_update`. `source` none / unknown is an ABSENT sample; a REAL reading
+ * (source 1 or 2) of 0 is a real zero depth. A later-slot push stores the new sample and the old one becomes `prev` (with {@link DEPTH_PREV_REAL}
+ * = it was real); a same-slot (or earlier) push can only lower the stored depth, keeps `prev` (W-L2), and at a tie of zeros the real zero
+ * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) becomes the last good depth and sets {@link DEPTH_EVER}.
+ *
+ * @param st          Stored state.
+ * @param source      The new reading's source (0 none, 1 attested, 2 DEX; others are absent).
+ * @param newDepthE6  The new depth (ignored for an absent sample).
+ * @param nowSlot     Authenticated slot of the push.
+ * @returns The new state.
+ * @example
+ * ```ts
+ * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n }, 1, 0n, 100n).lastGoodE6; // 0n, DEPTH_EVER set
+ * ```
+ */
+export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint): DepthState;
+/**
+ * Sticky depth (W-M1): `lastGood >> k`, `k = floor((now - lastGoodSlot) / 9000)`; 0 once `k >= 64`. A `lastGoodSlot` after `now`
+ * reads as age 0. Port of `sticky_depth_e6`.
+ *
+ * @param lastGoodE6    `depth_last_good_e6`.
+ * @param lastGoodSlot  `depth_last_good_slot`.
+ * @param nowSlot       Current slot.
+ * @returns The decayed depth (USD e6).
+ * @example
+ * ```ts
+ * stickyDepthE6(150_000_000_000n, 0n, 18_000n); // 37_500_000_000n (two hours stale: a quarter)
+ * ```
+ */
+export declare function stickyDepthE6(lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint;
+/**
+ * The depth the capacity cap uses on a clamp-enforced market: a fresh reading ({@link freshDepthE6}; a real 0 caps at 0 at once); else, once
+ * {@link DEPTH_EVER}, the sticky depth (the cap stays and decays towards 0, never "uncapped"); else `null` (never had a depth: no depth cap).
+ * Port of `cap_depth_e6`.
+ *
+ * @param depthSourceByte  Byte 44.
+ * @param fresh            {@link freshDepthE6} (`null` = absent).
+ * @param lastGoodE6       `depth_last_good_e6`.
+ * @param lastGoodSlot     `depth_last_good_slot`.
+ * @param nowSlot          Current slot.
+ * @returns Cap depth (USD e6) or `null` for no depth cap.
+ * @example
+ * ```ts
+ * capDepthE6(0x81, null, 100_000_000_000n, 0n, 9_000n); // 50_000_000_000n
+ * ```
+ */
+export declare function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint | null;
+/**
+ * Per-market thresholds in collateral atoms (stored whole USD; 0 = default). Port of `tier_thresholds`.
+ *
+ * @param storedUsd  `tier_threshold_usd` (T1, T2, T3).
+ * @returns Thresholds, USD e6.
+ * @example
+ * ```ts
+ * tierThresholdsE6([0, 0, 0]); // [25_000_000_000n, 100_000_000_000n, 500_000_000_000n]
+ * ```
+ */
+export declare function tierThresholdsE6(storedUsd: Triple<number | bigint>): Triple<bigint>;
+/**
+ * Raw tier of a depth against thresholds: 0 below T1 (and always for 0), 1 from T1, 2 from T2, 3 from T3. Port of `depth_tier_for`.
+ *
+ * @param depthE6        Depth (USD e6).
+ * @param thresholdsE6   {@link tierThresholdsE6}.
  * @returns 0..3.
  * @example
  * ```ts
- * depthTier(30_000_000_000n, 1); // 1
- * depthTier(600_000_000_000n, 1); // 1 (attested depth never exceeds tier 1)
+ * depthTierFor(100_000_000_000n, tierThresholdsE6([0, 0, 0])); // 2
  * ```
  */
-export declare function depthTier(effectiveDepth: bigint, depthSource: number): number;
-/** Depth ceiling `L_depth` (x100): tier 0 = `L_launch`, 1 = 5x, 2 = 10x, 3 = 20x. */
-export declare function lDepthX100(tier: number, lLaunchX100: number): number;
-/** `lambda_depth(tier)` in bps: 1x for tiers 0 and 1, 2x tier 2, 3x tier 3. */
+export declare function depthTierFor(depthE6: bigint, thresholdsE6: Triple<bigint>): number;
+/** `attested_max_tier` in force: stored 0 = {@link ATTESTED_MAX_TIER_DEFAULT} (1), at most 3. Port of `attested_max_tier_eff`. */
+export declare function attestedMaxTierEff(stored: number): number;
+/**
+ * Venue tier (how hard the price source is to move): from the EFFECTIVE depth and the stored depth's source. On-chain pool (2): no
+ * cap. Keeper-attested (1): capped at `attested_max_tier` (default 1). None: 0. Port of `venue_tier`.
+ *
+ * @param effectiveDepth        {@link effectiveDepthE6}.
+ * @param depthSourceByte       Byte 44 (the source is bits 0-1).
+ * @param thresholdsE6          {@link tierThresholdsE6}.
+ * @param attestedMaxTierStored `attested_max_tier` as stored (0 = default).
+ * @returns 0..3.
+ * @example
+ * ```ts
+ * venueTier(600_000_000_000n, 1, tierThresholdsE6([0, 0, 0]), 0); // 1 (attested depth is capped)
+ * venueTier(600_000_000_000n, 2, tierThresholdsE6([0, 0, 0]), 0); // 3 (on-chain pool)
+ * ```
+ */
+export declare function venueTier(effectiveDepth: bigint, depthSourceByte: number, thresholdsE6: Triple<bigint>, attestedMaxTierStored: number): number;
+/**
+ * Book depth from the pinned matcher model (pure core of `book_depth_from_pins`): the notional the LP book fills within +-2% of the
+ * oracle given its capacity notional. `maxTotal < 200` -> the whole capacity; else `fixed >= 200` -> 0; else
+ * `min(cap, floor(D * (200 - fixed) / (k + 200 - fixed)))` with `D = 4 * cap` (saturating; a u128 product overflow reads 0).
+ *
+ * @param capE6         Capacity notional (atoms).
+ * @param fixedBps      Base spread + trading fee (bps).
+ * @param impactKBps    Matcher impact k (bps).
+ * @param maxTotalBps   Matcher max total (bps).
+ * @returns Book depth (atoms).
+ * @example
+ * ```ts
+ * bookDepthFromPins(100_000_000_000n, 20, 50, 100); // 100_000_000_000n
+ * ```
+ */
+export declare function bookDepthFromPins(capE6: bigint, fixedBps: number, impactKBps: number, maxTotalBps: number): bigint;
+/**
+ * The book's capacity notional for the book tier: `floor(C_m * min(storedLambda, 1x) / 1e4)`, computed overflow-free as the wrapper does
+ * (monotone in `C_m`). Port of `book_capacity_e6`.
+ *
+ * @param cM                Conservative LP equity (atoms).
+ * @param storedLambdaBps   `lambda_bps` as stored.
+ * @returns Capacity notional (atoms).
+ * @example
+ * ```ts
+ * bookCapacityE6(120_000_000_000n, 10_000); // 120_000_000_000n
+ * ```
+ */
+export declare function bookCapacityE6(cM: bigint, storedLambdaBps: Num): bigint;
+/**
+ * Book depth of the bound vault LP with conservative equity `cM`, from the pinned kind-2 parameters (fixed = 10 + 10 bps, k = 50, max
+ * total 100): exactly {@link bookCapacityE6}. Saturates at u64::MAX. Port of `book_depth_e6`.
+ *
+ * @param cM               Conservative LP equity (atoms).
+ * @param storedLambdaBps  `lambda_bps` as stored.
+ * @returns Book depth (USD e6).
+ * @example
+ * ```ts
+ * bookDepthE6(30_000_000_000n, 30_000); // 30_000_000_000n (lambda above 1x does not count)
+ * ```
+ */
+export declare function bookDepthE6(cM: bigint, storedLambdaBps: Num): bigint;
+/** Book tier: {@link depthTierFor} of {@link bookDepthE6}. Port of `book_tier`. */
+export declare function bookTier(cM: bigint, storedLambdaBps: Num, thresholdsE6: Triple<bigint>): number;
+/** `tier = min(venue, book)`. Port of `combined_tier`. */
+export declare function combinedTier(venue: number, book: number): number;
+/**
+ * Per-market leverage table x100 `[L0, L1, L2, L3]`. `L0 = min(L_launch, L_tier)`; `Li` is the stored value or `min(default_i, L_tier)`
+ * when 0, clamped into `[L_{i-1}, L_tier]`, so it is monotone and never above `L_tier`. Port of `tier_leverage`.
+ *
+ * @param storedX100  `tier_leverage_x100` (L1, L2, L3; 0 = default).
+ * @param lLaunchX100 Creator's launch leverage x100.
+ * @param lTierX100   Protocol tier maximum x100 (from the engine IMR).
+ * @returns The four-entry table.
+ * @example
+ * ```ts
+ * tierLeverage([0, 0, 0], 500, 2000); // [500, 500, 1000, 2000]
+ * ```
+ */
+export declare function tierLeverage(storedX100: Triple<number>, lLaunchX100: number, lTierX100: number): [number, number, number, number];
+/** `L_table(tier)` (tiers above 3 read as 3). Port of `l_table_x100`. */
+export declare function lTableX100(tier: number, table: readonly [number, number, number, number]): number;
+/**
+ * Tier-config bounds, exactly the wrapper's `tier_config_ok` (the setters refuse with 130 `GrowthTierConfigInvalid`). Each group is
+ * all-zero (protocol defaults) or, with its zeros read as the defaults: thresholds `T1 < T2 < T3` and `>= $5k / $20k / $100k`; leverage
+ * `L_launch <= L1 <= L2 <= L3 <= L_tier` (a 0 reads as `min(default, L_tier)`). Prefer {@link validateTierConfig} for messages.
+ *
+ * @param thresholdsUsd  T1, T2, T3 whole USD.
+ * @param leverageX100   L1, L2, L3 x100.
+ * @param lLaunchX100    Launch leverage x100.
+ * @param lTierX100      Tier maximum x100.
+ * @returns Whether the wrapper would accept the table.
+ * @example
+ * ```ts
+ * tierConfigOk([5_000, 20_000, 100_000], [500, 1_000, 2_000], 500, 2_000); // true
+ * tierConfigOk([1, 2, 3], [0, 0, 0], 500, 2_000); // false (below the floors)
+ * ```
+ */
+export declare function tierConfigOk(thresholdsUsd: Triple<number>, leverageX100: Triple<number>, lLaunchX100: number, lTierX100: number): boolean;
+/** `attested_max_tier` bound: 0 (default) ..= 3. Port of `attested_max_tier_ok`. */
+export declare function attestedMaxTierOk(v: number): boolean;
+/** A tier block as on the wire (tag 94 bind block, tag 93 trailer). */
+export interface TierConfig {
+    /** T1, T2, T3 whole USD of +-2% depth (u32; 0 = protocol default $25k / $100k / $500k). */
+    thresholdUsd: Triple<number>;
+    /** L1, L2, L3 max leverage x100 (u16; 0 = default `min(5x / 10x / 20x, L_tier)`). */
+    leverageX100: Triple<number>;
+}
+/**
+ * Tag 94 merge rule: a stored (upgrade-authority preset) field that is non-zero is kept; a zero field takes the creator's value. The
+ * merged table is then bounded by {@link tierConfigOk}. Port of `tier_config_merge_at_bind`.
+ *
+ * @param stored   The table already on the record.
+ * @param creator  The creator's block.
+ * @returns The merged table.
+ * @example
+ * ```ts
+ * mergeTierConfigAtBind({ thresholdUsd: [0, 0, 0], leverageX100: [0, 0, 0] }, { thresholdUsd: [10_000, 0, 0], leverageX100: [0, 0, 0] }).thresholdUsd[0]; // 10000
+ * ```
+ */
+export declare function mergeTierConfigAtBind(stored: TierConfig, creator: TierConfig): TierConfig;
+/** One problem found by {@link validateTierConfig}. */
+export interface TierConfigIssue {
+    /** Which part is wrong. */
+    field: "thresholds" | "leverage" | "attestedMaxTier";
+    /** Machine code. */
+    code: "not-an-integer" | "below-floor" | "not-rising" | "below-launch" | "above-market-maximum" | "out-of-range";
+    /** Tier 1..3 the issue is about, when it is about one. */
+    tier?: 1 | 2 | 3;
+    /** Calm one-line message for the app (no bps, no x100). */
+    message: string;
+}
+/** Input of {@link validateTierConfig}. */
+export interface ValidateTierConfigInput {
+    /** T1..T3 whole USD; omitted or all 0 = protocol defaults. */
+    thresholdsUsd?: Triple<number>;
+    /** L1..L3 x100; omitted or all 0 = defaults. */
+    leverageX100?: Triple<number>;
+    /** Creator's launch leverage x100. */
+    lLaunchX100: number;
+    /** The market's built-in maximum x100 (`floor(1e6 / engine IMR)`). */
+    lTierX100: number;
+    /** Optional `attested_max_tier` (upgrade authority only). */
+    attestedMaxTier?: number;
+}
+/** Result of {@link validateTierConfig}. */
+export interface TierConfigValidation {
+    /** `true` iff the wrapper accepts the table (equals {@link tierConfigOk} and {@link attestedMaxTierOk}). */
+    ok: boolean;
+    issues: TierConfigIssue[];
+}
+/**
+ * Client-side check of a per-market tier table with the wrapper's exact bounds, so the app can show an error BEFORE signing (the chain
+ * answers 130 `GrowthTierConfigInvalid`). Floors $5k / $20k / $100k, thresholds strictly rising, and `L_launch <= L1 <= L2 <= L3 <= L_tier`,
+ * zeros read as the defaults, an all-zero group = defaults. `ok` is exactly the wrapper's verdict.
+ *
+ * @param i  See {@link ValidateTierConfigInput}.
+ * @returns `{ ok, issues }`; each issue carries a calm one-line message.
+ * @example
+ * ```ts
+ * validateTierConfig({ thresholdsUsd: [1_000, 20_000, 100_000], lLaunchX100: 500, lTierX100: 2_000 });
+ * // { ok: false, issues: [{ field: "thresholds", code: "below-floor", tier: 1, message: "Tier 1 pool depth must be at least $5,000." }] }
+ * ```
+ */
+export declare function validateTierConfig(i: ValidateTierConfigInput): TierConfigValidation;
+/** `lambda_depth` (bps): 1x at tiers 0 and 1, 2x at tier 2, 3x at tier 3. */
 export declare function lambdaDepthBps(tier: number): number;
-/** `kappa_depth(tier)` in bps: 0.5 / 1 / 1 / 2 (tiers 0..3). */
-export declare function kappaDepth(tier: number): number;
+/** `kappa_depth` (bps of the depth): 0.5 at tier 0, 1 at tiers 1 and 2, 2 at tier 3. */
+export declare function kappaDepthBps(tier: number): number;
+/** Alias of {@link kappaDepthBps} (round-1 name). */
+export declare const kappaDepth: typeof kappaDepthBps;
+/** `lambda_eff = min(stored lambda, lambda_depth(tier))`. Port of `lambda_eff_bps`. */
+export declare function lambdaEffBps(storedLambdaBps: number, tier: number): number;
+/**
+ * Depth capacity notional `floor(kappa * depth / 1e4)` (atoms) of the cap depth; `null` = no depth cap. Port of `depth_notional_cap_e6`.
+ *
+ * @param tier      Combined tier.
+ * @param capDepth  {@link capDepthE6}.
+ * @returns Notional or `null`.
+ * @example
+ * ```ts
+ * depthNotionalCapE6(2, 150_000_000_000n); // 150_000_000_000n
+ * ```
+ */
+export declare function depthNotionalCapE6(tier: number, capDepth: bigint | null): bigint | null;
+/** Depth cap on `N_cap` in engine Q (rounds down; `U128_MAX` only when there is no cap depth; 0 on a zero price). Port of `depth_cap_q`. */
+export declare function depthCapQ(tier: number, capDepth: bigint | null, priceE6: bigint, posScale?: bigint): bigint;
+/** Inputs of {@link nCapG8Q}. */
+export interface NCapG8Input {
+    /** Epoch clamp enforced on this market ({@link clampEnforced}). */
+    clamp: boolean;
+    /** Conservative LP equity (atoms). */
+    cM: bigint;
+    /** Stored lambda (bps). */
+    lambdaBps: number;
+    /** Combined tier (0 off the clamp). */
+    tier: number;
+    /** {@link capDepthE6} (fresh or sticky); `null` = no depth cap. */
+    capDepth: bigint | null;
+    priceE6: bigint;
+    posScale?: bigint;
+}
+/**
+ * G8 `N_cap`. Off a clamp-enforced market: exactly growth-1 `nCapQ(cM, stored lambda)`. On one: `min(nCapQ(cM, lambda_eff), depth cap)` with
+ * the cap depth fresh or sticky (so a missing reading never lifts the cap). `null` where `nCapQ` is. Port of `n_cap_g8_q`.
+ *
+ * @param i  See {@link NCapG8Input}.
+ * @returns Capacity in Q, or `null` (zero price / overflow).
+ * @example
+ * ```ts
+ * nCapG8Q({ clamp: true, cM: 120_000_000_000n, lambdaBps: 20_000, tier: 2, capDepth: 150_000_000_000n, priceE6: 1_000_000n }); // 150_000_000_000n
+ * ```
+ */
+export declare function nCapG8Q(i: NCapG8Input): bigint | null;
+/**
+ * G8 ext-v3 `(inventoryCapQ, liquidityNotionalE6)`. Off the clamp or with no cap depth: the growth-1 caps at the lambda {@link nCapG8Q}
+ * uses. With a cap depth (fresh or sticky): `cap = min(N_cap(lambda_eff), depth cap, engine limit)` and the liquidity is
+ * `DEPTH_MULT` times the SMALLER capacity notional. Port of `growth_matcher_caps_g8`.
+ *
+ * @param i  {@link NCapG8Input} plus `hlockActive` and the engine position limit (default {@link GROWTH_MAX_POSITION_ABS_Q}).
+ * @returns Caps for {@link encodeMatcherCallExtV3}.
+ * @example
+ * ```ts
+ * growthMatcherCapsG8({ clamp: true, hlockActive: false, cM: 1_000_000_000n, lambdaBps: 10_000, tier: 0, capDepth: null, priceE6: 1_000_000n });
+ * ```
+ */
+export declare function growthMatcherCapsG8(i: NCapG8Input & {
+    hlockActive: boolean;
+    maxPositionAbsQ?: bigint;
+}): MatcherCallExtCapsV3;
 /**
  * The engine's worst two-epoch adverse move for a band: `G(d) = ceil((1e4 + d)^2 / (1e4 - d)) - 1e4` bps
  * (engine `band_rent::band_worst_adverse_bps`; wrapper `band_r_gap_bps`).
@@ -363,7 +749,7 @@ export declare function bandRGapBps(bandBps: Num): bigint | null;
  *
  * @param bandBps  Engine `config.band_bps` (0 = no band).
  * @param rGapBps  `AssetGrowthV19.rGapBps`.
- * @returns Whether graduation and loosening dials are allowed on this market.
+ * @returns Whether graduation, the loosening dials and the depth tiers are allowed on this market.
  * @example
  * ```ts
  * clampEnforced(1_000, 3445); // true
@@ -371,103 +757,183 @@ export declare function bandRGapBps(bandBps: Num): bigint | null;
  * ```
  */
 export declare function clampEnforced(bandBps: Num, rGapBps: Num): boolean;
-/** `floor(log2(cM / cLaunch))` by doubling (0 when `cLaunch == 0` or `cM < cLaunch`). */
-export declare function capitalDoublings(cM: bigint, cLaunch: bigint): number;
-/** Inputs of {@link growthTargetCeilingX100}. */
-export interface GrowthTargetInput {
-    lLaunchX100: number;
-    lTierX100: number;
-    /** Conservative LP equity (atoms). */
-    cM: bigint;
-    /** `c_launch_atoms` (0 = not recorded). */
-    cLaunchAtoms: bigint;
-    /** Liquidity tier ({@link depthTier}). */
-    tier: number;
-    /** Engine `band_bps` (0 = none). */
-    bandBps: number;
-    /** `AssetGrowthV19.rGapBps`. */
-    rGapBps: number;
-    /** A draw outstanding, the h-lock latched or ADL on either side: target is the launch ceiling. */
-    forceDown?: boolean;
-}
+/** Graduation in force: the clamp predicate, a band, and a tier >= 1 (`graduation_on`). */
+export declare function graduationOn(clamp: boolean, bandBps: Num, tier: number): boolean;
 /**
- * The live target ceiling (x100). Graduation is allowed iff {@link clampEnforced} and tier >= 1; then
- * `min(L_tier, max(L_launch, min(L_depth, L_launch + steps * 1x)))`, else `min(L_launch, L_tier)`. `forceDown` also gives the
- * latter. The gate reads `min(stored ceil_x100, this)`.
+ * Live ceiling target (x100), R2.1 amendment: graduation on and no force-down: `min(L_tier, max(L_launch, L_table(tier)))`; otherwise
+ * `min(L_launch, L_tier)`. The capital-doublings term is gone: the book tier is the capital term. Port of `target_ceiling_x100`.
  *
- * @param i  See {@link GrowthTargetInput}.
+ * @param graduation     {@link graduationOn}.
+ * @param forceDown      A draw outstanding, the h-lock latched, or ADL on either side.
+ * @param lLaunchX100    Launch leverage x100.
+ * @param lTierX100      Tier maximum x100.
+ * @param lTableTierX100 `L_table(tier)` ({@link lTableX100}).
+ * @returns Target x100.
+ * @example
+ * ```ts
+ * targetCeilingX100(true, false, 500, 2_000, 1_000); // 1000
+ * ```
+ */
+export declare function targetCeilingX100(graduation: boolean, forceDown: boolean, lLaunchX100: number, lTierX100: number, lTableTierX100: number): number;
+/**
+ * Ceiling the gate applies (x100). Off the clamp: `min(L_launch, L_tier)` (growth-1). On it: `min(stored ratcheted ceiling, live target)`.
+ * Port of `ceiling_in_force_x100`.
+ *
+ * @param clamp        {@link clampEnforced}.
+ * @param storedCeilX100 `ceil_x100`.
+ * @param targetX100   {@link targetCeilingX100}.
+ * @param lLaunchX100  Launch leverage x100.
+ * @param lTierX100    Tier maximum x100.
  * @returns Ceiling x100.
  * @example
  * ```ts
- * growthTargetCeilingX100({ lLaunchX100: 300, lTierX100: 1000, cM: 4_000n, cLaunchAtoms: 1_000n, tier: 1, bandBps: 1000, rGapBps: 3445 }); // 500
+ * ceilingInForceX100(true, 700, 1_000, 500, 2_000); // 700
  * ```
  */
-export declare function growthTargetCeilingX100(i: GrowthTargetInput): number;
-/** Inputs of {@link nCapQWithDepth}. */
-export interface NCapDepthInput {
-    cM: bigint;
-    /** Stored lambda (bps). */
-    lambdaBps: number;
-    tier: number;
-    priceE6: bigint;
-    /** {@link effectiveDepthE6}; 0 = absent / stale: no depth cap (today's capacity). */
-    effectiveDepth: bigint;
-    posScale?: bigint;
-}
+export declare function ceilingInForceX100(clamp: boolean, storedCeilX100: number, targetX100: number, lLaunchX100: number, lTierX100: number): number;
 /**
- * `N_cap = min(lambda_eff * C_m / P, kappa_depth * depth / P)` with `lambda_eff = min(stored, lambda_depth(tier))`. The kappa cap
- * applies only while an effective depth is present.
+ * Ratchet the stored ceiling toward a target: falls at once (stamped `now`), rises at most +1x per 9,000 slots, an unchanged ceiling keeps
+ * its stamp; `forceDown` clamps the target to the floor. Port of `ratchet_ceiling_x100`.
  *
- * @param i  See {@link NCapDepthInput}.
- * @returns Capacity in Q, or `null` on a zero price / overflow.
+ * @param prevCeilX100 Stored ceiling x100.
+ * @param prevSlot     Stored stamp.
+ * @param targetX100   Target x100.
+ * @param floorX100    Floor (launch) x100.
+ * @param forceDown    Force the target down to the floor.
+ * @param nowSlot      Current slot.
+ * @returns `{ ceilX100, ceilSlot }`.
  * @example
  * ```ts
- * nCapQWithDepth({ cM: 1_000_000_000n, lambdaBps: 30_000, tier: 1, priceE6: 1_000_000n, effectiveDepth: 0n }); // 1_000_000_000n (lambda_eff = 1x)
+ * ratchetCeilingX100(500, 0n, 1_000, 500, false, 9_000n); // { ceilX100: 600, ceilSlot: 9000n }
  * ```
  */
-export declare function nCapQWithDepth(i: NCapDepthInput): bigint | null;
+export declare function ratchetCeilingX100(prevCeilX100: number, prevSlot: bigint, targetX100: number, floorX100: number, forceDown: boolean, nowSlot: bigint): {
+    ceilX100: number;
+    ceilSlot: bigint;
+};
+/** `MIN_C_LAUNCH_ATOMS`: the recorded launch capital is never below $1,000 of 6-decimal collateral. */
+export declare const GROWTH_MIN_C_LAUNCH_ATOMS = 1000000000n;
+/** `c_launch_atoms_for(C_m)`: `max(C_m, $1,000)`. Recorded for the ledger; the R2.1 target no longer reads it. */
+export declare function cLaunchAtomsFor(cM: bigint): bigint;
+/**
+ * The ratchet writer at a site with the bound LP's `C_m` in hand (clamp-enforced markets): `c_launch == 0` snapshots `c_launch` and
+ * does not climb in that call (it can only fall to launch); otherwise ratchets toward {@link targetCeilingX100}. Port of `graduation_ratchet`.
+ *
+ * @returns `{ ceilX100, ceilSlot, cLaunchAtoms }`.
+ * @example
+ * ```ts
+ * graduationRatchet({ prevCeilX100: 500, prevSlot: 0n, cLaunchAtoms: 1_000_000_000n, cM: 1n, graduation: true, forceDown: false, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: 1_000, nowSlot: 9_000n });
+ * // { ceilX100: 600, ceilSlot: 9000n, cLaunchAtoms: 1000000000n }
+ * ```
+ */
+export declare function graduationRatchet(i: {
+    prevCeilX100: number;
+    prevSlot: bigint;
+    cLaunchAtoms: bigint;
+    cM: bigint;
+    graduation: boolean;
+    forceDown: boolean;
+    lLaunchX100: number;
+    lTierX100: number;
+    lTableTierX100: number;
+    nowSlot: bigint;
+}): {
+    ceilX100: number;
+    ceilSlot: bigint;
+    cLaunchAtoms: bigint;
+};
+/**
+ * The fall-only ratchet (PushAuthMark: the depth changed, no `C_m` in hand). The caller passes the VENUE tier's graduation and
+ * `L_table(venue tier)`, an upper bound of the real target, so the stored ceiling only ever falls here (stamped `now`). Port of `graduation_fall_only`.
+ *
+ * @returns `{ ceilX100, ceilSlot }`.
+ */
+export declare function graduationFallOnly(i: {
+    prevCeilX100: number;
+    prevSlot: bigint;
+    graduation: boolean;
+    forceDown: boolean;
+    lLaunchX100: number;
+    lTierX100: number;
+    lTableTierX100: number;
+    nowSlot: bigint;
+}): {
+    ceilX100: number;
+    ceilSlot: bigint;
+};
 /** What raises the ceiling next. */
 export interface NextUnlock {
-    kind: "depth" | "capital" | "none";
-    /** USD (6-decimal collateral) of pool depth / LP capital needed. */
+    /**
+     * `depth`: only the pool depth is short. `backing`: only the market backing is short. `both`: both are short ("10x unlocks at $100k pool
+     * depth and $100k market backing"). `ratchet`: the target is already higher; the ceiling climbs +1x per hour ("next step in ~N min").
+     * `none`: nothing more to unlock (or graduation is off for this market).
+     */
+    kind: "depth" | "backing" | "both" | "ratchet" | "none";
+    /** The liquidity tier whose requirements are named (`depth` / `backing` / `both`). */
+    tier?: number;
+    /** Pool depth the tier needs, whole USD (the market's own threshold). */
+    depthUsd?: number;
+    /** Market backing (LP equity) the tier needs, whole USD, rounded up; accounts for the market's lambda below 1x. */
+    backingUsd?: number;
+    /** Alias of the tier's pool-depth threshold (round-1 field). */
     thresholdUsd?: number;
-    /** The ceiling (x100) reached at that threshold. */
+    /** The ceiling (x100) reached: at the tier unlock, or the next ratchet step. */
     leverageX100?: number;
     /**
-     * Set on a `depth` unlock that gains nothing until LP capital also doubles: the LP capital (USD) the ceiling in
-     * `leverageX100` additionally needs ("both depth and capital are needed").
+     * True when keeper-reported depth can never reach this tier on this market (`attested_max_tier` is below it): the tier needs an
+     * on-chain pool reading (SetDepthSource + PushAuthMark mode 2).
      */
-    alsoRequiresCapitalUsd?: number;
+    needsOnChainDepth?: boolean;
+    /** `ratchet`: slots until the next step is allowed (0 = on the next write). */
+    etaSlots?: bigint;
+    /** `ratchet`: the same in whole minutes, rounded up (display "next step in about N min"). */
+    etaMinutes?: number;
 }
-/** Everything derived from the growth record + band + depth for the app. */
+/** Everything derived from the growth record + band + depth + LP equity for the app. */
 export interface GrowthCeilingView {
+    /** Combined tier `min(venue, book)`; 0 off the clamp. */
     tier: number;
+    venueTier: number;
+    bookTier: number;
+    /** Book depth of the bound LP ({@link bookDepthE6}); 0 when `cM` is unknown. */
+    bookDepthE6: bigint;
+    /** The fresh reading ({@link freshDepthE6}; 0n when absent or a real zero). */
     effectiveDepthE6: bigint;
+    /** The depth the capacity cap uses (fresh, sticky, or `null` for none). */
+    capDepthE6: bigint | null;
+    /** This market's thresholds, USD e6. */
+    thresholdsE6: Triple<bigint>;
+    /** This market's leverage table x100 `[L0, L1, L2, L3]`. */
+    table: readonly [number, number, number, number];
     clampEnforced: boolean;
     /** Graduation above `L_launch` is allowed (clamp enforced and tier >= 1). */
     graduationOn: boolean;
     /** Live target before the stored-ratchet minimum. */
     targetX100: number;
-    /** What the gate reads: `min(stored ceil_x100, target)`. */
+    /** What the gate reads. */
     ceilingX100: number;
+    /** The next thing that raises the ceiling: the ratchet step when the target is already higher, else the tier requirements. */
     nextUnlock: NextUnlock;
+    /** The next tier's requirements regardless of the ratchet. */
+    nextTierUnlock: NextUnlock;
 }
 /**
- * Derive tier, ceiling and next unlock for one asset.
+ * Derive tier, ceiling and next unlock for one asset, exactly as the wrapper's gate does: `tier = min(venue, book)` with the book tier
+ * from `cM` and the stored lambda, the per-market thresholds and leverage table, and `ceiling = min(stored, target)` on a clamp-enforced market.
  *
- * @param g        Decoded growth record.
- * @param bandBps  Engine `band_bps`.
- * @param nowSlot  Current slot.
- * @param cM       Conservative LP equity (atoms).
+ * @param g          Decoded growth record.
+ * @param bandBps    Engine `band_bps`.
+ * @param nowSlot    Current slot.
+ * @param cM         Conservative LP equity (atoms), or `null` when the LP is not in hand (the book tier reads 0: never looser).
  * @param forceDown  Draw outstanding / h-lock / ADL.
  * @returns {@link GrowthCeilingView}.
  * @example
  * ```ts
  * const v = growthCeilingView(g, 1000, slot, cM, false);
- * if (v.nextUnlock.kind === "depth") console.log(`${v.nextUnlock.leverageX100! / 100}x unlocks at $${v.nextUnlock.thresholdUsd}`);
+ * if (v.nextUnlock.kind === "both") console.log(`${v.nextUnlock.leverageX100! / 100}x unlocks at $${v.nextUnlock.depthUsd} pool depth and $${v.nextUnlock.backingUsd} market backing`);
  * ```
  */
-export declare function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint, forceDown: boolean): GrowthCeilingView;
+export declare function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint | null, forceDown: boolean): GrowthCeilingView;
 /** Inputs of {@link quoteMaxLeverage}. */
 export interface QuoteMaxLeverageInput {
     /** Engine initial margin (bps) of the asset. */
@@ -498,8 +964,8 @@ export interface QuoteMaxLeverageInput {
     /** Engine `POS_SCALE` (default 1_000_000n). */
     posScale?: bigint;
     /**
-     * v2.2 growth: engine `band_bps` and the current slot. When present the quote applies the depth tier (lambda_eff, kappa cap),
-     * graduation and the stored ratchet; when absent it is the growth-1 quote (`min(L_launch, L_tier)`, no depth).
+     * v2.2 growth: engine `band_bps` and the current slot. When present the quote applies the combined tier (lambda_eff, the fresh or sticky
+     * kappa depth cap), graduation and the stored ratchet; when absent it is the growth-1 quote (`min(L_launch, L_tier)`, no depth).
      */
     v22?: {
         bandBps: number;
@@ -554,10 +1020,20 @@ export interface MaxLeverageQuote {
     utilisationFeeBps: number | null;
     /** v2.2: the ceiling in force (x100): `min(stored, live target)`; the growth-1 `min(L_launch, L_tier)` without `v22` input; 0 when growth is off. */
     ceilingX100: number;
-    /** v2.2: liquidity tier 0..3 (0 without `v22` input). */
+    /** v2.2: liquidity tier 0..3 = `min(venue, book)` (0 without `v22` input). */
     tier: number;
-    /** v2.2: what raises the ceiling next, e.g. `{ kind: "depth", thresholdUsd: 25000, leverageX100: 500 }` = "5x unlocks when pool depth reaches $25k". */
+    /** v2.2: the pool-depth (venue) tier and the market-backing (book) tier behind {@link MaxLeverageQuote.tier}. */
+    venueTier: number;
+    bookTier: number;
+    /** v2.2: the depth the capacity cap used (fresh reading, or the decayed last good one after the readings stopped); `null` = none ever. */
+    capDepthE6: bigint | null;
+    /**
+     * v2.2: what raises the ceiling next: the ratchet step when the target is already higher (`{ kind: "ratchet", leverageX100: 700, etaMinutes: 41 }`),
+     * else the tier requirements, naming BOTH when both bind (`{ kind: "both", depthUsd: 100000, backingUsd: 100000, leverageX100: 1000 }`).
+     */
     nextUnlock: NextUnlock;
+    /** v2.2: the next tier's requirements regardless of any climb in progress. */
+    nextTierUnlock: NextUnlock;
     /** v2.2: graduation above `L_launch` is allowed (clamp enforced and tier >= 1). */
     graduationOn: boolean;
 }
@@ -566,7 +1042,8 @@ export interface MaxLeverageQuote {
  *
  * Crowd detection: taker long => the LP goes shorter. A side is "crowd" iff the taker's fill on it
  * grows |LP|: LP short or flat => longs crowd; LP long or flat => shorts crowd (a flat LP: both).
- * Ceiling `L_ceil = min(l_launch, l_tier)` (graduation is compiled off in the wrapper).
+ * Ceiling `L_ceil = min(l_launch, l_tier)` growth-1; with `v22` input (clamp-enforced band market) `min(stored ratcheted ceiling, target)` where
+ * `target = min(L_tier, max(L_launch, L_table(tier)))` and `tier = min(venue tier, book tier)` (R2.1; see {@link growthCeilingView}).
  * N-1 (wrapper re-verification fix): opens need the asset's BOUND vault LP (`assetBound`, else
  * closed "not-bound"), and capacity is the USERS' open interest on each side
  * (`usersSideOiQ`), capped at `N_cap` on BOTH sides, so `|LP| <= N_cap` after any sequence.
@@ -754,6 +1231,52 @@ export declare function encodeInitVaultLpV19(juniorFloorBps: number, lLaunchX100
  * ```
  */
 export declare function encodeSetAssetRiskLimitsV19(assetIndex: number, lambdaBps: number, kinkBps: number, utilFeeMaxBps?: number): Uint8Array;
+/** Wire length of a tier block: `[T1 u32][T2 u32][T3 u32][L1 u16][L2 u16][L3 u16]` (`TIER_CONFIG_WIRE_LEN`). */
+export declare const TIER_CONFIG_WIRE_LEN = 18;
+/** Length of the tag 93 growth trailer with the tier block: `[lambda u32][kink u16][util_fee u16]` + tier block + `attested_max_tier u8`. */
+export declare const SET_ASSET_RISK_LIMITS_TIERS_TRAILER_LEN = 27;
+/**
+ * Tag 94 InitVaultLp with the growth trailer AND the creator's tier block: `[94, junior_floor u16, l_launch_x100 u16, T1 u32, T2 u32,
+ * T3 u32, L1 u16, L2 u16, L3 u16]` (23 bytes). Merged field by field under any upgrade-authority preset (a non-zero preset field is kept) and
+ * bounded by the wrapper's `tier_config_ok`, else 130 `GrowthTierConfigInvalid` (the bind reverts). The creator can never set `attested_max_tier`.
+ * Throws client-side on a table {@link validateTierConfig} refuses (given `lTierX100`, pass it to check before signing).
+ *
+ * @param juniorFloorBps  Junior floor bps (u16).
+ * @param lLaunchX100     Starting leverage cap x100, > 0.
+ * @param tiers           T1..T3 whole USD and L1..L3 x100 (0 = protocol default).
+ * @param lTierX100       Optional: the market's built-in maximum x100; when given the table is validated before it is encoded.
+ * @returns 23 bytes.
+ * @example
+ * ```ts
+ * encodeInitVaultLpV22Tiers(2000, 500, { thresholdUsd: [25_000, 100_000, 500_000], leverageX100: [500, 1_000, 2_000] }, 2_000);
+ * ```
+ */
+export declare function encodeInitVaultLpV22Tiers(juniorFloorBps: number, lLaunchX100: number, tiers: TierConfig, lTierX100?: number): Uint8Array;
+/**
+ * Tag 93 SetAssetRiskLimitsV22Tiers (upgrade authority): the dials AND the per-market tier table AND `attested_max_tier`. Wire: `[93,
+ * asset_index u16]`, 41 zero bytes (the legacy body, never applied), then the 27-byte trailer `[lambda u32][kink u16][util_fee_max u16 (0 =
+ * unchanged)][T1 u32][T2 u32][T3 u32][L1 u16][L2 u16][L3 u16][attested_max_tier u8]`: 71 bytes. The table is REPLACED as given (0 = default);
+ * a change never jumps the ceiling (it moves the target, the ratchet climbs +1x per hour, down is at once). The wrapper bounds the dials
+ * with its band-aware box (this encoder only checks the u32 / u16 ranges and `lambda >= 1`); the table with `tier_config_ok` and
+ * `attested_max_tier <= 3`, else 130. Pass `lTierX100` to check the table before signing.
+ *
+ * @param assetIndex       Asset slot.
+ * @param lambdaBps        `lambda_bps` (u32, >= 1; the wrapper's box is band-dependent).
+ * @param kinkBps          Kink u_k (u16).
+ * @param tiers            Tier table (T1..T3 whole USD, L1..L3 x100; 0 = default).
+ * @param attestedMaxTier  0 (default 1) ..= 3: the highest venue tier keeper-attested depth may earn.
+ * @param utilFeeMaxBps    0 = unchanged.
+ * @param lTierX100        Optional: the market's built-in maximum x100 and `lLaunchX100`, to validate the table first.
+ * @returns 71 bytes.
+ * @example
+ * ```ts
+ * encodeSetAssetRiskLimitsV22Tiers(0, 10_000, 5_000, { thresholdUsd: [0, 0, 0], leverageX100: [0, 0, 0] }, 1);
+ * ```
+ */
+export declare function encodeSetAssetRiskLimitsV22Tiers(assetIndex: number, lambdaBps: number, kinkBps: number, tiers: TierConfig, attestedMaxTier: number, utilFeeMaxBps?: number, check?: {
+    lLaunchX100: number;
+    lTierX100: number;
+}): Uint8Array;
 /** v2 call-extension fields: the v1 block plus the LP's signed position. */
 export interface MatcherCallExtV2 extends MatcherCallExt {
     /** i128 `lp_position_q` (the LP's engine position; `i128::MIN` is refused by the matcher). */

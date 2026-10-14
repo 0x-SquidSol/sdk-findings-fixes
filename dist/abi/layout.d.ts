@@ -273,6 +273,8 @@ export declare const ACCOUNT_KIND: Readonly<{
     readonly BondPosition: 12;
     readonly InsuranceUnits: 13;
     readonly G9FeedAllowlist: 15;
+    /** R2.1 item 4: `DepthSourceV22`, `["depth_src", market]`. */
+    readonly DepthSource: 16;
 }>;
 /**
  * Read the 16-byte wrapper header.

@@ -21,9 +21,9 @@ describe("v2.2 codes 125-127 (G9 timelock, P-1 position cap)", () => {
     expect(FX.errors["126"]).toBe("PositionCapReached");
     expect(FX.errors["127"]).toBe("CounterpartyPositionCapReached");
   });
-  it("negative control: a bare 9 still decodes to InvalidInstruction and 129 is unknown", () => {
+  it("negative control: a bare 9 still decodes to InvalidInstruction and 131 is unknown", () => {
     expect(decodeError(9)?.name).toBe("InvalidInstruction");
-    expect(decodeError(129)).toBeUndefined();
+    expect(decodeError(131)).toBeUndefined();
     expect(decodeError(126)?.hint).not.toBe(decodeError(127)?.hint);
   });
 });
@@ -34,9 +34,9 @@ describe("v2.2 growth code 128 DepthInputInvalid (PushAuthMark depth_mode other 
     expect(decodeError(128)?.hint).toBe("The price update carried an invalid liquidity reading.");
     expect(FX.errors["128"]).toBe("DepthInputInvalid");
   });
-  it("negative control: 127 keeps its name, 129 is unknown", () => {
+  it("negative control: 127 keeps its name, 131 is unknown", () => {
     expect(decodeError(127)?.name).toBe("CounterpartyPositionCapReached");
-    expect(decodeError(129)).toBeUndefined();
+    expect(decodeError(131)).toBeUndefined();
   });
 });
 
@@ -49,7 +49,7 @@ describe("wrapper error map is generated from the program (rustc discriminants)"
     for (const [code, name] of Object.entries(FX.errors)) expect(decodeError(Number(code))?.name, `code ${code}`).toBe(name);
   });
   it("7a3ac04c appends exactly one code, 91 LpVaultTargetPotImpaired (no existing code shifted)", () => {
-    expect(FX.count).toBe(129); // 0..128 (125..127 added with the P-1 devnet build, 128 DepthInputInvalid with v2.2 growth G8): 0..103, the v2.2 Phase 4 block 104..119, the P2b lock-exit block 120..122, 123..124
+    expect(FX.count).toBe(131); // 0..128 (125..127 added with the P-1 devnet build, 128 DepthInputInvalid with v2.2 growth G8, 129 DepthSourceInvalid and 130 GrowthTierConfigInvalid with round 2): 0..103, the v2.2 Phase 4 block 104..119, the P2b lock-exit block 120..122, 123..124
     expect(FX.errors["90"]).toBe("VaultLpBindRequiresFlatAsset");
     expect(FX.errors["91"]).toBe("LpVaultTargetPotImpaired");
     expect(decodeError(91)?.name).toBe("LpVaultTargetPotImpaired");
@@ -77,7 +77,7 @@ describe("wrapper error map is generated from the program (rustc discriminants)"
     expect(FX.errors["120"]).toBe("EngineAdlReduceOnly");
     expect(FX.errors["121"]).toBe("EngineLossStale");
     expect(FX.errors["122"]).toBe("EarnExitWouldUnderBackClaims");
-    expect(FX.errors["129"]).toBeUndefined();
+    expect(FX.errors["131"]).toBeUndefined();
     expect(decodeError(120)?.hint).toMatch(/^This market is close-only while it rebalances/);
   });
   it("P2b Earn allocation (#526) adds exactly the explicit block 100 VaultLpAllocateRefused, 101 VaultLpCapacityLocked, 102 VaultLpCreatorFeeVesting, 103 VaultLpSeniorCapitalHalt", () => {

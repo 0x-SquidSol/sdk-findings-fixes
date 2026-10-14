@@ -643,6 +643,16 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
     name: "DepthInputInvalid",
     hint: "The price update carried an invalid liquidity reading.",
   },
+  // v2.2 growth round 2 (R2.1 item 4, dex-depth branch): SetDepthSource (123) refused, or PushAuthMark depth mode 2 with no / a cleared / a non-matching pin.
+  129: {
+    name: "DepthSourceInvalid",
+    hint: "The pool reading for this market was not accepted. Check that the pinned pool and its vaults are the ones supplied.",
+  },
+  // v2.2 growth round 2 (R2.1 item 2, tiers branch): a per-market tier table or attested_max_tier outside the safety bounds.
+  130: {
+    name: "GrowthTierConfigInvalid",
+    hint: "These liquidity tiers are outside the safe limits. Thresholds must rise from at least $5k / $20k / $100k, and leverage must rise from the launch level up to the market's maximum.",
+  },
   // P2b E7 (percolator-prog #525, engine #276): explicit discriminants 120..=122; each was Custom(21).
   120: {
     name: "EngineAdlReduceOnly",

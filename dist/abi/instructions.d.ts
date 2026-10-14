@@ -3597,11 +3597,11 @@ export interface PushAuthMarkArgs {
     /**
      * v2.2 G8 depth input. Omitted => the 35-byte form, which ZEROES the stored depth on-chain (absent depth is never
      * stale-but-trusted). Present => the 44-byte form `[...35 B][depth_mode u8][depth_e6 u64 LE]`.
-     * `mode` 0 = none, 1 = keeper-attested; any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is
-     * rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
+     * `mode` 0 = none, 1 = keeper-attested, 2 = on-chain DEX pool (R2.1: `depthE6` must be 0 and the instruction needs four more accounts, see
+     * `buildPushAuthMarkDexIxV22`); any other value is refused on-chain with error 128 `DepthInputInvalid`, so it is rejected here too. `depthE6` is the +-2% pool depth in USD e6 (collateral 6 decimals).
      */
     depth?: {
-        mode: 0 | 1;
+        mode: 0 | 1 | 2;
         depthE6: bigint | string;
     };
 }

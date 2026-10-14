@@ -454,6 +454,8 @@ export const ACCOUNT_KIND = Object.freeze({
   BondPosition: 12,
   InsuranceUnits: 13,
   G9FeedAllowlist: 15,
+  /** R2.1 item 4: `DepthSourceV22`, `["depth_src", market]`. */
+  DepthSource: 16,
 } as const);
 
 // ============================================================================
