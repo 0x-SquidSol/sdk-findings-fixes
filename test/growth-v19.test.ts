@@ -88,6 +88,7 @@ describe("AssetGrowthV19 decoder", () => {
       cLaunchAtoms: 5_000_000_000n, ceilSlot: 123_456_789n, lambdaBps: 10_000, lLaunchX100: 550, lTierX100: 1_000, ceilX100: 550,
       kinkBps: 5_000, rGapBps: 500, allocAlphaBps: 11, allocBufferBps: 12, cushionTargetBps: 13, cushionShareBps: 14, version: 1, flags: 3,
       utilFeeMaxBps: 777,
+      depthSource: 0, depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, // v2.2 G8: zero in a growth-1 record
     });
   });
   it("version 0 -> null (growth OFF), even with junk in other fields", () => {

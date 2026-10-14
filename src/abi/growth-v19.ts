@@ -80,9 +80,13 @@ export const ASSET_GROWTH_FIELD_OFF = Object.freeze({
   cLaunchAtoms: 0, ceilSlot: 8, lambdaBps: 16, lLaunchX100: 20, lTierX100: 22, ceilX100: 24,
   kinkBps: 26, rGapBps: 28, allocAlphaBps: 30, allocBufferBps: 32, cushionTargetBps: 34,
   cushionShareBps: 36, version: 38, flags: 39, utilFeeMaxBps: 40, reserved: 42,
-  /** v2.2 G8 depth input (inside the formerly reserved bytes; 42..44 = rent kink, 48..56 = rent N_cap). */
-  depthSource: 44, depthE6: 56, depthSlot: 64, depthPrevE6: 72,
 } as const);
+
+/**
+ * v2.2 G8 depth fields, relative to the record start (inside the formerly reserved bytes; 42..44 = rent kink, 48..56 = rent
+ * N_cap). Kept apart from {@link ASSET_GROWTH_FIELD_OFF}, which is pinned against the crate's `offset_of!` fixture.
+ */
+export const ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({ depthSource: 44, depthE6: 56, depthSlot: 64, depthPrevE6: 72 } as const);
 
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
 export const GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
@@ -179,6 +183,7 @@ export interface AssetGrowthV19 {
 export function decodeAssetGrowthRecordV19(rec: Uint8Array): AssetGrowthV19 | null {
   if (rec.length !== ASSET_GROWTH_LEN) throw new Error(`AssetGrowthV19 record must be ${ASSET_GROWTH_LEN} bytes, got ${rec.length}`);
   const F = ASSET_GROWTH_FIELD_OFF;
+  const D = ASSET_GROWTH_DEPTH_FIELD_OFF;
   const version = rec[F.version] as number;
   if (version === 0) return null;
   const v = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
@@ -198,10 +203,10 @@ export function decodeAssetGrowthRecordV19(rec: Uint8Array): AssetGrowthV19 | nu
     version,
     flags: rec[F.flags] as number,
     utilFeeMaxBps: v.getUint16(F.utilFeeMaxBps, true),
-    depthSource: rec[F.depthSource] as number,
-    depthE6: v.getBigUint64(F.depthE6, true),
-    depthSlot: v.getBigUint64(F.depthSlot, true),
-    depthPrevE6: v.getBigUint64(F.depthPrevE6, true),
+    depthSource: rec[D.depthSource] as number,
+    depthE6: v.getBigUint64(D.depthE6, true),
+    depthSlot: v.getBigUint64(D.depthSlot, true),
+    depthPrevE6: v.getBigUint64(D.depthPrevE6, true),
   };
 }
 

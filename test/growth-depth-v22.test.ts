@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  decodeAssetGrowthRecordV19, ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, effectiveDepthE6, depthTier, lDepthX100, lambdaDepthBps,
+  decodeAssetGrowthRecordV19, ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, effectiveDepthE6, depthTier, lDepthX100, lambdaDepthBps,
   kappaDepth, bandRGapBps, clampEnforced, growthTargetCeilingX100, nCapQWithDepth, capitalDoublings, growthCeilingView, quoteMaxLeverage,
   DEPTH_MAX_AGE_SLOTS, DEPTH_SOURCE, encodePushAuthMark, IX_TAG, stakePoolValue, decodeError, PERCOLATOR_ERRORS,
 } from "../src/index.js";
@@ -16,7 +16,7 @@ const M = 1_000_000n; // 1 USD of 6-decimal collateral
 function rec(over: Partial<Record<"cLaunch" | "ceil" | "lambda" | "lLaunch" | "lTier" | "kink" | "rGap" | "src" | "depth" | "slot" | "prev", bigint>>): Uint8Array {
   const b = new Uint8Array(ASSET_GROWTH_LEN);
   const v = new DataView(b.buffer);
-  const F = ASSET_GROWTH_FIELD_OFF;
+  const F = { ...ASSET_GROWTH_FIELD_OFF, ...ASSET_GROWTH_DEPTH_FIELD_OFF };
   v.setBigUint64(F.cLaunchAtoms, over.cLaunch ?? 0n, true);
   v.setUint32(F.lambdaBps, Number(over.lambda ?? 10_000n), true);
   v.setUint16(F.lLaunchX100, Number(over.lLaunch ?? 300n), true);
@@ -34,10 +34,10 @@ function rec(over: Partial<Record<"cLaunch" | "ceil" | "lambda" | "lLaunch" | "l
 
 describe("AssetGrowthV19 depth fields", () => {
   it("offsets 44 / 56 / 64 / 72 relative to the record", () => {
-    expect(ASSET_GROWTH_FIELD_OFF.depthSource).toBe(44);
-    expect(ASSET_GROWTH_FIELD_OFF.depthE6).toBe(56);
-    expect(ASSET_GROWTH_FIELD_OFF.depthSlot).toBe(64);
-    expect(ASSET_GROWTH_FIELD_OFF.depthPrevE6).toBe(72);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthSource).toBe(44);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthE6).toBe(56);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthSlot).toBe(64);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthPrevE6).toBe(72);
   });
   it("decodes a hand-laid record byte-for-byte", () => {
     const b = new Uint8Array(120);
