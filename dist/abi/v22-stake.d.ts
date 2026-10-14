@@ -200,9 +200,68 @@ export interface StakePoolV5Fields {
     pendingTargetByProtocol: boolean;
     /** S1: cumulative terminal surplus forwarded to the creator (`_v5_reserved[8..16]`, bytes 464..472). */
     creatorSurplusForwardedAtoms: bigint;
-    /** S2: wrapper fee payouts received while the pool had no real staker, still owed to the creator (`_v5_reserved[16..24]`, bytes 472..480). */
+    /**
+     * S2 backlog (`_v5_reserved[16..24]`, bytes 472..480): wrapper fee payouts received while the pool had no real staker. INFORMATIONAL since the
+     * close-out rule: the atoms stay unbooked in the vault until the close, where they are part of the surplus that goes to the stakers (or is
+     * recorded unclaimed) and are NEVER paid to the creator beyond the seed.
+     */
     s2BacklogOwedAtoms: bigint;
+    /**
+     * Close-out rule: the insurance seed recorded at the tag 19 bind (u56 LE at 457..464), valid only when byte 333 bit 0 is set; `null` when no
+     * close-out-rule bind recorded one (a pool bound before the build: the creator is owed nothing at close).
+     */
+    creatorSeedAtoms: bigint | null;
+    /**
+     * Close-out rule: terminal surplus that no real staker can own and that is not the creator's (zero real stakers): left unbooked in `pool.vault`
+     * and recorded here, a full u64 (low 7 bytes at 281..288, high byte at 334). Never paid to the creator.
+     */
+    unclaimedAtoms: bigint;
+    /** Close-out rule: everything the pool has sent to the creator, `creatorForwardedAtoms` (448) + `creatorSurplusForwardedAtoms` (464), saturating at u64::MAX. */
+    creatorTotalForwardedAtoms: bigint;
 }
+/**
+ * Close-out rule, the creator's share of one terminal `surplus`: `min(surplus, min(seed, creatorClassReleased) - forwarded)`, with the subtraction
+ * saturating at 0. `creatorClassReleased` is the wrapper's creator-class value released on a unitised FIRST_LOSS market and `undefined` otherwise.
+ * Port of stake `math::closeout_creator_share`.
+ *
+ * @param surplus                Vault balance above the booked pool value (atoms).
+ * @param seed                   The recorded seed ({@link StakePoolV5.creatorSeedAtoms}, 0 when none).
+ * @param forwarded              {@link StakePoolV5.creatorTotalForwardedAtoms}.
+ * @param creatorClassReleased   Creator-class value released so far (first-loss units), or `undefined`.
+ * @returns The creator's share (never above the seed or the surplus).
+ * @example
+ * ```ts
+ * closeoutCreatorShare(7_000_000n, 5_000_000n, 0n); // 5_000_000n
+ * ```
+ */
+export declare function closeoutCreatorShare(surplus: bigint, seed: bigint, forwarded: bigint, creatorClassReleased?: bigint): bigint;
+/** Result of {@link closeoutSplit}. */
+export interface CloseoutSplit {
+    /** Back to the creator: at most the seed recorded at bind. */
+    creator: bigint;
+    /** Booked to the pool, split pro rata among the real stakers. */
+    stakers: bigint;
+    /** Left unbooked in `pool.vault` (no real staker), recorded as unclaimed; never the creator's. */
+    unclaimed: bigint;
+}
+/**
+ * Close-out rule, one settlement's split: `creator = closeoutCreatorShare(..)`; the rest goes to the stakers when real stakers exist, else it is
+ * `unclaimed`. Always `creator + stakers + unclaimed == surplus` and `stakers == 0n || unclaimed == 0n`. Port of stake `math::closeout_split`.
+ *
+ * @param i  `surplus`, `seed`, `forwarded`, optional `creatorClassReleased`, and whether the pool has real stakers (LP supply above the dead shares).
+ * @returns `{ creator, stakers, unclaimed }`.
+ * @example
+ * ```ts
+ * closeoutSplit({ surplus: 7_600n, seed: 5_000n, forwarded: 0n, hasRealStakers: false }); // { creator: 5_000n, stakers: 0n, unclaimed: 2_600n }
+ * ```
+ */
+export declare function closeoutSplit(i: {
+    surplus: bigint;
+    seed: bigint;
+    forwarded: bigint;
+    creatorClassReleased?: bigint;
+    hasRealStakers: boolean;
+}): CloseoutSplit;
 /** Decoded v5 pool: the v5 fields plus the identity fields every consumer needs. */
 export interface StakePoolV5 extends StakePoolV5Fields {
     slab: PublicKey;

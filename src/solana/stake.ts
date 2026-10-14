@@ -978,6 +978,9 @@ export interface BindInsuranceAuthorityAccounts {
 /**
  * Build account keys for BindInsuranceAuthority (tag 19 / 0x13).
  *
+ * CLOSE-OUT RULE (stake `feat/v22-stake-closeout-split` 3e39e14): on every v5 pool the bind also records the creator's insurance seed (engine
+ * insurance now) in the pool, so `[1]` MUST be writable (read-only answers stake error 16 `InvalidAccount`); it is below.
+ *
  * Account order matches src/processor.rs process_bind_insurance_authority
  * (adopted lineage — same account shape as the deployed vault program's tag
  * 15, only the tag byte moved):
@@ -2452,7 +2455,8 @@ export interface RecoverTerminalInsuranceAccounts {
   /**
    * v5 (S1/S2): the creator's collateral token account (owner `pool.admin`, mint = pool mint; the ATA). Required on a first-loss
    * pool; on a FEE_ONLY pool it is accepted whenever passed and REQUIRED (`CreatorAccountRequired`, 46) when the settlement owes
-   * the creator, so v5 callers should always pass it. See `creatorCollateralAtaV5`.
+   * the creator, so v5 callers should ALWAYS pass it (close-out rule: the creator gets back at most the recorded seed, the rest goes to the stakers or is
+   * recorded unclaimed). See `creatorCollateralAtaV5` and `closeoutSplit`.
    */
   creatorToken?: PublicKey;
   /** Token program (default SPL Token; classic only, #352: anything else throws). */

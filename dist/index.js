@@ -3941,7 +3941,31 @@ function stakeMetasV5(spec, keys) {
     return { pubkey: k, isSigner: s.signer, isWritable: s.writable };
   });
 }
+var U64_MAX_STAKE = (1n << 64n) - 1n;
+function closeoutCreatorShare(surplus, seed, forwarded, creatorClassReleased) {
+  const entitled = creatorClassReleased === void 0 ? seed : seed < creatorClassReleased ? seed : creatorClassReleased;
+  const room = entitled > forwarded ? entitled - forwarded : 0n;
+  return surplus < room ? surplus : room;
+}
+function closeoutSplit(i) {
+  const creator = closeoutCreatorShare(i.surplus, i.seed, i.forwarded, i.creatorClassReleased);
+  const rest = i.surplus - creator;
+  return i.hasRealStakers ? { creator, stakers: rest, unclaimed: 0n } : { creator, stakers: 0n, unclaimed: rest };
+}
 var STAKE_POOL_DISCRIMINATOR_V5 = Uint8Array.from([83, 80, 79, 79, 76, 95, 86, 49]);
+function seed56(d) {
+  let x = 0n;
+  for (let i = 6; i >= 0; i--) x = x << 8n | BigInt(d[457 + i]);
+  return x;
+}
+function unclaimed64(d) {
+  let x = BigInt(d[334]);
+  for (let i = 6; i >= 0; i--) x = x << 8n | BigInt(d[281 + i]);
+  return x;
+}
+function sat64(x) {
+  return x > U64_MAX_STAKE ? U64_MAX_STAKE : x;
+}
 function decodeStakePoolV5(data) {
   const F = STAKE_POOL_FIELD_OFF_V5;
   if (data.length < STAKE_POOL_SIZE_V5) throw new Error(`decodeStakePoolV5: data too short (${data.length} < ${STAKE_POOL_SIZE_V5})`);
@@ -3990,7 +4014,10 @@ function decodeStakePoolV5(data) {
     creatorForwardedAtoms: u645(F.creatorForwardedAtoms),
     pendingTargetByProtocol: data[F.v5Reserved] === 1,
     creatorSurplusForwardedAtoms: u645(F.v5Reserved + 8),
-    s2BacklogOwedAtoms: u645(F.v5Reserved + 16)
+    s2BacklogOwedAtoms: u645(F.v5Reserved + 16),
+    creatorSeedAtoms: (data[333] & 1) !== 0 ? seed56(data) : null,
+    unclaimedAtoms: unclaimed64(data),
+    creatorTotalForwardedAtoms: sat64(u645(F.creatorForwardedAtoms) + u645(F.v5Reserved + 8))
   };
 }
 function commitSlotForPendingTargetV5(pool) {
@@ -17687,6 +17714,8 @@ export {
   classifyLighthouseError,
   classifyRedemptionSimulationV22,
   clearStaticMarkets,
+  closeoutCreatorShare,
+  closeoutSplit,
   collateralDecimalsOf,
   collateralForLpV5,
   combineFundingRateE9V22,
