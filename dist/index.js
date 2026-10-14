@@ -5464,9 +5464,9 @@ var VAULT_LP_PIN_P3 = Object.freeze({
   MAX_INVENTORY_USD: 25000n
 });
 var ENGINE_MAX_POSITION_ABS_Q_P3 = 100000000000000n;
-function usdToQCappedP3(usd2, priceE6) {
+function usdToQCappedP3(usd, priceE6) {
   if (priceE6 === 0n) return null;
-  let q = usd2 * 1000000000000n / priceE6;
+  let q = usd * 1000000000000n / priceE6;
   if (q > ENGINE_MAX_POSITION_ABS_Q_P3) q = ENGINE_MAX_POSITION_ABS_Q_P3;
   return q === 0n ? null : q;
 }
@@ -6167,13 +6167,15 @@ var ASSET_GROWTH_FIELD_OFF = Object.freeze({
 var ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({
   depthSource: 44,
   attestedMaxTier: 45,
+  collateralDecimalsP1: 46,
   depthE6: 56,
   depthSlot: 64,
   depthPrevE6: 72,
   depthLastGoodE6: 80,
   depthLastGoodSlot: 88,
   tierThresholdUsd: 96,
-  tierLeverageX100: 108
+  tierLeverageX100: 108,
+  depthRiseEpoch: 114
 });
 var GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
 var GROWTH_UTIL_FEE_HARD_MAX_BPS = 2e3;
@@ -6226,6 +6228,9 @@ function decodeAssetGrowthRecordV19(rec) {
     depthEver: (rec[D.depthSource] & DEPTH_EVER) !== 0,
     depthPrevReal: (rec[D.depthSource] & DEPTH_PREV_REAL) !== 0,
     attestedMaxTier: rec[D.attestedMaxTier],
+    collateralDecimalsP1: rec[D.collateralDecimalsP1],
+    collateralDecimals: collateralDecimalsOf(rec[D.collateralDecimalsP1]),
+    depthRiseEpoch: v.getUint32(D.depthRiseEpoch, true),
     depthE6: v.getBigUint64(D.depthE6, true),
     depthSlot: v.getBigUint64(D.depthSlot, true),
     depthPrevE6: v.getBigUint64(D.depthPrevE6, true),
@@ -6361,7 +6366,7 @@ function freshDepthE6(depthE6, depthPrevE6, depthSlot, depthSourceByte, nowSlot)
   if ((depthSourceByte & DEPTH_PREV_REAL) === 0) return null;
   return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
 }
-function depthPushUpdate(st, source, newDepthE6, nowSlot) {
+function depthPushUpdate(st, source, newDepthE6, nowSlot, seedE6) {
   let src = source;
   let nd = newDepthE6;
   if (src === DEPTH_SOURCE.None || src > DEPTH_SOURCE.OnChainPool) {
@@ -6393,12 +6398,14 @@ function depthPushUpdate(st, source, newDepthE6, nowSlot) {
     s = src;
     prevReal = oldSource !== DEPTH_SOURCE.None ? DEPTH_PREV_REAL : 0;
   }
-  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot };
+  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseEpoch: st.riseEpoch };
   const f = freshDepthE6(d, prev, slot, out.depthSource, nowSlot);
   if (f !== null) {
+    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.riseEpoch, f, slot, seedE6);
     out.depthSource |= DEPTH_EVER;
-    out.lastGoodE6 = f;
+    out.lastGoodE6 = lg.lastGoodE6;
     out.lastGoodSlot = slot;
+    out.riseEpoch = lg.riseEpoch;
   }
   return out;
 }
@@ -6411,10 +6418,43 @@ function capDepthE6(depthSourceByte, fresh, lastGoodE6, lastGoodSlot, nowSlot) {
   if (depthEver(depthSourceByte)) return stickyDepthE6(lastGoodE6, lastGoodSlot, nowSlot);
   return null;
 }
-function tierThresholdsE6(storedUsd) {
+var GROWTH_MAX_COLLATERAL_DECIMALS = 18;
+var DEPTH_BOOTSTRAP_DIV = 16n;
+function collateralDecimalsOf(storedP1) {
+  return storedP1 === 0 ? 6 : storedP1 - 1;
+}
+function wholeTokenAtoms(decimals) {
+  return 10n ** BigInt(Math.min(Math.max(decimals, 0), GROWTH_MAX_COLLATERAL_DECIMALS));
+}
+function depthEpoch(slot) {
+  const e = slot / DEPTH_STICKY_EPOCH_SLOTS;
+  return e > 0xffffffffn ? 4294967295 : Number(e);
+}
+function depthRateLimited(ever, lastGoodE6, riseEpoch, r2, slot, seedE6) {
+  const e = depthEpoch(slot);
+  if (!ever) return { lastGoodE6: r2 < seedE6 ? r2 : seedE6, riseEpoch: e };
+  if (r2 <= lastGoodE6) return { lastGoodE6: r2, riseEpoch };
+  if (e > riseEpoch) {
+    const doubled = lastGoodE6 * 2n > U64_MAX2 ? U64_MAX2 : lastGoodE6 * 2n;
+    const floor = seedE6 / DEPTH_BOOTSTRAP_DIV;
+    const up = doubled > floor ? doubled : floor;
+    return { lastGoodE6: r2 < up ? r2 : up, riseEpoch: e };
+  }
+  return { lastGoodE6, riseEpoch };
+}
+function usableDepthE6(fresh, lastGoodE6) {
+  return fresh === null ? null : fresh < lastGoodE6 ? fresh : lastGoodE6;
+}
+function rentSnapshotNCapQ(nCapQ2, depthCapZero) {
+  if (nCapQ2 === 0n && depthCapZero) return 1n;
+  return nCapQ2 > U64_MAX2 ? U64_MAX2 : nCapQ2;
+}
+function tierThresholdsE6(storedTokens, collateralDecimals = 6) {
+  const unit = wholeTokenAtoms(collateralDecimals);
   const t = (i) => {
-    const s = BigInt(storedUsd[i]);
-    return (s === 0n ? BigInt(TIER_THRESHOLD_DEFAULT_USD[i]) : s) * GROWTH_USD_ATOMS;
+    const s = BigInt(storedTokens[i]);
+    const v = (s === 0n ? BigInt(TIER_THRESHOLD_DEFAULT_USD[i]) : s) * unit;
+    return v > U64_MAX2 ? U64_MAX2 : v;
   };
   return [t(0), t(1), t(2)];
 }
@@ -6508,7 +6548,7 @@ function mergeTierConfigAtBind(stored, creator) {
   const m = (a, b) => [a[0] === 0 ? b[0] : a[0], a[1] === 0 ? b[1] : a[1], a[2] === 0 ? b[2] : a[2]];
   return { thresholdUsd: m(stored.thresholdUsd, creator.thresholdUsd), leverageX100: m(stored.leverageX100, creator.leverageX100) };
 }
-var usd = (n) => `$${n.toLocaleString("en-US")}`;
+var fmtAmount = (n, c) => c !== void 0 && (c.decimals ?? 6) === 6 && c.usdLike === true ? `$${n.toLocaleString("en-US")}` : `${n.toLocaleString("en-US")} ${c?.symbol ?? "tokens"}`;
 var lev = (x100) => `${Number.isInteger(x100 / 100) ? x100 / 100 : (x100 / 100).toFixed(2).replace(/0+$/, "")}x`;
 function validateTierConfig(i) {
   const issues = [];
@@ -6520,7 +6560,7 @@ function validateTierConfig(i) {
   th.forEach((v, k) => {
     if (!isU(v, 4294967295)) {
       thOk = false;
-      issues.push({ field: "thresholds", code: "not-an-integer", tier: tiers[k], message: `Tier ${k + 1} pool depth must be a whole dollar amount.` });
+      issues.push({ field: "thresholds", code: "not-an-integer", tier: tiers[k], message: `Tier ${k + 1} pool depth must be a whole number of ${i.collateral?.usdLike === true && (i.collateral.decimals ?? 6) === 6 ? "dollars" : i.collateral?.symbol ?? "tokens"}.` });
     }
   });
   let lvOk = true;
@@ -6537,7 +6577,7 @@ function validateTierConfig(i) {
   if (thOk && th.some((v) => v !== 0)) {
     const w2 = th.map((v, k) => v === 0 ? TIER_THRESHOLD_DEFAULT_USD[k] : v);
     w2.forEach((v, k) => {
-      if (v < TIER_THRESHOLD_FLOOR_USD[k]) issues.push({ field: "thresholds", code: "below-floor", tier: tiers[k], message: `Tier ${k + 1} pool depth must be at least ${usd(TIER_THRESHOLD_FLOOR_USD[k])}.` });
+      if (v < TIER_THRESHOLD_FLOOR_USD[k]) issues.push({ field: "thresholds", code: "below-floor", tier: tiers[k], message: `Tier ${k + 1} pool depth must be at least ${fmtAmount(TIER_THRESHOLD_FLOOR_USD[k], i.collateral)}.` });
     });
     for (let k = 1; k < 3; k++) {
       if (!(w2[k - 1] < w2[k])) issues.push({ field: "thresholds", code: "not-rising", tier: tiers[k], message: `Tier ${k + 1} pool depth must be higher than tier ${k}.` });
@@ -6661,12 +6701,41 @@ function graduationFallOnly(i) {
   const upper = targetCeilingX100(i.graduation, i.forceDown, i.lLaunchX100, i.lTierX100, i.lTableTierX100);
   return upper < i.prevCeilX100 ? { ceilX100: upper, ceilSlot: i.nowSlot } : { ceilX100: i.prevCeilX100, ceilSlot: i.prevSlot };
 }
+function slotsToMinutes(slots) {
+  return Number(divCeil(slots * BigInt(GROWTH_SLOT_MS), 60000n));
+}
+function depthRateEtaSlots(ever, lastGood, riseEpoch, fresh, threshold, nowSlot, seed) {
+  if (fresh < threshold) return null;
+  let cur = lastGood;
+  let re = riseEpoch;
+  let e = depthEpoch(nowSlot);
+  if (!ever) {
+    cur = fresh < seed ? fresh : seed;
+    re = e;
+  }
+  if (cur >= threshold) return 0n;
+  let k = Math.max(e, re + 1);
+  for (let n = 0; n < 80; n++) {
+    const floor = seed / DEPTH_BOOTSTRAP_DIV;
+    const doubled = cur * 2n;
+    const up = doubled > floor ? doubled : floor;
+    cur = fresh < up ? fresh : up;
+    if (cur >= threshold) {
+      const at = BigInt(k) * DEPTH_STICKY_EPOCH_SLOTS;
+      return at > nowSlot ? at - nowSlot : 0n;
+    }
+    k += 1;
+  }
+  return null;
+}
 function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
   const clamp = clampEnforced(bandBps, g.rGapBps);
-  const thresholds = tierThresholdsE6(g.tierThresholdUsd);
+  const unit = wholeTokenAtoms(g.collateralDecimals);
+  const thresholds = tierThresholdsE6(g.tierThresholdUsd, g.collateralDecimals);
   const table = tierLeverage(g.tierLeverageX100, g.lLaunchX100, g.lTierX100);
   const dsByte = g.depthSource | (g.depthEver ? DEPTH_EVER : 0) | (g.depthPrevReal ? DEPTH_PREV_REAL : 0);
-  const fresh = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, nowSlot);
+  const freshRaw = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, nowSlot);
+  const fresh = usableDepthE6(freshRaw, g.depthLastGoodE6);
   const eff = fresh ?? 0n;
   const capDepth = clamp ? capDepthE6(dsByte, fresh, g.depthLastGoodE6, g.depthLastGoodSlot, nowSlot) : null;
   const venue = clamp ? venueTier(eff, dsByte, thresholds, g.attestedMaxTier) : 0;
@@ -6687,10 +6756,19 @@ function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
       const needBacking = book < t;
       const depthAtoms = thresholds[t - 1];
       const lam = BigInt(Math.min(g.lambdaBps, 1e4));
-      const out = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / GROWTH_USD_ATOMS), leverageX100: lev2 };
-      if (needDepth) out.depthUsd = Number(depthAtoms / GROWTH_USD_ATOMS);
-      if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), GROWTH_USD_ATOMS));
+      const out = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / unit), leverageX100: lev2 };
+      if (needDepth) out.depthUsd = Number(depthAtoms / unit);
+      if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), unit));
       if (needDepth && t > attestedMaxTierEff(g.attestedMaxTier) && g.depthSource !== DEPTH_SOURCE.OnChainPool) out.needsOnChainDepth = true;
+      const venueCanReach = depthSourceOf(dsByte) === DEPTH_SOURCE.OnChainPool || depthSourceOf(dsByte) === DEPTH_SOURCE.Attested && t <= attestedMaxTierEff(g.attestedMaxTier);
+      if (needDepth && venueCanReach && freshRaw !== null && freshRaw >= depthAtoms) {
+        const eta = depthRateEtaSlots(g.depthEver, g.depthLastGoodE6, g.depthRiseEpoch, freshRaw, depthAtoms, nowSlot, thresholds[0] - 1n);
+        if (eta !== null) {
+          out.depthRateLimited = true;
+          out.depthEtaSlots = eta;
+          out.depthEtaMinutes = slotsToMinutes(eta);
+        }
+      }
       nextTierUnlock = out;
       break;
     }
@@ -6700,9 +6778,9 @@ function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
     const step = Math.min(stored + GROWTH_RATCHET_STEP_X100, target);
     const due = g.ceilSlot + GROWTH_RATCHET_EPOCH_SLOTS;
     const eta = due > nowSlot ? due - nowSlot : 0n;
-    nextUnlock = { kind: "ratchet", leverageX100: step, etaSlots: eta, etaMinutes: Number(divCeil(eta * BigInt(GROWTH_SLOT_MS), 60000n)) };
+    nextUnlock = { kind: "ratchet", leverageX100: step, etaSlots: eta, etaMinutes: slotsToMinutes(eta) };
   }
-  return { tier, venueTier: venue, bookTier: book, bookDepthE6: bookD, effectiveDepthE6: eff, capDepthE6: capDepth, thresholdsE6: thresholds, table, clampEnforced: clamp, graduationOn: grad, targetX100: target, ceilingX100: ceiling, nextUnlock, nextTierUnlock };
+  return { tier, freshDepthE6: freshRaw, collateralDecimals: g.collateralDecimals, venueTier: venue, bookTier: book, bookDepthE6: bookD, effectiveDepthE6: eff, capDepthE6: capDepth, thresholdsE6: thresholds, table, clampEnforced: clamp, graduationOn: grad, targetX100: target, ceilingX100: ceiling, nextUnlock, nextTierUnlock };
 }
 function quoteMaxLeverage(input, side) {
   const lp = input.lpEffectivePositionQ;
@@ -16926,6 +17004,7 @@ export {
   DEPLOY_TARGET_TIMELOCK_MIN_SLOTS_V5,
   DEPTH_AMM_PROGRAMS_V22,
   DEPTH_ATTESTED_MAX_TIER,
+  DEPTH_BOOTSTRAP_DIV,
   DEPTH_EVER,
   DEPTH_MAX_AGE_SLOTS,
   DEPTH_MODE,
@@ -16974,6 +17053,7 @@ export {
   GROWTH_DIALS_NO_CLAMP_MAX_KINK_BPS,
   GROWTH_DIALS_NO_CLAMP_MAX_LAMBDA_BPS,
   GROWTH_LEVERAGE_X100_ONE,
+  GROWTH_MAX_COLLATERAL_DECIMALS,
   GROWTH_MAX_IMR_BPS,
   GROWTH_MAX_LAMBDA_BPS,
   GROWTH_MAX_POSITION_ABS_Q,
@@ -17422,6 +17502,7 @@ export {
   classifyLighthouseError,
   classifyRedemptionSimulationV22,
   clearStaticMarkets,
+  collateralDecimalsOf,
   collateralForLpV5,
   combinedTier,
   commitSlotForPendingTargetV5,
@@ -17504,9 +17585,11 @@ export {
   depositAccounts,
   depositJuniorAccounts,
   depthCapQ,
+  depthEpoch,
   depthEver,
   depthNotionalCapE6,
   depthPushUpdate,
+  depthRateLimited,
   depthSourceByteOk,
   depthSourceOf,
   depthTierFor,
@@ -17952,6 +18035,7 @@ export {
   rentRateE9FailClosedV22,
   rentRateE9V22,
   rentRatesFromStateV22,
+  rentSnapshotNCapQ,
   requireDecimalUIntString,
   rescueAdmittedV22,
   rescueClaimDeltaV22,
@@ -18003,6 +18087,7 @@ export {
   trancheSplit3V22,
   tryReadBandRentViewV22,
   unknownMarketVersion,
+  usableDepthE6,
   usdToQCappedP3,
   usersSideOiQ,
   usersSideOiQV22,
@@ -18036,6 +18121,7 @@ export {
   vaultValueWorseV22,
   venueTier,
   walletSupportsV1,
+  wholeTokenAtoms,
   withBondTailV22,
   withBoundVaultLpTailP3,
   withCrankFeesBoundTailP2b,

@@ -8,7 +8,8 @@
 import { describe, it, expect } from "vitest";
 import {
   ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, decodeAssetGrowthRecordV19,
-  DEPTH_EVER, DEPTH_PREV_REAL, freshDepthE6, DEPTH_SOURCE, depthSourceOf, depthEver, depthSourceByteOk, effectiveDepthE6, depthPushUpdate, stickyDepthE6, capDepthE6,
+  depthPushUpdate, depthRateLimited, usableDepthE6, rentSnapshotNCapQ, collateralDecimalsOf, wholeTokenAtoms, DEPTH_BOOTSTRAP_DIV, depthEpoch,
+  DEPTH_EVER, DEPTH_PREV_REAL, freshDepthE6, DEPTH_SOURCE, depthSourceOf, depthEver, depthSourceByteOk, effectiveDepthE6, stickyDepthE6, capDepthE6,
   tierThresholdsE6, depthTierFor, attestedMaxTierEff, venueTier, bookDepthFromPins, bookCapacityE6, bookDepthE6, bookTier, combinedTier,
   tierLeverage, lTableX100, tierConfigOk, attestedMaxTierOk, mergeTierConfigAtBind, validateTierConfig,
   lambdaDepthBps, kappaDepthBps, lambdaEffBps, depthNotionalCapE6, depthCapQ, nCapG8Q, growthMatcherCapsG8, nCapQ, growthMatcherCapsV3,
@@ -22,6 +23,8 @@ const T1 = 25_000_000_000n, T2 = 100_000_000_000n, T3 = 500_000_000_000n;
 const M = 1_000_000n;
 const PS = 1_000_000n;
 const DEF = tierThresholdsE6([0, 0, 0]);
+const U64MAX = (1n << 64n) - 1n;
+const dpu = (st: DepthState, src: number, d: bigint, now: bigint, seed: bigint = U64MAX): DepthState => depthPushUpdate(st, src, d, now, seed);
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 
 describe("record decoder (bytes 44, 45, 80, 88, 96, 108)", () => {
@@ -155,7 +158,7 @@ describe("validateTierConfig (client-side, calm messages)", () => {
   });
   it("names the problem in one calm line, no bps", () => {
     expect(validateTierConfig({ thresholdsUsd: [1_000, 20_000, 100_000], lLaunchX100: 500, lTierX100: 2_000 }).issues).toEqual([
-      { field: "thresholds", code: "below-floor", tier: 1, message: "Tier 1 pool depth must be at least $5,000." },
+      { field: "thresholds", code: "below-floor", tier: 1, message: "Tier 1 pool depth must be at least 5,000 tokens." },
     ]);
     const r = validateTierConfig({ thresholdsUsd: [30_000, 30_000, 500_000], leverageX100: [400, 900, 2_500], lLaunchX100: 500, lTierX100: 2_000 });
     expect(r.issues.map((i) => i.message)).toEqual([
@@ -173,41 +176,41 @@ describe("validateTierConfig (client-side, calm messages)", () => {
   });
 });
 
-const st = (d: bigint, p: bigint, s: bigint): DepthState => ({ depthE6: d, depthPrevE6: p, depthSlot: s, depthSource: d === 0n ? 0 : 1, lastGoodE6: 0n, lastGoodSlot: 0n });
+const st = (d: bigint, p: bigint, s: bigint): DepthState => ({ depthE6: d, depthPrevE6: p, depthSlot: s, depthSource: d === 0n ? 0 : 1, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 });
 const tri = (x: DepthState): [bigint, bigint, bigint] => [x.depthE6, x.depthPrevE6, x.depthSlot];
 
 describe("depthPushUpdate (Rust W-L2 + R2.1 sticky vectors)", () => {
   const a = DEPTH_SOURCE.Attested;
   it("same-slot push is not a second sample", () => {
-    expect(tri(depthPushUpdate(st(T1, 0n, 10n), a, 2n * T1, 11n))).toEqual([2n * T1, T1, 11n]);
-    expect(tri(depthPushUpdate(st(0n, 0n, 0n), a, T1, 5n))).toEqual([T1, 0n, 5n]);
-    expect(tri(depthPushUpdate(st(T1, 0n, 10n), a, 2n * T1, 10n))).toEqual([T1, 0n, 10n]);
-    expect(tri(depthPushUpdate(st(2n * T1, 7n, 10n), a, T1, 10n))).toEqual([T1, 7n, 10n]);
-    expect(tri(depthPushUpdate(st(2n * T1, 7n, 10n), 0, 0n, 10n))).toEqual([0n, 7n, 10n]);
-    expect(depthSourceOf(depthPushUpdate(st(T1, 7n, 10n), DEPTH_SOURCE.OnChainPool, 2n * T1, 10n).depthSource)).toBe(a);
-    expect(depthSourceOf(depthPushUpdate(st(2n * T1, 7n, 10n), DEPTH_SOURCE.OnChainPool, T1, 10n).depthSource)).toBe(DEPTH_SOURCE.OnChainPool);
-    let s = depthPushUpdate(st(0n, 0n, 0n), a, 5n * T1, 20n);
-    s = depthPushUpdate(s, a, 5n * T1, 20n);
+    expect(tri(dpu(st(T1, 0n, 10n), a, 2n * T1, 11n))).toEqual([2n * T1, T1, 11n]);
+    expect(tri(dpu(st(0n, 0n, 0n), a, T1, 5n))).toEqual([T1, 0n, 5n]);
+    expect(tri(dpu(st(T1, 0n, 10n), a, 2n * T1, 10n))).toEqual([T1, 0n, 10n]);
+    expect(tri(dpu(st(2n * T1, 7n, 10n), a, T1, 10n))).toEqual([T1, 7n, 10n]);
+    expect(tri(dpu(st(2n * T1, 7n, 10n), 0, 0n, 10n))).toEqual([0n, 7n, 10n]);
+    expect(depthSourceOf(dpu(st(T1, 7n, 10n), DEPTH_SOURCE.OnChainPool, 2n * T1, 10n).depthSource)).toBe(a);
+    expect(depthSourceOf(dpu(st(2n * T1, 7n, 10n), DEPTH_SOURCE.OnChainPool, T1, 10n).depthSource)).toBe(DEPTH_SOURCE.OnChainPool);
+    let s = dpu(st(0n, 0n, 0n), a, 5n * T1, 20n);
+    s = dpu(s, a, 5n * T1, 20n);
     expect(effectiveDepthE6(s.depthE6, s.depthPrevE6, s.depthSlot, 20n)).toBe(0n);
     expect(depthEver(s.depthSource)).toBe(false);
-    s = depthPushUpdate(s, a, 5n * T1, 21n);
+    s = dpu(s, a, 5n * T1, 21n);
     expect(effectiveDepthE6(s.depthE6, s.depthPrevE6, s.depthSlot, 21n)).toBe(5n * T1);
-    expect(tri(depthPushUpdate(st(T1, 3n, 10n), a, 2n * T1, 9n))).toEqual([T1, 3n, 10n]);
-    expect(tri(depthPushUpdate(st(T1, 3n, 10n), 3, 2n * T1, 11n))).toEqual([0n, T1, 11n]);
+    expect(tri(dpu(st(T1, 3n, 10n), a, 2n * T1, 9n))).toEqual([T1, 3n, 10n]);
+    expect(tri(dpu(st(T1, 3n, 10n), 3, 2n * T1, 11n))).toEqual([0n, T1, 11n]);
   });
   it("W-M1 sticky bookkeeping", () => {
-    let s = depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n }, a, 4n * T1, 100n);
-    s = depthPushUpdate(s, a, 2n * T1, 101n);
+    let s = dpu({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 }, a, 4n * T1, 100n);
+    s = dpu(s, a, 2n * T1, 101n);
     expect(depthEver(s.depthSource)).toBe(true);
     expect([s.lastGoodE6, s.lastGoodSlot]).toEqual([2n * T1, 101n]);
-    const z = depthPushUpdate(s, DEPTH_SOURCE.None, 0n, 102n);
+    const z = dpu(s, DEPTH_SOURCE.None, 0n, 102n);
     expect(z.depthE6).toBe(0n);
     expect(z.depthSource).toBe(DEPTH_EVER | DEPTH_PREV_REAL); // absent current, real previous
     expect([z.lastGoodE6, z.lastGoodSlot]).toEqual([2n * T1, 101n]);
-    const f = depthPushUpdate(z, a, 9n * T1, 103n);
+    const f = dpu(z, a, 9n * T1, 103n);
     expect(effectiveDepthE6(f.depthE6, f.depthPrevE6, f.depthSlot, 103n)).toBe(0n);
     expect(f.lastGoodE6).toBe(2n * T1);
-    const g = depthPushUpdate(f, a, T1, 104n);
+    const g = dpu(f, a, T1, 104n);
     expect([g.lastGoodE6, g.lastGoodSlot]).toEqual([T1, 104n]);
   });
   it("capDepthE6 / stickyDepthE6", () => {
@@ -227,40 +230,43 @@ describe("depthPushUpdate (Rust W-L2 + R2.1 sticky vectors)", () => {
 describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_reading_closes_at_once)", () => {
   const a = DEPTH_SOURCE.Attested;
   const fresh = (x: DepthState, now: bigint): bigint | null => freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now);
-  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n };
+  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 };
   it("attested 0 and DEX 0 are Some(0) at once; positive after a real 0 stays 0 until its own min-of-two", () => {
-    let s = depthPushUpdate(empty, a, 4n * T1, 100n);
-    s = depthPushUpdate(s, a, 4n * T1, 101n);
+    let s = dpu(empty, a, 4n * T1, 100n);
+    s = dpu(s, a, 4n * T1, 101n);
     expect(fresh(s, 101n)).toBe(4n * T1);
-    const z = depthPushUpdate(s, a, 0n, 102n);
+    const z = dpu(s, a, 0n, 102n);
     expect(fresh(z, 102n)).toBe(0n);
     expect([z.lastGoodE6, z.lastGoodSlot]).toEqual([0n, 102n]);
     expect(capDepthE6(z.depthSource, fresh(z, 102n), z.lastGoodE6, z.lastGoodSlot, 102n)).toBe(0n);
     expect(venueTier(0n, z.depthSource, tierThresholdsE6([0, 0, 0]), 3)).toBe(0);
-    const d = depthPushUpdate(empty, DEPTH_SOURCE.OnChainPool, 0n, 7n);
+    const d = dpu(empty, DEPTH_SOURCE.OnChainPool, 0n, 7n);
     expect([fresh(d, 7n), depthEver(d.depthSource)]).toEqual([0n, true]);
-    const p1 = depthPushUpdate(z, a, 4n * T1, 103n);
+    const p1 = dpu(z, a, 4n * T1, 103n);
     expect(fresh(p1, 103n)).toBe(0n);
-    const p2 = depthPushUpdate(p1, a, 4n * T1, 104n);
-    expect(fresh(p2, 104n)).toBe(4n * T1);
-    expect(p2.lastGoodE6).toBe(4n * T1);
+    const p2 = dpu(p1, a, 4n * T1, 104n);
+    expect(fresh(p2, 104n)).toBe(4n * T1); // the fresh min-of-two is restored ...
+    expect(p2.lastGoodE6).toBe(0n); // ... but the rate-limited depth does not rise again in the epoch of its last rise
+    expect(usableDepthE6(fresh(p2, 104n), p2.lastGoodE6)).toBe(0n);
+    const p3 = dpu(p2, a, 4n * T1, 9_000n, T1 - 1n);
+    expect(p3.lastGoodE6).toBe((T1 - 1n) / DEPTH_BOOTSTRAP_DIV); // next epoch: the bootstrap floor
   });
   it("absent (35 B / mode 0) is NOT zero: sticky last good", () => {
-    let s = depthPushUpdate(empty, a, 4n * T1, 100n);
-    s = depthPushUpdate(s, a, 4n * T1, 101n);
-    const ab = depthPushUpdate(s, DEPTH_SOURCE.None, 0n, 102n);
+    let s = dpu(empty, a, 4n * T1, 100n);
+    s = dpu(s, a, 4n * T1, 101n);
+    const ab = dpu(s, DEPTH_SOURCE.None, 0n, 102n);
     expect(fresh(ab, 102n)).toBeNull();
     expect(ab.lastGoodE6).toBe(4n * T1);
-    const ab2 = depthPushUpdate(ab, a, 4n * T1, 103n);
+    const ab2 = dpu(ab, a, 4n * T1, 103n);
     expect(fresh(ab2, 103n)).toBeNull(); // first real sample after an absent one
   });
   it("same slot: a real 0 beats an absent 0; an absent push cannot undo a real 0; a stale real 0 is absent", () => {
-    let s = depthPushUpdate(empty, a, 4n * T1, 100n);
-    s = depthPushUpdate(s, a, 4n * T1, 101n);
-    const z = depthPushUpdate(s, a, 0n, 102n);
-    const ab = depthPushUpdate(s, DEPTH_SOURCE.None, 0n, 102n);
-    expect(fresh(depthPushUpdate(ab, a, 0n, 102n), 102n)).toBe(0n);
-    expect(fresh(depthPushUpdate(z, DEPTH_SOURCE.None, 0n, 102n), 102n)).toBe(0n);
+    let s = dpu(empty, a, 4n * T1, 100n);
+    s = dpu(s, a, 4n * T1, 101n);
+    const z = dpu(s, a, 0n, 102n);
+    const ab = dpu(s, DEPTH_SOURCE.None, 0n, 102n);
+    expect(fresh(dpu(ab, a, 0n, 102n), 102n)).toBe(0n);
+    expect(fresh(dpu(z, DEPTH_SOURCE.None, 0n, 102n), 102n)).toBe(0n);
     expect(fresh(z, 102n + 151n)).toBeNull();
     expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 302n)).toBe(0n);
     expect(depthSourceByteOk(DEPTH_EVER | DEPTH_PREV_REAL | DEPTH_SOURCE.OnChainPool)).toBe(true);
@@ -369,7 +375,7 @@ describe("target / ceiling / ratchet (Rust g8_target_ceiling_ratchet_and_force_d
 interface RecOver {
   lambda?: number; lLaunch?: number; lTier?: number; ceil?: number; ceilSlot?: bigint; cLaunch?: bigint; rGap?: number;
   src?: number; attested?: number; depth?: bigint; prev?: bigint; slot?: bigint; lastGood?: bigint; lastGoodSlot?: bigint;
-  th?: [number, number, number]; lv?: [number, number, number];
+  th?: [number, number, number]; lv?: [number, number, number]; dec?: number; riseEpoch?: number;
 }
 function g(o: RecOver): AssetGrowthV19 {
   const b = new Uint8Array(ASSET_GROWTH_LEN);
@@ -390,6 +396,8 @@ function g(o: RecOver): AssetGrowthV19 {
   v.setBigUint64(72, o.prev ?? 0n, true);
   v.setBigUint64(80, o.lastGood ?? 0n, true);
   v.setBigUint64(88, o.lastGoodSlot ?? 0n, true);
+  b[46] = (o.dec ?? 6) + 1;
+  new DataView(b.buffer).setUint32(114, o.riseEpoch ?? 0, true);
   (o.th ?? [0, 0, 0]).forEach((x, i) => v.setUint32(96 + 4 * i, x, true));
   (o.lv ?? [0, 0, 0]).forEach((x, i) => v.setUint16(108 + 2 * i, x, true));
   return decodeAssetGrowthRecordV19(b)!;
@@ -556,8 +564,125 @@ describe("builders: tag 94 tier block, tag 93 tier trailer", () => {
   });
   it("tag 93 refuses attested_max_tier 4, a bad table and a bad lambda", () => {
     expect(() => encodeSetAssetRiskLimitsV22Tiers(0, 10_000, 5_000, tiers, 4)).toThrow(/130/);
-    expect(() => encodeSetAssetRiskLimitsV22Tiers(0, 10_000, 5_000, { thresholdUsd: [4_999, 20_000, 100_000], leverageX100: [0, 0, 0] }, 1, 0, { lLaunchX100: 500, lTierX100: 2_000 })).toThrow(/\$5,000/);
+    expect(() => encodeSetAssetRiskLimitsV22Tiers(0, 10_000, 5_000, { thresholdUsd: [4_999, 20_000, 100_000], leverageX100: [0, 0, 0] }, 1, 0, { lLaunchX100: 500, lTierX100: 2_000 })).toThrow(/5,000 tokens/);
     expect(() => encodeSetAssetRiskLimitsV22Tiers(0, 0, 5_000, tiers, 1)).toThrow();
+  });
+});
+
+describe("R2-L2: thresholds are whole collateral tokens scaled by the mint decimals", () => {
+  it("tierThresholdsE6 with decimals (Rust r2m1 vectors)", () => {
+    expect(tierThresholdsE6([0, 0, 0], 9)[0]).toBe(25_000n * 1_000_000_000n);
+    expect(tierThresholdsE6([5_000, 20_000, 100_000], 6)).toEqual([5_000_000_000n, 20_000_000_000n, 100_000_000_000n]);
+    expect(tierThresholdsE6([0xffff_ffff, 0xffff_ffff, 0xffff_ffff], 18)[2]).toBe(U64MAX); // saturates, fail closed
+    expect(collateralDecimalsOf(0)).toBe(6);
+    expect(collateralDecimalsOf(10)).toBe(9);
+    expect(wholeTokenAtoms(9)).toBe(1_000_000_000n);
+  });
+  it("validateTierConfig: '$' only on 6-decimal USD-like collateral, otherwise tokens / the symbol; the verdict does not depend on it", () => {
+    const base = { thresholdsUsd: [1_000, 20_000, 100_000] as [number, number, number], lLaunchX100: 500, lTierX100: 2_000 };
+    expect(validateTierConfig({ ...base, collateral: { decimals: 6, usdLike: true } }).issues[0]?.message).toBe("Tier 1 pool depth must be at least $5,000.");
+    expect(validateTierConfig({ ...base, collateral: { decimals: 9, usdLike: true } }).issues[0]?.message).toBe("Tier 1 pool depth must be at least 5,000 tokens.");
+    expect(validateTierConfig({ ...base, collateral: { decimals: 6 } }).issues[0]?.message).toBe("Tier 1 pool depth must be at least 5,000 tokens.");
+    expect(validateTierConfig({ ...base, collateral: { decimals: 9, symbol: "SOL" } }).issues[0]?.message).toBe("Tier 1 pool depth must be at least 5,000 SOL.");
+    expect(validateTierConfig({ ...base, collateral: { decimals: 9 } }).ok).toBe(false);
+    expect(validateTierConfig({ lLaunchX100: 500, lTierX100: 2_000, collateral: { decimals: 9 } }).ok).toBe(true);
+  });
+  it("record: bytes 46 (decimals + 1) and 114 (rise epoch u32 LE) decode; view scales thresholds and names tokens", () => {
+    const b = new Uint8Array(ASSET_GROWTH_LEN);
+    b[38] = 1; b[46] = 10; b.set([0x2a, 0x01, 0, 0], 114);
+    const r = decodeAssetGrowthRecordV19(b)!;
+    expect([r.collateralDecimalsP1, r.collateralDecimals, r.depthRiseEpoch]).toEqual([10, 9, 298]);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.collateralDecimalsP1).toBe(46);
+    expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthRiseEpoch).toBe(114);
+    // a 9-decimal collateral market: $100k-equivalent depth is 100_000 tokens = 1e14 atoms
+    const o = dex(100_000n, { dec: 9 });
+    const v = growthCeilingView(g(o), BAND, NOW, null, false);
+    expect(v.collateralDecimals).toBe(9);
+    expect(v.thresholdsE6[1]).toBe(100_000n * 1_000_000_000n);
+    // the same atoms are only 100 tokens at 9 decimals: tier 0, and tier 2 needs 100,000 TOKENS of depth
+    expect([v.tier, v.nextTierUnlock.depthUsd]).toEqual([0, 100_000]);
+  });
+});
+
+describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2m1_depth_rises_at_most_2x_per_epoch_and_falls_at_once)", () => {
+  const th = tierThresholdsE6([0, 0, 0], 6);
+  const seed = th[0] - 1n;
+  const a = DEPTH_SOURCE.OnChainPool;
+  const usable = (x: DepthState, now: bigint): bigint | null => usableDepthE6(freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now), x.lastGoodE6);
+  const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 };
+  it("the flash-liquidity scenario: a $500M reading for two adjacent slots adds nothing in the same epoch; honest pair takes it down at once", () => {
+    const real = 2_000n * M, inflated = 500_000_000n * M;
+    const s0 = dpu(empty, a, real, 1_000n, seed);
+    const s1 = dpu(s0, a, real, 1_001n, seed);
+    expect(usable(s1, 1_001n)).toBe(real);
+    const w1 = dpu(s1, a, inflated, 1_014n, seed);
+    const w2 = dpu(w1, a, inflated, 1_015n, seed);
+    const u = usable(w2, 1_015n)!;
+    expect(u).toBe(real);
+    expect(venueTier(u, w2.depthSource, th, 0)).toBe(0);
+    const h1 = dpu(w2, a, real, 1_016n, seed);
+    expect(usable(h1, 1_016n)).toBe(real);
+    expect(h1.lastGoodE6).toBe(real);
+    const z = dpu(h1, DEPTH_SOURCE.None, 0n, 1_017n, seed);
+    expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 1_200n)).toBe(real);
+  });
+  it("one doubling per epoch from the tier-0 seed; a second spike in the same epoch adds nothing; tier 3 needs >= 5 epochs", () => {
+    const inflated = 500_000_000n * M;
+    let st = dpu(empty, a, inflated, 9_000n, seed);
+    st = dpu(st, a, inflated, 9_001n, seed);
+    expect(st.lastGoodE6).toBe(seed); // the first reading is tier 0
+    let prev = st.lastGoodE6;
+    for (let k = 1n; k <= 6n; k++) {
+      const sl = 9_000n * (k + 1n);
+      st = dpu(st, a, inflated, sl, seed);
+      st = dpu(st, a, inflated, sl + 1n, seed);
+      expect(st.lastGoodE6, `epoch ${k}`).toBe(prev * 2n);
+      const again = dpu(st, a, inflated, sl + 2n, seed);
+      expect(again.lastGoodE6).toBe(st.lastGoodE6);
+      st = again;
+      prev = st.lastGoodE6;
+    }
+    expect(prev >= th[2] && prev / 64n < th[2]).toBe(true);
+    const zr = dpu(st, a, 0n, 9_000n * 9n, seed);
+    expect(zr.lastGoodE6).toBe(0n);
+    const p1 = dpu(zr, a, inflated, 9_000n * 9n + 1n, seed);
+    const p2 = dpu(p1, a, inflated, 9_000n * 9n + 2n, seed);
+    expect(p2.lastGoodE6).toBe(seed / DEPTH_BOOTSTRAP_DIV);
+  });
+  it("depthRateLimited primitives and the 2^e mutant", () => {
+    const real = 2_000n * M;
+    expect(depthRateLimited(true, real, 0, 500_000_000n * M, 9_000n, seed).lastGoodE6).toBe(2n * real);
+    expect(depthRateLimited(true, seed, 0, 500_000_000n * M, 9_000n * 21n, seed).lastGoodE6).toBe(seed * 2n);
+    expect(depthRateLimited(true, 100n, 5, 50n, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseEpoch: 5 }); // down at once, clock kept
+    expect(depthRateLimited(false, 0n, 0, 9n * T1, 20_000n, seed)).toEqual({ lastGoodE6: seed, riseEpoch: 2 });
+    expect(depthEpoch(18_000n)).toBe(2);
+    const mutant = (lg: bigint, e: number): bigint => lg * (1n << BigInt(Math.min(e, 63)));
+    expect(mutant(seed, 20) >= th[2]).toBe(true);
+  });
+  it("R2-L1 rent snapshot", () => {
+    expect(rentSnapshotNCapQ(0n, true)).toBe(1n);
+    expect(rentSnapshotNCapQ(0n, false)).toBe(0n);
+    expect(rentSnapshotNCapQ(7n, true)).toBe(7n);
+    expect(rentSnapshotNCapQ(1n << 70n, false)).toBe(U64MAX);
+  });
+  it("view: the depth is there but rate-limited -> tier from the usable depth, ETA from the doubling schedule", () => {
+    // fresh $400k on-chain, last good rate-limited at $25k (tier 1), rise epoch 0, now in epoch 0; backing $600k
+    const o = dex(400_000n, { lastGood: 25_000n * M, riseEpoch: 0 });
+    const v = growthCeilingView(g(o), BAND, NOW, 600_000n * M, false);
+    expect([v.venueTier, v.bookTier, v.tier]).toEqual([1, 3, 1]);
+    expect(v.freshDepthE6).toBe(400_000n * M);
+    expect(v.effectiveDepthE6).toBe(25_000n * M);
+    // tier 2 needs $100k: 25k -> 50k (epoch 1, slot 9000) -> 100k (epoch 2, slot 18000): 17,000 slots from slot 1000
+    expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_000n, depthEtaMinutes: 114 });
+    // capacity follows the usable depth, not the fresh one
+    const q = quoteMaxLeverage(qin(g(o), 600_000n * M), "long");
+    expect(q.capDepthE6).toBe(25_000n * M);
+    expect(q.nCapQ).toBe(25_000n * M);
+  });
+  it("ratchet kind: usable depth already supports a higher target -> the +1x step ETA", () => {
+    const o = dex(150_000n, { lastGood: 150_000n * M, ceil: 500 });
+    const v = growthCeilingView(g(o), BAND, NOW, 120_000n * M, false);
+    expect(v.nextUnlock.kind).toBe("ratchet");
   });
 });
 

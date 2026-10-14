@@ -70,6 +70,7 @@ export declare const ASSET_GROWTH_FIELD_OFF: Readonly<{
 export declare const ASSET_GROWTH_DEPTH_FIELD_OFF: Readonly<{
     readonly depthSource: 44;
     readonly attestedMaxTier: 45;
+    readonly collateralDecimalsP1: 46;
     readonly depthE6: 56;
     readonly depthSlot: 64;
     readonly depthPrevE6: 72;
@@ -77,6 +78,7 @@ export declare const ASSET_GROWTH_DEPTH_FIELD_OFF: Readonly<{
     readonly depthLastGoodSlot: 88;
     readonly tierThresholdUsd: 96;
     readonly tierLeverageX100: 108;
+    readonly depthRiseEpoch: 114;
 }>;
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
 export declare const GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
@@ -137,11 +139,20 @@ export interface AssetGrowthV19 {
     depthSlot: bigint;
     /** v2.2 G8: the depth before the last push (effective depth is the min of the two). */
     depthPrevE6: bigint;
-    /** R2.1 (80): the last fresh effective (min-of-two) depth, the sticky cap's input. */
+    /**
+     * R2.1 (80) + R2-M1: the RATE-LIMITED last good depth (collateral atoms): rises at most 2x per 9,000-slot epoch, falls at once; the sticky
+     * cap's input and, with the fresh reading, the usable depth every tier and cap reads ({@link usableDepthE6}).
+     */
     depthLastGoodE6: bigint;
     /** R2.1 (88): slot of that sample. */
     depthLastGoodSlot: bigint;
-    /** R2.1 (96): per-market tier thresholds, whole USD (T1, T2, T3); 0 = protocol default $25k / $100k / $500k. */
+    /** R2-L2 (46): the collateral mint's decimals + 1 as stored (0 = a pre-R2-L2 record, read as 6 decimals). */
+    collateralDecimalsP1: number;
+    /** R2-L2: the collateral mint's decimals (byte 46; 6 when unset). Tier thresholds are whole collateral tokens scaled by this. */
+    collateralDecimals: number;
+    /** R2-M1 (114, u32 LE): the ratchet epoch (`slot / 9,000`) of the last rise of {@link AssetGrowthV19.depthLastGoodE6}. */
+    depthRiseEpoch: number;
+    /** R2.1 (96): per-market tier thresholds in WHOLE COLLATERAL TOKENS (T1, T2, T3; $ on 6-decimal USD collateral); 0 = default 25,000 / 100,000 / 500,000. */
     tierThresholdUsd: Triple<number>;
     /** R2.1 (108): per-tier max leverage x100 (L1, L2, L3); 0 = default `min(5x / 10x / 20x, L_tier)`. */
     tierLeverageX100: Triple<number>;
@@ -429,26 +440,31 @@ export interface DepthState {
     depthPrevE6: bigint;
     /** Byte 44: bits 0-1 source of the stored depth (none = an absent sample), bit 2 {@link DEPTH_PREV_REAL}, bit 7 {@link DEPTH_EVER}. */
     depthSource: number;
+    /** The RATE-LIMITED last good depth (R2-M1). */
     lastGoodE6: bigint;
     lastGoodSlot: bigint;
+    /** R2-M1: ratchet epoch of the last rise of `lastGoodE6` (bytes 114..118). */
+    riseEpoch: number;
 }
 /**
  * The wrapper's depth writer (every PushAuthMark form). Port of `depth_push_update`. `source` none / unknown is an ABSENT sample; a REAL reading
  * (source 1 or 2) of 0 is a real zero depth. A later-slot push stores the new sample and the old one becomes `prev` (with {@link DEPTH_PREV_REAL}
  * = it was real); a same-slot (or earlier) push can only lower the stored depth, keeps `prev` (W-L2), and at a tie of zeros the real zero
- * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) becomes the last good depth and sets {@link DEPTH_EVER}.
+ * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) sets {@link DEPTH_EVER} and updates the last good depth to its
+ * RATE-LIMITED value ({@link depthRateLimited}: down at once, up at most 2x per epoch, the first reading below T1), stamped with the sample's slot.
  *
  * @param st          Stored state.
  * @param source      The new reading's source (0 none, 1 attested, 2 DEX; others are absent).
  * @param newDepthE6  The new depth (ignored for an absent sample).
  * @param nowSlot     Authenticated slot of the push.
+ * @param seedE6      The market's T1 in atoms minus 1 (`tierThresholdsE6(..)[0] - 1n`).
  * @returns The new state.
  * @example
  * ```ts
- * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n }, 1, 0n, 100n).lastGoodE6; // 0n, DEPTH_EVER set
+ * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseEpoch: 0 }, 1, 0n, 100n, 24_999_999_999n).lastGoodE6; // 0n, DEPTH_EVER set
  * ```
  */
-export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint): DepthState;
+export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint, seedE6: bigint): DepthState;
 /**
  * Sticky depth (W-M1): `lastGood >> k`, `k = floor((now - lastGoodSlot) / 9000)`; 0 once `k >= 64`. A `lastGoodSlot` after `now`
  * reads as age 0. Port of `sticky_depth_e6`.
@@ -480,17 +496,78 @@ export declare function stickyDepthE6(lastGoodE6: bigint, lastGoodSlot: bigint, 
  * ```
  */
 export declare function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint | null;
+/** Largest collateral decimals the record accepts (`MAX_COLLATERAL_DECIMALS`; byte 46 holds decimals + 1). */
+export declare const GROWTH_MAX_COLLATERAL_DECIMALS = 18;
+/** `DEPTH_BOOTSTRAP_DIV`: the depth rate limiter's bootstrap floor is `T1 / 16` (the level a market climbs back to out of a real 0). */
+export declare const DEPTH_BOOTSTRAP_DIV = 16n;
+/** `collateral_decimals_of`: byte 46 is decimals + 1; 0 = a record written before R2-L2, read as 6. */
+export declare function collateralDecimalsOf(storedP1: number): number;
+/** `whole_token_atoms`: `10^decimals` (decimals clamped to 18). */
+export declare function wholeTokenAtoms(decimals: number): bigint;
+/** `depth_epoch`: the ratchet epoch of a slot, `slot / 9,000`, saturating at u32::MAX. */
+export declare function depthEpoch(slot: bigint): number;
 /**
- * Per-market thresholds in collateral atoms (stored whole USD; 0 = default). Port of `tier_thresholds`.
+ * R2-M1 ("up slowly, down at once" for the depth itself): the rate-limited last good depth after a FRESH reading `r` at `slot`. The market's FIRST
+ * fresh reading (`ever` false) is `min(r, seed)` (tier 0 whatever the pool shows); `r <= lastGood` -> `r` at once (a real 0 included, the rise clock is
+ * kept); `r > lastGood` in a LATER epoch than the last rise -> `min(r, max(2 * lastGood, seed / 16))` (one doubling per epoch); otherwise unchanged.
+ * `seed` = the market's T1 in atoms minus 1. Port of `depth_rate_limited`.
  *
- * @param storedUsd  `tier_threshold_usd` (T1, T2, T3).
- * @returns Thresholds, USD e6.
+ * @param ever        `DEPTH_EVER` already set.
+ * @param lastGoodE6  Stored rate-limited depth.
+ * @param riseEpoch   Epoch of the last rise.
+ * @param r           The fresh reading (collateral atoms).
+ * @param slot        Slot of the reading's sample.
+ * @param seedE6      T1 in atoms minus 1.
+ * @returns `{ lastGoodE6, riseEpoch }`.
+ * @example
+ * ```ts
+ * depthRateLimited(true, 2_000_000_000n, 0, 500_000_000_000_000n, 9_000n, 24_999_999_999n); // { lastGoodE6: 4_000_000_000n, riseEpoch: 1 }
+ * ```
+ */
+export declare function depthRateLimited(ever: boolean, lastGoodE6: bigint, riseEpoch: number, r: bigint, slot: bigint, seedE6: bigint): {
+    lastGoodE6: bigint;
+    riseEpoch: number;
+};
+/**
+ * The depth every reader uses (tiers and the capacity cap): `min(fresh reading, rate-limited last good)`; `null` while there is no fresh reading
+ * (the sticky path then applies). Port of `usable_depth_e6`.
+ *
+ * @param fresh       {@link freshDepthE6}.
+ * @param lastGoodE6  {@link AssetGrowthV19.depthLastGoodE6}.
+ * @returns Usable depth or `null`.
+ * @example
+ * ```ts
+ * usableDepthE6(500_000_000_000n, 25_000_000_000n); // 25_000_000_000n
+ * ```
+ */
+export declare function usableDepthE6(fresh: bigint | null, lastGoodE6: bigint): bigint | null;
+/**
+ * R2-L1: the rent `N_cap` snapshot (0 means "not measured", rent 0). When the DEPTH cap is what makes N_cap 0 (a real 0 reading or a fully decayed
+ * sticky cap) the snapshot is 1, so open interest pays the maximum rent, never 0. Otherwise `min(nCap, u64::MAX)`. Port of `rent_snapshot_n_cap_q`.
+ *
+ * @param nCapQ          N_cap in Q.
+ * @param depthCapZero   The depth cap is 0.
+ * @returns The snapshot.
+ * @example
+ * ```ts
+ * rentSnapshotNCapQ(0n, true); // 1n (maximum rent)
+ * ```
+ */
+export declare function rentSnapshotNCapQ(nCapQ: bigint, depthCapZero: boolean): bigint;
+/**
+ * Per-market thresholds in collateral ATOMS. The stored values are WHOLE COLLATERAL TOKENS (0 = default 25,000 / 100,000 / 500,000; $ on 6-decimal
+ * USD collateral), scaled by `10^collateralDecimals` and saturating at u64::MAX. Port of `tier_thresholds` (R2-L2).
+ *
+ * @param storedTokens        `tier_threshold_usd` (T1, T2, T3), whole collateral tokens.
+ * @param collateralDecimals  The collateral mint's decimals ({@link AssetGrowthV19.collateralDecimals}; default 6).
+ * @returns Thresholds in collateral atoms.
  * @example
  * ```ts
  * tierThresholdsE6([0, 0, 0]); // [25_000_000_000n, 100_000_000_000n, 500_000_000_000n]
+ * tierThresholdsE6([0, 0, 0], 9)[0]; // 25_000_000_000_000n
  * ```
  */
-export declare function tierThresholdsE6(storedUsd: Triple<number | bigint>): Triple<bigint>;
+export declare function tierThresholdsE6(storedTokens: Triple<number | bigint>, collateralDecimals?: number): Triple<bigint>;
 /**
  * Raw tier of a depth against thresholds: 0 below T1 (and always for 0), 1 from T1, 2 from T2, 3 from T3. Port of `depth_tier_for`.
  *
@@ -645,6 +722,16 @@ export interface ValidateTierConfigInput {
     lTierX100: number;
     /** Optional `attested_max_tier` (upgrade authority only). */
     attestedMaxTier?: number;
+    /**
+     * R2-L2: the tier thresholds and floors are whole COLLATERAL TOKENS, scaled on chain by the collateral mint's decimals. Messages say "$" only when
+     * the collateral is a 6-decimal USD-like token (`decimals === 6 && usdLike === true`); otherwise they say "tokens" (or `symbol`). The bounds
+     * themselves do not depend on the decimals.
+     */
+    collateral?: {
+        decimals?: number;
+        usdLike?: boolean;
+        symbol?: string;
+    };
 }
 /** Result of {@link validateTierConfig}. */
 export interface TierConfigValidation {
@@ -871,12 +958,19 @@ export interface NextUnlock {
     kind: "depth" | "backing" | "both" | "ratchet" | "none";
     /** The liquidity tier whose requirements are named (`depth` / `backing` / `both`). */
     tier?: number;
-    /** Pool depth the tier needs, whole USD (the market's own threshold). */
+    /** Pool depth the tier needs, in whole COLLATERAL TOKENS (the market's own threshold; $ on 6-decimal USD collateral). */
     depthUsd?: number;
-    /** Market backing (LP equity) the tier needs, whole USD, rounded up; accounts for the market's lambda below 1x. */
+    /** Market backing (LP equity) the tier needs, whole collateral tokens, rounded up; accounts for the market's lambda below 1x. */
     backingUsd?: number;
-    /** Alias of the tier's pool-depth threshold (round-1 field). */
+    /** Alias of the tier's pool-depth threshold (round-1 field), whole collateral tokens. */
     thresholdUsd?: number;
+    /**
+     * R2-M1: the pool depth is already there (the fresh reading reaches the threshold) but the rate limit still holds the usable depth below it (it
+     * rises at most 2x per hour). `depthEtaSlots` / `depthEtaMinutes` then say when the usable depth reaches the threshold if the readings stay up.
+     */
+    depthRateLimited?: boolean;
+    depthEtaSlots?: bigint;
+    depthEtaMinutes?: number;
     /** The ceiling (x100) reached: at the tier unlock, or the next ratchet step. */
     leverageX100?: number;
     /**
@@ -897,11 +991,15 @@ export interface GrowthCeilingView {
     bookTier: number;
     /** Book depth of the bound LP ({@link bookDepthE6}); 0 when `cM` is unknown. */
     bookDepthE6: bigint;
-    /** The fresh reading ({@link freshDepthE6}; 0n when absent or a real zero). */
+    /** The USABLE depth ({@link usableDepthE6} = min(fresh reading, rate-limited last good); 0n when absent or a real zero). */
     effectiveDepthE6: bigint;
+    /** The fresh min-of-two reading before the rate limit ({@link freshDepthE6}); `null` when absent. */
+    freshDepthE6: bigint | null;
+    /** The collateral mint's decimals the thresholds are scaled by. */
+    collateralDecimals: number;
     /** The depth the capacity cap uses (fresh, sticky, or `null` for none). */
     capDepthE6: bigint | null;
-    /** This market's thresholds, USD e6. */
+    /** This market's thresholds in collateral atoms. */
     thresholdsE6: Triple<bigint>;
     /** This market's leverage table x100 `[L0, L1, L2, L3]`. */
     table: readonly [number, number, number, number];
