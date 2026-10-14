@@ -64,6 +64,20 @@ describe("stake tags 29 / 30 and errors (f9b9190)", () => {
     expect(ix.programId.equals(STAKE)).toBe(true);
     expect(ix.data[0]).toBe(29);
   });
+  it("tag 29 v5 tails: FEE_ONLY [stray?, creator?] any-order by owner; FIRST_LOSS [9] units, [10] creator (required), [11] stray", () => {
+    const creatorToken = pk(); const stray = pk(); const insuranceUnits = pk();
+    const fo = recoverTerminalInsuranceAccounts({ ...t29, creatorToken });
+    expect(fo).toHaveLength(10);
+    expect(fo[9]).toEqual({ pubkey: creatorToken, isSigner: false, isWritable: true });
+    const fo2 = recoverTerminalInsuranceAccounts({ ...t29, stray, creatorToken });
+    expect(fo2.slice(9).map((x) => x.pubkey.toBase58())).toEqual([stray.toBase58(), creatorToken.toBase58()]);
+    const fl = recoverTerminalInsuranceAccounts({ ...t29, insuranceUnits, creatorToken, stray });
+    expect(fl.slice(9).map((x) => [x.pubkey.toBase58(), x.isWritable])).toEqual([[insuranceUnits.toBase58(), true], [creatorToken.toBase58(), true], [stray.toBase58(), true]]);
+    expect(recoverTerminalInsuranceAccounts({ ...t29, insuranceUnits, creatorToken })).toHaveLength(11);
+    expect(() => recoverTerminalInsuranceAccounts({ ...t29, insuranceUnits })).toThrow(/creatorToken/); // negative control
+    // legacy shape unchanged
+    expect(recoverTerminalInsuranceAccounts({ ...t29, stray })).toHaveLength(10);
+  });
   it("tag 30 accounts: 10; admin signer+writable, [5] pool-owned dest (w), [7] mint (w), [8] pool vault (w)", () => {
     const a = { admin: pk(), pool: pk(), market: pk(), wrapperVault: pk(), wrapperVaultAuthority: pk(), poolDestToken: pk(), collateralMint: pk(), poolVault: pk(), wrapperProgram: W };
     const k = adminCloseSlabAccounts(a);

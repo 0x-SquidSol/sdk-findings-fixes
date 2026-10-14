@@ -277,20 +277,24 @@ describe("stake v5", () => {
     d.set(Buffer.from("SPOOL_V1"), 320); d[328] = 5;
     d[408] = 1; d[409] = 2; v.setUint16(410, 5000, true); v.setUint16(412, 3000, true); v.setUint16(414, 500, true);
     v.setBigUint64(416, 11n, true); v.setBigUint64(424, 6000n, true); v.setBigUint64(432, 99n, true); v.setBigUint64(440, 150n, true); v.setBigUint64(448, 7n, true); d[456] = 1;
+    v.setBigUint64(464, 123n, true); v.setBigUint64(472, 45n, true);
     d.set(new Uint8Array(32).fill(4), 8);
     const p = K.decodeStakePoolV5(d);
     expect([p.riskMode, p.consentVersion, p.deployTargetBps, p.liquidBufferBps, p.hysteresisBps, p.lastSyncSlot, p.pendingTargetBps, p.pendingTargetSlot, p.syncCooldownSlots, p.creatorForwardedAtoms, p.pendingTargetByProtocol])
       .toEqual([1, 2, 5000, 3000, 500, 11n, 6000n, 99n, 150n, 7n, true]);
+    expect([p.creatorSurplusForwardedAtoms, p.s2BacklogOwedAtoms]).toEqual([123n, 45n]); // bytes 464..472, 472..480 (state.rs V5_RESERVED_*)
     expect(K.consentParamsForPoolV5(p)).toEqual({ targetBps: 6000, bufferBps: 3000, hysteresisBps: 500 });
     expect(K.commitSlotForPendingTargetV5({ pendingTargetSlot: 99n, cooldownSlots: 1000n })).toBe(99n + 216_000n);
     d[328] = 4;
     expect(() => K.decodeStakePoolV5(d)).toThrow(/version/);
     expect(() => K.decodeStakePoolV5(new Uint8Array(408))).toThrow(/too short/);
   });
-  it("errors 33..45 have the Rust names", () => {
+  it("errors 33..46 have the Rust names (46 CreatorAccountRequired, S1)", () => {
     const names = ["ConsentRequired", "DeprecatedV5", "InsuranceUnitsInvalid", "LiquidityBufferExhausted", "SyncCooldownActive", "InvalidDeployConfig", "NotProtocolAuthority", "NoPendingDeployTarget", "NotSupportedOnFirstLoss", "AssetAdminNotBurned", "NothingToSync", "InsuranceReadingsDiverged", "InsuranceUnitsMismatch"];
     names.forEach((n, i) => expect(K.decodeStakeErrorV5(33 + i)?.name).toBe(n));
-    expect(K.decodeStakeErrorV5(46)).toBeUndefined();
+    expect(K.decodeStakeErrorV5(46)?.name).toBe("CreatorAccountRequired");
+    expect(K.decodeStakeErrorV5(46)?.hint).toBe("The market creator's token account is needed to return their insurance seed.");
+    expect(K.decodeStakeErrorV5(47)).toBeUndefined();
   });
   it("layout row sanity: standalone lengths", () => {
     expect(LAYOUT_V22.accounts.insuranceUnitsBody + 16).toBe(208);

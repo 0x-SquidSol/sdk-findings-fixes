@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   decodeAssetGrowthRecordV19, ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, effectiveDepthE6, depthTier, lDepthX100, lambdaDepthBps,
   kappaDepth, bandRGapBps, clampEnforced, growthTargetCeilingX100, nCapQWithDepth, capitalDoublings, growthCeilingView, quoteMaxLeverage,
-  DEPTH_MAX_AGE_SLOTS, DEPTH_SOURCE, encodePushAuthMark, IX_TAG, stakePoolValue, decodeError, PERCOLATOR_ERRORS,
+  DEPTH_MAX_AGE_SLOTS, DEPTH_SOURCE, encodePushAuthMark, IX_TAG, stakePoolValue, collateralForLpV5, creatorCollateralAtaV5, decodeError, PERCOLATOR_ERRORS,
 } from "../src/index.js";
 import type { AssetGrowthV19, QuoteMaxLeverageInput } from "../src/index.js";
 
@@ -270,6 +270,23 @@ describe("stakePoolValue (release checklist 5.4: pool value includes deployed in
     expect(stakePoolValue({ ...pool, totalWithdrawn: 5000n }, { unitsStake: 1n, unitsTotal: 1n }, 1n)).toBeNull(); // negative
     expect(stakePoolValue(pool, { unitsStake: 1n << 100n, unitsTotal: 1n << 100n }, 1n << 100n)).toBeNull(); // u128 overflow
     expect(stakePoolValue(pool, { unitsStake: 1n, unitsTotal: 1n }, 1n << 64n)).toBeNull(); // beyond u64
+  });
+  it("withdrawableNow = min(liquid, vault balance) only when a balance is passed", () => {
+    const u = { unitsStake: 250n, unitsTotal: 1000n };
+    expect(stakePoolValue(pool, u, 400n)?.withdrawableNow).toBeUndefined();
+    expect(stakePoolValue(pool, u, 400n, 500n)?.withdrawableNow).toBe(500n);
+    expect(stakePoolValue(pool, u, 400n, 900n)?.withdrawableNow).toBe(660n);
+  });
+  it("LP price uses the pool's own counter with the +1/+1 offset (stake calc_collateral_for_withdraw)", () => {
+    // 100 LP of a 1_100 counter (incl. dead shares) against value 760: 100 * 761 / 1101 = 69 (floor)
+    expect(collateralForLpV5(100n, 1_100n, 760n)).toBe(69n);
+    expect(collateralForLpV5(1n, 0n, 760n)).toBeNull();
+  });
+  it("creator ATA is the pool mint ATA of pool.admin", async () => {
+    const { Keypair } = await import("@solana/web3.js");
+    const admin = Keypair.generate().publicKey; const mint = Keypair.generate().publicKey;
+    const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
+    expect(creatorCollateralAtaV5({ admin, collateralMint: mint }).equals(getAssociatedTokenAddressSync(mint, admin, true))).toBe(true);
   });
   it("negative control: the pre-fix value (liquid only) understates by exactly the deployed part", () => {
     const v = stakePoolValue(pool, { unitsStake: 250n, unitsTotal: 1000n }, 400n)!;

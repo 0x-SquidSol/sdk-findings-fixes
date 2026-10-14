@@ -1,6 +1,6 @@
 /**
  * percolator-stake v5 (Phase 4 item 6, first-loss insurance staking): wire, accounts, the
- * `StakePool` v5 decoder and the error table for codes 33 to 45.
+ * `StakePool` v5 decoder and the error table for codes 33 to 46.
  *
  * Source: percolator-stake `release/v22-stake` `49e27e7` (PR #304 `feat/v22-stake-v5` head `480fe29`
  * plus the layout PR #306): `src/instruction.rs` (`unpack` at 764..850, docs at 93..172 and 722..759 of that head),
@@ -16,7 +16,7 @@
  */
 import { PublicKey, SYSVAR_CLOCK_PUBKEY, SystemProgram } from "@solana/web3.js";
 import type { AccountMeta } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { concatBytes, encU16, encU64, encU8 } from "./encode.js";
 import type { ErrorInfo } from "./errors.js";
 import { STAKE_FLOOR_FLAGS_RESERVED_INDEX } from "./stake-dead-lp.js";
@@ -301,6 +301,10 @@ export interface StakePoolV5Fields {
   creatorForwardedAtoms: bigint;
   /** `_v5_reserved[0]`: the pending target was proposed by the protocol authority (S-6). */
   pendingTargetByProtocol: boolean;
+  /** S1: cumulative terminal surplus forwarded to the creator (`_v5_reserved[8..16]`, bytes 464..472). */
+  creatorSurplusForwardedAtoms: bigint;
+  /** S2: wrapper fee payouts received while the pool had no real staker, still owed to the creator (`_v5_reserved[16..24]`, bytes 472..480). */
+  s2BacklogOwedAtoms: bigint;
 }
 
 /** Decoded v5 pool: the v5 fields plus the identity fields every consumer needs. */
@@ -391,6 +395,8 @@ export function decodeStakePoolV5(data: Uint8Array): StakePoolV5 {
     syncCooldownSlots: u64(F.syncCooldownSlots),
     creatorForwardedAtoms: u64(F.creatorForwardedAtoms),
     pendingTargetByProtocol: data[F.v5Reserved] === 1,
+    creatorSurplusForwardedAtoms: u64(F.v5Reserved + 8),
+    s2BacklogOwedAtoms: u64(F.v5Reserved + 16),
   };
 }
 
@@ -411,11 +417,11 @@ export function commitSlotForPendingTargetV5(pool: Pick<StakePoolV5, "pendingTar
 }
 
 // ============================================================================
-// Errors 33..45 (stable names from percolator-stake src/error.rs, one calm line each)
+// Errors 33..46 (stable names from percolator-stake src/error.rs, one calm line each)
 // ============================================================================
 
 /**
- * StakeError codes 33 to 45 (v5), with the stable Rust variant name and a calm one-line user message.
+ * StakeError codes 33 to 46 (v5), with the stable Rust variant name and a calm one-line user message.
  * Codes 0 to 32 are the v2.1 table (`STAKE_ERRORS`); {@link decodeStakeErrorV5} covers all of them. Note
  * `STAKE_ERRORS[32]` still says "VERSION 18": on a v2.2 stake it pins VERSION 19 (see the PR notes).
  */
@@ -433,6 +439,7 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
   43: { name: "NothingToSync", hint: "Nothing to sync: the pool is already close to its target." },
   44: { name: "InsuranceReadingsDiverged", hint: "The market's insurance is lent out right now; deposits and syncs wait until it is repaid." },
   45: { name: "InsuranceUnitsMismatch", hint: "The market's insurance record did not update as expected; nothing was changed." },
+  46: { name: "CreatorAccountRequired", hint: "The market creator's token account is needed to return their insurance seed." },
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**
@@ -452,7 +459,7 @@ export const STAKE_ERROR_NAMES: Readonly<Record<number, string>> = Object.freeze
 }) as Readonly<Record<number, string>>;
 
 /**
- * Decode a stake error code (0..45) for a v5 program. Codes 33..45 come from {@link STAKE_ERRORS_V5}; the
+ * Decode a stake error code (0..46) for a v5 program. Codes 33..46 come from {@link STAKE_ERRORS_V5}; the
  * rest are looked up by the caller in `STAKE_ERRORS` (returned as `undefined` here).
  *
  * @param code  Custom program error code.
@@ -488,6 +495,8 @@ export interface StakePoolValue {
   deployed: bigint;
   /** `liquid + deployed`: the value the program prices LP shares against (`pool_value_v5`). */
   total: bigint;
+  /** `min(liquid, vaultBalance)` (`liquid_withdrawal_ok`): the most a withdrawal can pay right now. Only when a vault balance was passed. */
+  withdrawableNow?: bigint;
 }
 
 const U64_MAX_V5 = (1n << 64n) - 1n;
@@ -503,6 +512,7 @@ const U128_MAX_V5 = (1n << 128n) - 1n;
  * @param pool       Decoded v5 pool (`decodeStakePoolV5`) or any object with the six booked fields.
  * @param insUnits   The wrapper `InsuranceUnitsV20` (`decodeInsuranceUnitsV20`): `unitsStake`, `unitsTotal`.
  * @param insurance  The insurance reading, atoms (`snapInsuranceFreeAtoms` or `snapInsuranceMintAtoms`).
+ * @param vaultBalance  Optional SPL balance of `pool.vault`; adds `withdrawableNow = min(liquid, vaultBalance)`.
  * @returns `{ liquid, deployed, total }`, or `null` where the program fails closed (negative or u64-overflowing value,
  *          `unitsStake > unitsTotal`, a multiply beyond u128).
  * @example
@@ -515,6 +525,7 @@ export function stakePoolValue(
   pool: StakePoolValueFields,
   insUnits: { unitsStake: bigint; unitsTotal: bigint },
   insurance: bigint,
+  vaultBalance?: bigint,
 ): StakePoolValue | null {
   const liquidWide = pool.totalDeposited - pool.totalWithdrawn - pool.totalFlushed + pool.totalReturned + pool.totalFeesEarned - pool.realizedJuniorLoss;
   if (liquidWide < 0n || liquidWide > U64_MAX_V5) return null;
@@ -528,5 +539,41 @@ export function stakePoolValue(
   }
   const total = liquidWide + deployed;
   if (total > U64_MAX_V5) return null;
-  return { liquid: liquidWide, deployed, total };
+  return { liquid: liquidWide, deployed, total, ...(vaultBalance === undefined ? {} : { withdrawableNow: liquidWide < vaultBalance ? liquidWide : vaultBalance }) };
+}
+
+/**
+ * Collateral a burn of `lpAmount` LP pays, priced with the pool's OWN LP counter (`StakePool.totalLpSupply`, u64 @176, which includes the
+ * 1,000 dead shares), NOT the SPL mint supply: `floor(lpAmount * (poolValue + 1) / (totalLpSupply + 1))` (stake
+ * `math::calc_collateral_for_withdraw`, N7 virtual offset).
+ *
+ * @param lpAmount       LP tokens burned.
+ * @param totalLpSupply  `pool.totalLpSupply`.
+ * @param poolValue      {@link StakePoolValue}.total.
+ * @returns Atoms, or `null` (zero supply or beyond u64).
+ * @example
+ * ```ts
+ * collateralForLpV5(1_000n, pool.totalLpSupply, v.total);
+ * ```
+ */
+export function collateralForLpV5(lpAmount: bigint, totalLpSupply: bigint, poolValue: bigint): bigint | null {
+  if (totalLpSupply === 0n) return null;
+  const c = (lpAmount * (poolValue + 1n)) / (totalLpSupply + 1n);
+  return c > U64_MAX_V5 ? null : c;
+}
+
+/**
+ * The creator's collateral token account for `RecoverTerminalInsurance`: the classic-token ATA of `pool.admin` for the pool mint.
+ * The processor accepts it whenever passed (owner must be `pool.admin`) and requires it when the settlement owes the creator, so
+ * always include it for a v5 pool.
+ *
+ * @param pool  Decoded v5 pool.
+ * @returns The ATA address.
+ * @example
+ * ```ts
+ * buildRecoverTerminalInsuranceIx({ ...accts, insuranceUnits, creatorToken: creatorCollateralAtaV5(pool) }, 0n);
+ * ```
+ */
+export function creatorCollateralAtaV5(pool: Pick<StakePoolV5, "admin" | "collateralMint">): PublicKey {
+  return getAssociatedTokenAddressSync(pool.collateralMint, pool.admin, true, TOKEN_PROGRAM_ID);
 }

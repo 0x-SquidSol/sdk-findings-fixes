@@ -272,6 +272,10 @@ export interface StakeWindDownArgs {
   closePortfolioIxs: TransactionInstruction[];
   /** Optional stray vault_auth-owned token account to sweep in the book-only step. */
   stray?: PublicKey;
+  /** v5 first-loss pools: the wrapper `InsuranceUnitsV20` PDA (see `RecoverTerminalInsuranceAccounts.insuranceUnits`). */
+  insuranceUnits?: PublicKey;
+  /** v5 pools: the creator's collateral ATA (always pass it; see `RecoverTerminalInsuranceAccounts.creatorToken`). */
+  creatorToken?: PublicKey;
   /** If set, a tag-84 WithdrawProtocolFee(amount 0 = all) claim is planned between tag-30 repeats. */
   protocolFee?: { authority: PublicKey; destToken: PublicKey; authorityEpoch: bigint };
   tokenProgram?: PublicKey;
@@ -301,6 +305,7 @@ export function planStakeWindDown(a: StakeWindDownArgs): StakeWindDownStep[] {
   const base = {
     stakeProgram: a.stakeProgram, caller: a.caller, pool: a.pool, poolVault: a.poolVault, vaultAuth: a.vaultAuth,
     market: a.market, wrapperVault: a.wrapperVault, wrapperVaultAuthority, wrapperProgram: a.wrapperProgram, tokenProgram,
+    ...(a.insuranceUnits ? { insuranceUnits: a.insuranceUnits } : {}), ...(a.creatorToken ? { creatorToken: a.creatorToken } : {}),
   };
   const steps: StakeWindDownStep[] = [{ step: "closePortfolios", ixs: a.closePortfolioIxs }];
   if (cap.terminalCapacity > 0n) {
