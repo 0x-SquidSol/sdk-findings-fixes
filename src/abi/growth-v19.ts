@@ -80,6 +80,8 @@ export const ASSET_GROWTH_FIELD_OFF = Object.freeze({
   cLaunchAtoms: 0, ceilSlot: 8, lambdaBps: 16, lLaunchX100: 20, lTierX100: 22, ceilX100: 24,
   kinkBps: 26, rGapBps: 28, allocAlphaBps: 30, allocBufferBps: 32, cushionTargetBps: 34,
   cushionShareBps: 36, version: 38, flags: 39, utilFeeMaxBps: 40, reserved: 42,
+  /** v2.2 G8 depth input (inside the formerly reserved bytes; 42..44 = rent kink, 48..56 = rent N_cap). */
+  depthSource: 44, depthE6: 56, depthSlot: 64, depthPrevE6: 72,
 } as const);
 
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
@@ -152,6 +154,14 @@ export interface AssetGrowthV19 {
   flags: number;
   /** N-2: stored utilisation-fee dial at `u = 1` (bps); 0 = {@link GROWTH_UTIL_FEE_DEFAULT_BPS}. */
   utilFeeMaxBps: number;
+  /** v2.2 G8: depth source, 0 = none, 1 = keeper-attested (PushAuthMark tag 63, 44 B form), 2 = on-chain pool (reserved, not built). */
+  depthSource: number;
+  /** v2.2 G8: last pushed +-2% depth, USD e6 (collateral 6 decimals). 0 when absent. */
+  depthE6: bigint;
+  /** v2.2 G8: slot of the last depth push. */
+  depthSlot: bigint;
+  /** v2.2 G8: the depth before the last push (effective depth is the min of the two). */
+  depthPrevE6: bigint;
 }
 
 /**
@@ -188,6 +198,10 @@ export function decodeAssetGrowthRecordV19(rec: Uint8Array): AssetGrowthV19 | nu
     version,
     flags: rec[F.flags] as number,
     utilFeeMaxBps: v.getUint16(F.utilFeeMaxBps, true),
+    depthSource: rec[F.depthSource] as number,
+    depthE6: v.getBigUint64(F.depthE6, true),
+    depthSlot: v.getBigUint64(F.depthSlot, true),
+    depthPrevE6: v.getBigUint64(F.depthPrevE6, true),
   };
 }
 
@@ -444,6 +458,270 @@ export function conservativeEquity(capital: bigint, pnl: bigint, feeCredits: big
 }
 
 // ============================================================================
+// v2.2 G8 depth input, liquidity tiers, epoch-clamp predicate, graduation ceiling
+// (spec: ledger v22-growth-overnight-2026-10-14.md section 1.1 - 1.3; mirrors percolator-prog
+// `growth_v19.rs` + engine `band_rent::band_worst_adverse_bps`)
+// ============================================================================
+
+/** G8: a depth reading older than this many slots counts as absent (tier 0). */
+export const DEPTH_MAX_AGE_SLOTS = 150n;
+/** `AssetGrowthV19.depthSource` values. 2 (on-chain pool) is reserved and not built: tiers 2-3 are unreachable. */
+export const DEPTH_SOURCE = Object.freeze({ None: 0, Attested: 1, OnChainPool: 2 } as const);
+/** Tier thresholds, USD e6 of +-2% depth (collateral 6 decimals): tier 1, 2, 3. */
+export const DEPTH_TIER_THRESHOLDS_E6 = Object.freeze([25_000_000_000n, 100_000_000_000n, 500_000_000_000n] as const);
+/** Highest tier a keeper-attested depth can reach (I-D3). */
+export const DEPTH_ATTESTED_MAX_TIER = 1;
+/** Engine `MAX_BAND_BPS`. */
+export const BAND_MAX_BPS = 2_000n;
+/** `RATCHET_STEP_X100` (1x per ratchet epoch / per doubling). */
+export const GROWTH_RATCHET_STEP_X100 = 100;
+/** `RATCHET_EPOCH_SLOTS`. */
+export const GROWTH_RATCHET_EPOCH_SLOTS = 9_000n;
+
+/** Effective depth: `min(depth, depthPrev)`, and 0 when the push is older than {@link DEPTH_MAX_AGE_SLOTS}. */
+export function effectiveDepthE6(depthE6: bigint, depthPrevE6: bigint, depthSlot: bigint, nowSlot: bigint): bigint {
+  const age = nowSlot > depthSlot ? nowSlot - depthSlot : 0n;
+  if (age > DEPTH_MAX_AGE_SLOTS) return 0n;
+  return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
+}
+
+/**
+ * Liquidity tier of an effective depth: 0 below $25k (or absent / stale), 1 from $25k, 2 from $100k, 3 from $500k.
+ * A keeper-attested (or unknown) source is capped at tier 1; source 0 (none) is tier 0.
+ *
+ * @param effectiveDepth  {@link effectiveDepthE6} (USD e6).
+ * @param depthSource     `AssetGrowthV19.depthSource`.
+ * @returns 0..3.
+ * @example
+ * ```ts
+ * depthTier(30_000_000_000n, 1); // 1
+ * depthTier(600_000_000_000n, 1); // 1 (attested depth never exceeds tier 1)
+ * ```
+ */
+export function depthTier(effectiveDepth: bigint, depthSource: number): number {
+  if (depthSource === DEPTH_SOURCE.None) return 0;
+  let t = 0;
+  for (const th of DEPTH_TIER_THRESHOLDS_E6) if (effectiveDepth >= th) t++;
+  if (depthSource !== DEPTH_SOURCE.OnChainPool && t > DEPTH_ATTESTED_MAX_TIER) t = DEPTH_ATTESTED_MAX_TIER;
+  return t;
+}
+
+/** Depth ceiling `L_depth` (x100): tier 0 = `L_launch`, 1 = 5x, 2 = 10x, 3 = 20x. */
+export function lDepthX100(tier: number, lLaunchX100: number): number {
+  switch (tier) {
+    case 1: return 500;
+    case 2: return 1_000;
+    case 3: return 2_000;
+    default: return lLaunchX100;
+  }
+}
+
+/** `lambda_depth(tier)` in bps: 1x for tiers 0 and 1, 2x tier 2, 3x tier 3. */
+export function lambdaDepthBps(tier: number): number {
+  return tier >= 3 ? 30_000 : tier === 2 ? 20_000 : 10_000;
+}
+
+/** `kappa_depth(tier)` in bps: 0.5 / 1 / 1 / 2 (tiers 0..3). */
+export function kappaDepth(tier: number): number {
+  return tier >= 3 ? 20_000 : tier >= 1 ? 10_000 : 5_000;
+}
+
+/**
+ * The engine's worst two-epoch adverse move for a band: `G(d) = ceil((1e4 + d)^2 / (1e4 - d)) - 1e4` bps
+ * (engine `band_rent::band_worst_adverse_bps`; wrapper `band_r_gap_bps`).
+ *
+ * @param bandBps  Engine `band_bps` (1..=2000).
+ * @returns `G(d)`, or `null` when `d` is out of range or `G` does not fit u16 (as the wrapper).
+ * @example
+ * ```ts
+ * bandRGapBps(1_000n); // 3445n
+ * ```
+ */
+export function bandRGapBps(bandBps: Num): bigint | null {
+  const d = big("bandBps", bandBps);
+  if (d <= 0n || d > BAND_MAX_BPS) return null;
+  const num = (GROWTH_BPS + d) * (GROWTH_BPS + d);
+  const g = divCeil(num, GROWTH_BPS - d) - GROWTH_BPS;
+  return g > 0xffffn ? null : g;
+}
+
+/**
+ * Is the epoch clamp program-enforced for this market? True iff the engine `band_bps != 0` and the stored growth
+ * `r_gap_bps` equals `G(band_bps)` (a mismatch fails closed to "not enforced").
+ *
+ * @param bandBps  Engine `config.band_bps` (0 = no band).
+ * @param rGapBps  `AssetGrowthV19.rGapBps`.
+ * @returns Whether graduation and loosening dials are allowed on this market.
+ * @example
+ * ```ts
+ * clampEnforced(1_000, 3445); // true
+ * clampEnforced(0, 400); // false
+ * ```
+ */
+export function clampEnforced(bandBps: Num, rGapBps: Num): boolean {
+  const b = big("bandBps", bandBps);
+  if (b === 0n) return false;
+  const g = bandRGapBps(b);
+  return g !== null && g === big("rGapBps", rGapBps);
+}
+
+/** `floor(log2(cM / cLaunch))` by doubling (0 when `cLaunch == 0` or `cM < cLaunch`). */
+export function capitalDoublings(cM: bigint, cLaunch: bigint): number {
+  if (cLaunch === 0n || cM < cLaunch) return 0;
+  let steps = 0;
+  let level = cLaunch;
+  while (level * 2n <= cM && steps < 128) { level *= 2n; steps++; }
+  return steps;
+}
+
+/** Inputs of {@link growthTargetCeilingX100}. */
+export interface GrowthTargetInput {
+  lLaunchX100: number;
+  lTierX100: number;
+  /** Conservative LP equity (atoms). */
+  cM: bigint;
+  /** `c_launch_atoms` (0 = not recorded). */
+  cLaunchAtoms: bigint;
+  /** Liquidity tier ({@link depthTier}). */
+  tier: number;
+  /** Engine `band_bps` (0 = none). */
+  bandBps: number;
+  /** `AssetGrowthV19.rGapBps`. */
+  rGapBps: number;
+  /** A draw outstanding, the h-lock latched or ADL on either side: target is the launch ceiling. */
+  forceDown?: boolean;
+}
+
+/**
+ * The live target ceiling (x100). Graduation is allowed iff {@link clampEnforced} and tier >= 1; then
+ * `min(L_tier, max(L_launch, min(L_depth, L_launch + steps * 1x)))`, else `min(L_launch, L_tier)`. `forceDown` also gives the
+ * latter. The gate reads `min(stored ceil_x100, this)`.
+ *
+ * @param i  See {@link GrowthTargetInput}.
+ * @returns Ceiling x100.
+ * @example
+ * ```ts
+ * growthTargetCeilingX100({ lLaunchX100: 300, lTierX100: 1000, cM: 4_000n, cLaunchAtoms: 1_000n, tier: 1, bandBps: 1000, rGapBps: 3445 }); // 500
+ * ```
+ */
+export function growthTargetCeilingX100(i: GrowthTargetInput): number {
+  const launch = Math.min(i.lLaunchX100, i.lTierX100);
+  if (i.forceDown === true || !clampEnforced(i.bandBps, i.rGapBps) || i.tier < 1) return launch;
+  const steps = capitalDoublings(i.cM, i.cLaunchAtoms);
+  const byCapital = i.lLaunchX100 + steps * GROWTH_RATCHET_STEP_X100;
+  const byDepth = Math.min(lDepthX100(i.tier, i.lLaunchX100), byCapital);
+  return Math.min(i.lTierX100, Math.max(i.lLaunchX100, byDepth));
+}
+
+/** Inputs of {@link nCapQWithDepth}. */
+export interface NCapDepthInput {
+  cM: bigint;
+  /** Stored lambda (bps). */
+  lambdaBps: number;
+  tier: number;
+  priceE6: bigint;
+  /** {@link effectiveDepthE6}; 0 = absent / stale: no depth cap (today's capacity). */
+  effectiveDepth: bigint;
+  posScale?: bigint;
+}
+
+/**
+ * `N_cap = min(lambda_eff * C_m / P, kappa_depth * depth / P)` with `lambda_eff = min(stored, lambda_depth(tier))`. The kappa cap
+ * applies only while an effective depth is present.
+ *
+ * @param i  See {@link NCapDepthInput}.
+ * @returns Capacity in Q, or `null` on a zero price / overflow.
+ * @example
+ * ```ts
+ * nCapQWithDepth({ cM: 1_000_000_000n, lambdaBps: 30_000, tier: 1, priceE6: 1_000_000n, effectiveDepth: 0n }); // 1_000_000_000n (lambda_eff = 1x)
+ * ```
+ */
+export function nCapQWithDepth(i: NCapDepthInput): bigint | null {
+  const posScale = i.posScale ?? GROWTH_POS_SCALE;
+  const lambdaEff = Math.min(i.lambdaBps, lambdaDepthBps(i.tier));
+  const n = nCapQ(i.cM, lambdaEff, i.priceE6, posScale);
+  if (n === null || i.effectiveDepth === 0n) return n;
+  const num = i.effectiveDepth * BigInt(kappaDepth(i.tier)) * posScale;
+  if (num > U128_MAX) return null;
+  const cap = num / (GROWTH_BPS * i.priceE6);
+  return cap < n ? cap : n;
+}
+
+/** What raises the ceiling next. */
+export interface NextUnlock {
+  kind: "depth" | "capital" | "none";
+  /** USD (6-decimal collateral) of pool depth / LP capital needed. */
+  thresholdUsd?: number;
+  /** The ceiling (x100) reached at that threshold. */
+  leverageX100?: number;
+  /**
+   * Set on a `depth` unlock that gains nothing until LP capital also doubles: the LP capital (USD) the ceiling in
+   * `leverageX100` additionally needs ("both depth and capital are needed").
+   */
+  alsoRequiresCapitalUsd?: number;
+}
+
+/** Everything derived from the growth record + band + depth for the app. */
+export interface GrowthCeilingView {
+  tier: number;
+  effectiveDepthE6: bigint;
+  clampEnforced: boolean;
+  /** Graduation above `L_launch` is allowed (clamp enforced and tier >= 1). */
+  graduationOn: boolean;
+  /** Live target before the stored-ratchet minimum. */
+  targetX100: number;
+  /** What the gate reads: `min(stored ceil_x100, target)`. */
+  ceilingX100: number;
+  nextUnlock: NextUnlock;
+}
+
+/**
+ * Derive tier, ceiling and next unlock for one asset.
+ *
+ * @param g        Decoded growth record.
+ * @param bandBps  Engine `band_bps`.
+ * @param nowSlot  Current slot.
+ * @param cM       Conservative LP equity (atoms).
+ * @param forceDown  Draw outstanding / h-lock / ADL.
+ * @returns {@link GrowthCeilingView}.
+ * @example
+ * ```ts
+ * const v = growthCeilingView(g, 1000, slot, cM, false);
+ * if (v.nextUnlock.kind === "depth") console.log(`${v.nextUnlock.leverageX100! / 100}x unlocks at $${v.nextUnlock.thresholdUsd}`);
+ * ```
+ */
+export function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint, forceDown: boolean): GrowthCeilingView {
+  const eff = effectiveDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, nowSlot);
+  const tier = depthTier(eff, g.depthSource);
+  const enforced = clampEnforced(bandBps, g.rGapBps);
+  const base: GrowthTargetInput = { lLaunchX100: g.lLaunchX100, lTierX100: g.lTierX100, cM, cLaunchAtoms: g.cLaunchAtoms, tier, bandBps, rGapBps: g.rGapBps, forceDown };
+  const target = growthTargetCeilingX100(base);
+  const launch = Math.min(g.lLaunchX100, g.lTierX100);
+  const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
+  const ceiling = Math.min(stored, target);
+  const graduationOn = enforced && tier >= 1;
+  let nextUnlock: NextUnlock = { kind: "none" };
+  if (enforced && !forceDown) {
+    const maxTier = g.depthSource === DEPTH_SOURCE.OnChainPool ? 3 : DEPTH_ATTESTED_MAX_TIER;
+    if (tier < maxTier) {
+      const t2 = growthTargetCeilingX100({ ...base, tier: tier + 1 });
+      if (t2 > target) nextUnlock = { kind: "depth", thresholdUsd: Number((DEPTH_TIER_THRESHOLDS_E6[tier] as bigint) / 1_000_000n), leverageX100: t2 };
+    }
+    if (nextUnlock.kind === "none" && g.cLaunchAtoms > 0n) {
+      const need = g.cLaunchAtoms << BigInt(capitalDoublings(cM, g.cLaunchAtoms) + 1);
+      const t2 = growthTargetCeilingX100({ ...base, cM: need });
+      if (t2 > target) nextUnlock = { kind: "capital", thresholdUsd: Number(need / 1_000_000n), leverageX100: t2 };
+      else if (tier < maxTier) {
+        // Neither alone helps (e.g. no depth yet AND capital below the next doubling): depth first, capital as well.
+        const both = growthTargetCeilingX100({ ...base, cM: need, tier: tier + 1 });
+        if (both > target) nextUnlock = { kind: "depth", thresholdUsd: Number((DEPTH_TIER_THRESHOLDS_E6[tier] as bigint) / 1_000_000n), leverageX100: both, alsoRequiresCapitalUsd: Number(need / 1_000_000n) };
+      }
+    }
+  }
+  return { tier, effectiveDepthE6: eff, clampEnforced: enforced, graduationOn, targetX100: target, ceilingX100: ceiling, nextUnlock };
+}
+
+// ============================================================================
 // quoteMaxLeverage
 // ============================================================================
 
@@ -476,6 +754,11 @@ export interface QuoteMaxLeverageInput {
   bankruptcyHlockActive: boolean;
   /** Engine `POS_SCALE` (default 1_000_000n). */
   posScale?: bigint;
+  /**
+   * v2.2 growth: engine `band_bps` and the current slot. When present the quote applies the depth tier (lambda_eff, kappa cap),
+   * graduation and the stored ratchet; when absent it is the growth-1 quote (`min(L_launch, L_tier)`, no depth).
+   */
+  v22?: { bandBps: number; nowSlot: bigint };
 }
 
 /** Why a side is closed. */
@@ -525,6 +808,14 @@ export interface MaxLeverageQuote {
    * pays at least this: use {@link previewGrowthOpenFee} for the exact charge and the fee to sign.
    */
   utilisationFeeBps: number | null;
+  /** v2.2: the ceiling in force (x100): `min(stored, live target)`; the growth-1 `min(L_launch, L_tier)` without `v22` input; 0 when growth is off. */
+  ceilingX100: number;
+  /** v2.2: liquidity tier 0..3 (0 without `v22` input). */
+  tier: number;
+  /** v2.2: what raises the ceiling next, e.g. `{ kind: "depth", thresholdUsd: 25000, leverageX100: 500 }` = "5x unlocks when pool depth reaches $25k". */
+  nextUnlock: NextUnlock;
+  /** v2.2: graduation above `L_launch` is allowed (clamp enforced and tier >= 1). */
+  graduationOn: boolean;
 }
 
 /**
@@ -565,9 +856,11 @@ export function quoteMaxLeverage(input: QuoteMaxLeverageInput, side: "long" | "s
   const crowd = side === "long" ? lp <= 0n : lp >= 0n;
   const g = input.growth;
   const e = input.engineImrBps;
+  let meta: Partial<MaxLeverageQuote> = {};
   const out = (p: Partial<MaxLeverageQuote>): MaxLeverageQuote => ({
     side, crowd, closed: false, closedReason: null, maxLeverageX100: 0, imrBps: null,
-    utilizationBps: null, nCapQ: null, growthOn: g !== null, headroomQ: null, reduceOnlyCapacityExempt: true, utilisationFeeBps: null, ...p,
+    utilizationBps: null, nCapQ: null, growthOn: g !== null, headroomQ: null, reduceOnlyCapacityExempt: true, utilisationFeeBps: null,
+    ceilingX100: 0, tier: 0, nextUnlock: { kind: "none" }, graduationOn: false, ...meta, ...p,
   });
   const lev = (imr: bigint): number => {
     const l = leverageX100ForImrBps(imr);
@@ -580,13 +873,17 @@ export function quoteMaxLeverage(input: QuoteMaxLeverageInput, side: "long" | "s
     if (e === 0n || e > GROWTH_MAX_IMR_BPS) return closed("invalid-config");
     return out({ imrBps: e, maxLeverageX100: lev(e) });
   }
-  const lCeil = Math.min(g.lLaunchX100, g.lTierX100);
+  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
+  const view = input.v22 ? growthCeilingView(g, input.v22.bandBps, input.v22.nowSlot, cM, input.bankruptcyHlockActive) : null;
+  const lCeil = view ? view.ceilingX100 : Math.min(g.lLaunchX100, g.lTierX100);
+  meta = { ceilingX100: lCeil, tier: view?.tier ?? 0, nextUnlock: view?.nextUnlock ?? { kind: "none" }, graduationOn: view?.graduationOn ?? false };
   const base = ceilingImrBps(e, lCeil);
   if (base === null) return closed("invalid-config");
   // N-1: growth opens only against the asset's BOUND vault LP (wrapper 97 / 95 otherwise).
   if (!input.assetBound) return closed("not-bound", { headroomQ: 0n });
-  const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
-  const nCap = nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
+  const nCap = view
+    ? nCapQWithDepth({ cM, lambdaBps: g.lambdaBps, tier: view.tier, priceE6: input.priceE6, effectiveDepth: view.effectiveDepthE6, posScale: input.posScale })
+    : nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
   // N-1: utilisation is the USERS' open interest on this side (the engine OI minus the vault
   // LP's own leg on it), the same number the wrapper gates on (`users_side_oi_q`).
   const usersOi = usersSideOiQ(side === "long" ? input.oiEffLongQ : input.oiEffShortQ, lp, side === "long");

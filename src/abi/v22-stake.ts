@@ -323,6 +323,10 @@ export interface StakePoolV5 extends StakePoolV5Fields {
   juniorTotalLp: bigint;
   /** `_reserved[61]` (absolute 381): R-1 dead-share floor flags; 0 = legacy. See `stakeDeadLp`. */
   floorFlags: number;
+  /** `total_fees_earned` (offset 256): counted in the pool value. */
+  totalFeesEarned: bigint;
+  /** `_reserved[51..59]` (absolute 371): realized (forfeited) junior loss, subtracted from the pool value (issue #161). */
+  realizedJuniorLoss: bigint;
 }
 
 const STAKE_POOL_DISCRIMINATOR_V5 = Uint8Array.from([0x53, 0x50, 0x4f, 0x4f, 0x4c, 0x5f, 0x56, 0x31]); // "SPOOL_V1"
@@ -372,6 +376,8 @@ export function decodeStakePoolV5(data: Uint8Array): StakePoolV5 {
     totalReturned: u64(208),
     totalWithdrawn: u64(216),
     poolMode: data[F.poolMode],
+    totalFeesEarned: u64(256),
+    realizedJuniorLoss: u64(F.reserved + 51),
     juniorTotalLp: u64(F.reserved + 41),
     floorFlags: data[F.reserved + STAKE_FLOOR_FLAGS_RESERVED_INDEX],
     riskMode,
@@ -458,4 +464,69 @@ export const STAKE_ERROR_NAMES: Readonly<Record<number, string>> = Object.freeze
  */
 export function decodeStakeErrorV5(code: number): ErrorInfo | undefined {
   return STAKE_ERRORS_V5[code];
+}
+
+// ============================================================================
+// Pool value including deployed insurance (release checklist section 5 item 4)
+// ============================================================================
+
+/** The booked fields `StakePool::total_pool_value()` reads. */
+export interface StakePoolValueFields {
+  totalDeposited: bigint;
+  totalWithdrawn: bigint;
+  totalFlushed: bigint;
+  totalReturned: bigint;
+  totalFeesEarned: bigint;
+  realizedJuniorLoss: bigint;
+}
+
+/** Result of {@link stakePoolValue}. All atoms. */
+export interface StakePoolValue {
+  /** `StakePool::total_pool_value()`: the vault-resident booked value (already net of everything flushed to insurance). */
+  liquid: bigint;
+  /** `floor(units_stake * insurance / units_total)`: the pool's stake-class insurance units at the reading passed. */
+  deployed: bigint;
+  /** `liquid + deployed`: the value the program prices LP shares against (`pool_value_v5`). */
+  total: bigint;
+}
+
+const U64_MAX_V5 = (1n << 64n) - 1n;
+const U128_MAX_V5 = (1n << 128n) - 1n;
+
+/**
+ * v5 pool value INCLUDING the insurance the pool has deployed into the wrapper. Mirrors stake `math::deployed_value` and
+ * `math::pool_value_v5`, with `liquid` mirroring `StakePool::total_pool_value()` (deposited - withdrawn - flushed + returned +
+ * fees - realized junior loss, in a signed wide intermediate). Pass the EXIT reading (`snapInsuranceFreeAtoms`, what withdrawals and
+ * the sync use) for what a leaver is paid, or the ENTRY reading (`snapInsuranceMintAtoms`, what deposits mint against) for deposit
+ * pricing. The deployed part comes back to the vault through a sync recovery, so a payout must still fit `liquid`.
+ *
+ * @param pool       Decoded v5 pool (`decodeStakePoolV5`) or any object with the six booked fields.
+ * @param insUnits   The wrapper `InsuranceUnitsV20` (`decodeInsuranceUnitsV20`): `unitsStake`, `unitsTotal`.
+ * @param insurance  The insurance reading, atoms (`snapInsuranceFreeAtoms` or `snapInsuranceMintAtoms`).
+ * @returns `{ liquid, deployed, total }`, or `null` where the program fails closed (negative or u64-overflowing value,
+ *          `unitsStake > unitsTotal`, a multiply beyond u128).
+ * @example
+ * ```ts
+ * const v = stakePoolValue(decodeStakePoolV5(pool.data), decodeInsuranceUnitsV20(units.data), units.snapInsuranceFreeAtoms);
+ * if (v) show(v.total);
+ * ```
+ */
+export function stakePoolValue(
+  pool: StakePoolValueFields,
+  insUnits: { unitsStake: bigint; unitsTotal: bigint },
+  insurance: bigint,
+): StakePoolValue | null {
+  const liquidWide = pool.totalDeposited - pool.totalWithdrawn - pool.totalFlushed + pool.totalReturned + pool.totalFeesEarned - pool.realizedJuniorLoss;
+  if (liquidWide < 0n || liquidWide > U64_MAX_V5) return null;
+  let deployed = 0n;
+  if (insUnits.unitsTotal !== 0n) {
+    if (insUnits.unitsStake > insUnits.unitsTotal) return null;
+    const prod = insUnits.unitsStake * insurance;
+    if (prod > U128_MAX_V5) return null;
+    deployed = prod / insUnits.unitsTotal;
+    if (deployed > U64_MAX_V5) return null;
+  }
+  const total = liquidWide + deployed;
+  if (total > U64_MAX_V5) return null;
+  return { liquid: liquidWide, deployed, total };
 }
