@@ -3777,8 +3777,16 @@ function recoverTerminalInsuranceAccounts(a) {
     { pubkey: a.wrapperVaultAuthority, isSigner: false, isWritable: false },
     { pubkey: assertClassicTokenProgram(a.tokenProgram ?? TOKEN_PROGRAM_ID2), isSigner: false, isWritable: false },
     { pubkey: a.wrapperProgram, isSigner: false, isWritable: false },
-    ...a.stray ? [{ pubkey: a.stray, isSigner: false, isWritable: true }] : []
+    ...recoverTerminalTailMetas(a)
   ];
+}
+function recoverTerminalTailMetas(a) {
+  const w2 = (pubkey) => ({ pubkey, isSigner: false, isWritable: true });
+  if (a.insuranceUnits) {
+    if (!a.creatorToken) throw new Error("recoverTerminalInsuranceAccounts: a first-loss pool requires creatorToken ([10])");
+    return [w2(a.insuranceUnits), w2(a.creatorToken), ...a.stray ? [w2(a.stray)] : []];
+  }
+  return [...a.stray ? [w2(a.stray)] : [], ...a.creatorToken ? [w2(a.creatorToken)] : []];
 }
 function adminCloseSlabAccounts(a) {
   return [
@@ -3797,7 +3805,7 @@ function adminCloseSlabAccounts(a) {
 
 // src/abi/v22-stake.ts
 import { PublicKey as PublicKey6, SYSVAR_CLOCK_PUBKEY as SYSVAR_CLOCK_PUBKEY3, SystemProgram as SystemProgram3 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID3 } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID3, getAssociatedTokenAddressSync } from "@solana/spl-token";
 var STAKE_IX_V5 = Object.freeze({
   SyncInsuranceDeployment: 31,
   ProposeDeployTarget: 32,
@@ -3975,7 +3983,9 @@ function decodeStakePoolV5(data) {
     pendingTargetSlot: u644(F.pendingTargetSlot),
     syncCooldownSlots: u644(F.syncCooldownSlots),
     creatorForwardedAtoms: u644(F.creatorForwardedAtoms),
-    pendingTargetByProtocol: data[F.v5Reserved] === 1
+    pendingTargetByProtocol: data[F.v5Reserved] === 1,
+    creatorSurplusForwardedAtoms: u644(F.v5Reserved + 8),
+    s2BacklogOwedAtoms: u644(F.v5Reserved + 16)
   };
 }
 function commitSlotForPendingTargetV5(pool) {
@@ -3996,7 +4006,8 @@ var STAKE_ERRORS_V5 = Object.freeze({
   42: { name: "AssetAdminNotBurned", hint: "The market admin must be burned before this pool can deploy into insurance." },
   43: { name: "NothingToSync", hint: "Nothing to sync: the pool is already close to its target." },
   44: { name: "InsuranceReadingsDiverged", hint: "The market's insurance is lent out right now; deposits and syncs wait until it is repaid." },
-  45: { name: "InsuranceUnitsMismatch", hint: "The market's insurance record did not update as expected; nothing was changed." }
+  45: { name: "InsuranceUnitsMismatch", hint: "The market's insurance record did not update as expected; nothing was changed." },
+  46: { name: "CreatorAccountRequired", hint: "The market creator's token account is needed to return their insurance seed." }
 });
 var STAKE_ERROR_NAMES = Object.freeze({
   0: "AlreadyInitialized",
@@ -4038,7 +4049,7 @@ function decodeStakeErrorV5(code) {
 }
 var U64_MAX_V5 = (1n << 64n) - 1n;
 var U128_MAX_V5 = (1n << 128n) - 1n;
-function stakePoolValue(pool, insUnits, insurance) {
+function stakePoolValue(pool, insUnits, insurance, vaultBalance) {
   const liquidWide = pool.totalDeposited - pool.totalWithdrawn - pool.totalFlushed + pool.totalReturned + pool.totalFeesEarned - pool.realizedJuniorLoss;
   if (liquidWide < 0n || liquidWide > U64_MAX_V5) return null;
   let deployed = 0n;
@@ -4051,7 +4062,15 @@ function stakePoolValue(pool, insUnits, insurance) {
   }
   const total = liquidWide + deployed;
   if (total > U64_MAX_V5) return null;
-  return { liquid: liquidWide, deployed, total };
+  return { liquid: liquidWide, deployed, total, ...vaultBalance === void 0 ? {} : { withdrawableNow: liquidWide < vaultBalance ? liquidWide : vaultBalance } };
+}
+function collateralForLpV5(lpAmount, totalLpSupply, poolValue) {
+  if (totalLpSupply === 0n) return null;
+  const c = lpAmount * (poolValue + 1n) / (totalLpSupply + 1n);
+  return c > U64_MAX_V5 ? null : c;
+}
+function creatorCollateralAtaV5(pool) {
+  return getAssociatedTokenAddressSync(pool.collateralMint, pool.admin, true, TOKEN_PROGRAM_ID3);
 }
 
 // src/abi/matcher-v2.ts
@@ -11446,7 +11465,7 @@ function derivePythPushOraclePDA(feedIdHex) {
 // src/solana/ata.ts
 import {
   getAssociatedTokenAddress,
-  getAssociatedTokenAddressSync,
+  getAssociatedTokenAddressSync as getAssociatedTokenAddressSync2,
   getAccount,
   TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID4
 } from "@solana/spl-token";
@@ -11454,7 +11473,7 @@ async function getAta(owner, mint, allowOwnerOffCurve = false, tokenProgramId = 
   return getAssociatedTokenAddress(mint, owner, allowOwnerOffCurve, tokenProgramId);
 }
 function getAtaSync(owner, mint, allowOwnerOffCurve = false, tokenProgramId = TOKEN_PROGRAM_ID4) {
-  return getAssociatedTokenAddressSync(mint, owner, allowOwnerOffCurve, tokenProgramId);
+  return getAssociatedTokenAddressSync2(mint, owner, allowOwnerOffCurve, tokenProgramId);
 }
 async function fetchTokenAccount(connection, address, tokenProgramId = TOKEN_PROGRAM_ID4) {
   return getAccount(connection, address, void 0, tokenProgramId);
@@ -13375,7 +13394,7 @@ function planCloseSlabAttempt(a) {
 
 // src/solana/p3-vault-lp.ts
 import { PublicKey as PublicKey22, SystemProgram as SystemProgram4, TransactionInstruction as TransactionInstruction6 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID7, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync2 } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID7, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync3 } from "@solana/spl-token";
 var V18_KIND_VAULT_LP_STATE_P3 = 9;
 var VAULT_LP_STATE_BODY_LEN_P3 = 256;
 var VAULT_LP_STATE_ACCOUNT_LEN_P3 = V17_HEADER_LEN + VAULT_LP_STATE_BODY_LEN_P3;
@@ -13874,7 +13893,7 @@ function planResolvedReceiptRevisitP3(a) {
       needsHolder.push(r2);
       continue;
     }
-    const destToken = getAssociatedTokenAddressSync2(a.collateralMint, r2.owner, false, TOKEN_PROGRAM_ID7);
+    const destToken = getAssociatedTokenAddressSync3(a.collateralMint, r2.owner, false, TOKEN_PROGRAM_ID7);
     const base = { programId: a.programId, market: a.market, portfolio: r2.portfolio, owner: r2.owner, destToken, vaultToken: a.vaultToken };
     steps.push({ portfolio: r2.portfolio, owner: r2.owner, topup46: buildClaimResolvedPayoutTopupIxP3(base), closeResolved: buildCloseResolvedUnsignedIxP3(base) });
   }
@@ -14000,7 +14019,9 @@ function planStakeWindDown(a) {
     wrapperVault: a.wrapperVault,
     wrapperVaultAuthority,
     wrapperProgram: a.wrapperProgram,
-    tokenProgram
+    tokenProgram,
+    ...a.insuranceUnits ? { insuranceUnits: a.insuranceUnits } : {},
+    ...a.creatorToken ? { creatorToken: a.creatorToken } : {}
   };
   const steps = [{ step: "closePortfolios", ixs: a.closePortfolioIxs }];
   if (cap.terminalCapacity > 0n) {
@@ -14234,7 +14255,7 @@ function nonboundVaultPricingFromAccountsP2b(a) {
 
 // src/solana/v22.ts
 import { SystemProgram as SystemProgram6, TransactionInstruction as TransactionInstruction11 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID10, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync3 } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID10, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync4 } from "@solana/spl-token";
 
 // src/runtime/tx.ts
 import {
@@ -15290,7 +15311,7 @@ function buildLaunchBundleV22(i) {
   const lpMint = deriveInsuranceLpMint(i.market.programId, i.market.market)[0];
   const seedIxs = [];
   for (const sd of i.earnSeeds ?? []) {
-    const ata = sd.depositorLpAta ?? getAssociatedTokenAddressSync3(lpMint, sd.depositor, true);
+    const ata = sd.depositorLpAta ?? getAssociatedTokenAddressSync4(lpMint, sd.depositor, true);
     seedIxs.push(createAssociatedTokenAccountIdempotentInstruction(i.payer, ata, sd.depositor, lpMint));
     seedIxs.push(buildDepositToLpVaultIxBoundV22(i.market, sd.depositor, ata, sd.sourceToken, sd.vaultToken, sd.amount, sd.domain ?? 0));
   }
@@ -16819,6 +16840,7 @@ export {
   classifyLighthouseError,
   classifyRedemptionSimulationV22,
   clearStaticMarkets,
+  collateralForLpV5,
   commitSlotForPendingTargetV5,
   compileV1Message,
   computeBudgetInstructions,
@@ -16851,6 +16873,7 @@ export {
   couponBaseV22,
   couponDueV22,
   couponGateOpenV22,
+  creatorCollateralAtaV5,
   creatorFeeVestedP2b,
   cushionLockedP2b,
   cushionSplitP2b,

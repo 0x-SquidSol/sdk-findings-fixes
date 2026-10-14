@@ -1602,6 +1602,18 @@ export interface RecoverTerminalInsuranceAccounts {
     wrapperProgram: PublicKey;
     /** OPTIONAL stray token account to sweep (pool mint, owner `vault_auth`, not `pool.vault`). */
     stray?: PublicKey;
+    /**
+     * v5 FIRST_LOSS pools: the wrapper's `InsuranceUnitsV20` PDA (`["ins_units", market]`) at [9]. It may be uncreated when no
+     * staker ever deposited, but the key must still be the PDA. Setting it selects the first-loss layout, which also REQUIRES
+     * {@link creatorToken}.
+     */
+    insuranceUnits?: PublicKey;
+    /**
+     * v5 (S1/S2): the creator's collateral token account (owner `pool.admin`, mint = pool mint; the ATA). Required on a first-loss
+     * pool; on a FEE_ONLY pool it is accepted whenever passed and REQUIRED (`CreatorAccountRequired`, 46) when the settlement owes
+     * the creator, so v5 callers should always pass it. See `creatorCollateralAtaV5`.
+     */
+    creatorToken?: PublicKey;
     /** Token program (default SPL Token; classic only, #352: anything else throws). */
     tokenProgram?: PublicKey;
 }
@@ -1611,6 +1623,10 @@ export interface RecoverTerminalInsuranceAccounts {
  *   [0] caller (no signer) · [1] pool (w) · [2] pool vault (w) · [3] vault_auth ·
  *   [4] wrapper market (w) · [5] wrapper vault (w) · [6] wrapper vault authority ·
  *   [7] token program · [8] wrapper program · [9] stray (w, optional)
+ *
+ * v5 (percolator-stake feat/v22-growth-stake 0729a58): FIRST_LOSS pools (`insuranceUnits` set) continue
+ * `[9] units (w) · [10] creator token account (w, required) · [11] stray (w, optional)`; FEE_ONLY pools take up to two optional
+ * trailing token accounts in any order, told apart on-chain by SPL owner: `[stray?, creator?]` here.
  *
  * @param a  Named accounts.
  * @returns Account metas in program order.
