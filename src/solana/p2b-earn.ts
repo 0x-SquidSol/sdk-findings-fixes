@@ -21,7 +21,9 @@ import {
   ACCOUNTS_SET_VAULT_LP_RISK_V19_P2B,
   ACCOUNTS_VAULT_LP_ALLOCATE_P2B,
   KIND_VAULT_LP_EXT_P2B,
+  LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B,
   LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B,
+  ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B,
   U128_MAX_P2B,
   VAULT_LP_EXT_ACCOUNT_LEN_P2B,
   VAULT_LP_EXT_FIELD_OFF_P2B,
@@ -48,6 +50,7 @@ import { deriveInsuranceLpMint, deriveLpBackingLedger, deriveLpEscrow, deriveLpR
 import { deriveProgramDataAddressP3, deriveVaultLpStateP3, withBoundVaultLpTailP3 } from "./p3-vault-lp.js";
 import type { VaultLpMarketP3 } from "./p3-vault-lp.js";
 import { V17_KIND_OFF, V17_MAGIC } from "./slab.js";
+import { deriveBondTrancheV22 } from "../abi/v22-wire.js";
 import { resolveLayout, resolveMarketGeometry } from "../abi/layout.js";
 import { V17_ASSET_SLOT_WRAPPER_LEN, V17_ENGINE_BACKING_LONG_REL, V17_ENGINE_BACKING_SHORT_REL } from "./backing-bucket.js";
 
@@ -82,6 +85,25 @@ export function isLpVaultRegistryExtP2b(registryData: Uint8Array): boolean {
   if (registryData.length <= LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B) throw new Error("registry account too short for the ext flag");
   const b = registryData[LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B];
   if (b !== 0 && b !== 1) throw new Error(`registry ext flag must be 0|1, got ${b}`);
+  return b === 1;
+}
+
+/**
+ * True if an LP-vault registry has its "BondTrancheV20 exists" flag set (`_reserved[2] == 1`, account byte 162).
+ * While set, tag 103 (and 78 bound / 97 / 102 Resolved) REQUIRE the bond tranche account.
+ *
+ * @param registryData  Raw LpVaultRegistry account bytes.
+ * @returns Whether the bond tranche exists.
+ * @throws If the flag byte is neither 0 nor 1 (the program rejects it too) or the account is short.
+ * @example
+ * ```ts
+ * const ix = buildVaultLpAllocateIxP2b(m, cranker, U128_MAX_P2B, { bondTranche: isLpVaultRegistryBondP2b(reg.data) });
+ * ```
+ */
+export function isLpVaultRegistryBondP2b(registryData: Uint8Array): boolean {
+  if (registryData.length <= LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B) throw new Error("registry account too short for the bond flag");
+  const b = registryData[LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B];
+  if (b !== 0 && b !== 1) throw new Error(`registry bond flag must be 0|1, got ${b}`);
   return b === 1;
 }
 
@@ -183,28 +205,38 @@ export async function fetchVaultLpExtP2b(conn: Pick<Connection, "getAccountInfo"
  * (the first call creates it, the cranker paying rent). `amount` defaults to `u128::MAX`: the
  * program clamps to `min(alpha*C_eff - allocated, drawable - buffer*C_eff)`.
  *
- * Compute: tag 103 runs a full certificate refresh of the vault LP; budget it like tag 77
+ * On a BOND market (registry bond flag set, see {@link isLpVaultRegistryBondP2b}) the program requires the
+ * `["bond_tranche", market]` account at `[9]` (fail closed): pass `opts.bondTranche: true`. Without it the deployed
+ * wrapper returns NotEnoughAccountKeys (devnet 6kpg2wi7, SOL market, simulated 2026-10-14).
+ *
+ * Compute: tag 103 runs a full certificate refresh of the vault LP (~230k CU on devnet); budget it like tag 77
  * ({@link RECOMMENDED_CU_P3}). Send it only on a bound market (`isLpVaultRegistryBoundP3`); Custom 100
  * means "no room right now", not a failure of the client.
  *
  * @param m        Market context (`registryDomain`, `lpPortfolio`).
  * @param cranker  Signer; pays the ext rent on the first call.
  * @param amount   Atoms requested (default `u128::MAX`).
- * @returns Instruction.
+ * @param opts     `bondTranche: true` appends the bond tranche PDA at `[9]` (required on a bond market).
+ * @returns Instruction (9 accounts, or 10 with the bond tranche).
  * @example
  * ```ts
- * const ix = buildVaultLpAllocateIxP2b(m, keeper.publicKey);
+ * const bond = isLpVaultRegistryBondP2b(registryAccount.data);
+ * const ix = buildVaultLpAllocateIxP2b(m, keeper.publicKey, U128_MAX_P2B, { bondTranche: bond });
  * ```
  */
-export function buildVaultLpAllocateIxP2b(m: VaultLpMarketP3, cranker: PublicKey, amount: bigint = U128_MAX_P2B): TransactionInstruction {
+export function buildVaultLpAllocateIxP2b(
+  m: VaultLpMarketP3, cranker: PublicKey, amount: bigint = U128_MAX_P2B, opts: { bondTranche?: boolean } = {},
+): TransactionInstruction {
+  const bond = opts.bondTranche === true;
   return new TransactionInstruction({
     programId: m.programId,
-    keys: buildAccountMetas(ACCOUNTS_VAULT_LP_ALLOCATE_P2B, {
+    keys: buildAccountMetas(bond ? ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B : ACCOUNTS_VAULT_LP_ALLOCATE_P2B, {
       cranker, market: m.market, registry: deriveLpVaultRegistry(m.programId, m.market)[0],
       vaultLpState: deriveVaultLpStateP3(m.programId, m.market)[0], lpPortfolio: m.lpPortfolio,
       ledger: deriveLpBackingLedger(m.programId, m.market, m.registryDomain)[0],
       siblingLedger: deriveLpBackingLedger(m.programId, m.market, m.registryDomain ^ 1)[0],
       vaultLpExt: deriveVaultLpExtP2b(m.programId, m.market)[0], systemProgram: SystemProgram.programId,
+      ...(bond ? { bondTranche: deriveBondTrancheV22(m.programId, m.market)[0] } : {}),
     }),
     data: Buffer.from(encodeVaultLpAllocateP2b(amount)),
   });

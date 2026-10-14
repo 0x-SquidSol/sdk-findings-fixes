@@ -19,6 +19,12 @@ export declare const VAULT_LP_EXT_SEED_P2B = "vault_lp_ext";
  * exists. From then on tags 98, 97 and 78 REQUIRE the ext account (fail closed).
  */
 export declare const LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B = 161;
+/**
+ * Account byte of the registry "BondTrancheV20 exists" flag (`_reserved[VAULT_LP_REGISTRY_BOND_FLAG_IDX = 2]`,
+ * percolator-prog `v16_program.rs:600`; the ext flag is `_reserved[1]` at 161). While set, tag 103 REQUIRES the
+ * bond tranche as account `[9]` (`load_bond_tranche_if_flagged`, `v16_program.rs:39210`).
+ */
+export declare const LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B = 162;
 /** `vault_lp_v18::ALLOC_ALPHA_DEFAULT_BPS` / `ALLOC_ALPHA_MAX_BPS` (hard maximum until L3). */
 export declare const ALLOC_ALPHA_DEFAULT_BPS_P2B = 5000;
 export declare const ALLOC_ALPHA_MAX_BPS_P2B = 5000;
@@ -51,11 +57,21 @@ export declare function encodeVaultLpAllocateP2b(amount: bigint): Uint8Array;
 /** `u128::MAX`: pass as the tag-103 `amount` to take whatever the program's limit allows. */
 export declare const U128_MAX_P2B: bigint;
 /**
+ * Tag 103 accounts (9) on a market WITHOUT a bond tranche (registry bond flag clear). On a bond market the program
+ * ALSO requires the tranche at `[9]` and fails with NotEnoughAccountKeys without it: see
+ * {@link ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B}. Handler: `handle_vault_lp_allocate`, percolator-prog
+ * `v16_program.rs:37972-37981` (accounts 0..8) and `:38020` (`load_bond_tranche_if_flagged(.., 9, ..)`).
+ *
  * Tag 103 accounts (9). `registry` is writable because the first allocation CREATES the ext and
  * raises the registry flag; `ext` is `["vault_lp_ext", market]` (writable; created with the
  * defaults alpha 50% / buffer 30% / cushion off if it does not exist, the cranker paying rent).
  */
 export declare const ACCOUNTS_VAULT_LP_ALLOCATE_P2B: readonly AccountSpec[];
+/**
+ * Tag 103 accounts (10) on a BOND market (registry bond flag at byte 162 set): the nine above plus
+ * `bondTranche` (`["bond_tranche", market]`) at `[9]`. Read-only for 103 (`load_bond_tranche` reads `c_b_atoms` only).
+ */
+export declare const ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B: readonly AccountSpec[];
 /** The four allocation / cushion dials carried by tag 99's 8-byte trailer. */
 export interface VaultLpDialsP2b {
     /** Allocation fraction of C_eff, bps. `0..=ALLOC_ALPHA_MAX_BPS_P2B` (5000 until L3). */
