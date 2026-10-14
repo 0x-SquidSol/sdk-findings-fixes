@@ -637,6 +637,12 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
     name: "CounterpartyPositionCapReached",
     hint: "The other side of this trade is at its position limit, which is not caused by your account. Try another asset or try again later.",
   },
+  // v2.2 growth G8 (spec v22-growth-overnight-2026-10-14 section 1.3): explicit discriminant 128, appended after 127. A
+  // PushAuthMark (tag 63) 44-byte push whose depth_mode is not 0 (none) or 1 (keeper-attested).
+  128: {
+    name: "DepthInputInvalid",
+    hint: "The price update carried an invalid liquidity reading.",
+  },
   // P2b E7 (percolator-prog #525, engine #276): explicit discriminants 120..=122; each was Custom(21).
   120: {
     name: "EngineAdlReduceOnly",

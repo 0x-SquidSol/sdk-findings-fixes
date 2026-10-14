@@ -1,6 +1,6 @@
 {
   "prog": "c8501d153ed1a7bd9b1bc3343b89f47096838ead",
-  "count": 128,
+  "count": 129,
   "errors": {
     "0": "InvalidMagic",
     "1": "InvalidVersion",
@@ -129,6 +129,7 @@
     "124": "BondSlippage",
     "125": "G9AllowlistTimelock",
     "126": "PositionCapReached",
-    "127": "CounterpartyPositionCapReached"
+    "127": "CounterpartyPositionCapReached",
+    "128": "DepthInputInvalid"
   }
 }
