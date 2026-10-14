@@ -1,6 +1,6 @@
 /**
  * percolator-stake v5 (Phase 4 item 6, first-loss insurance staking): wire, accounts, the
- * `StakePool` v5 decoder and the error table for codes 33 to 46.
+ * `StakePool` v5 decoder and the error table for codes 33 to 48.
  *
  * Source: percolator-stake `release/v22-stake` `49e27e7` (PR #304 `feat/v22-stake-v5` head `480fe29`
  * plus the layout PR #306): `src/instruction.rs` (`unpack` at 764..850, docs at 93..172 and 722..759 of that head),
@@ -501,11 +501,11 @@ export function commitSlotForPendingTargetV5(pool: Pick<StakePoolV5, "pendingTar
 }
 
 // ============================================================================
-// Errors 33..46 (stable names from percolator-stake src/error.rs, one calm line each)
+// Errors 33..48 (stable names from percolator-stake src/error.rs, one calm line each)
 // ============================================================================
 
 /**
- * StakeError codes 33 to 46 (v5), with the stable Rust variant name and a calm one-line user message.
+ * StakeError codes 33 to 48 (v5), with the stable Rust variant name and a calm one-line user message.
  * Codes 0 to 32 are the v2.1 table (`STAKE_ERRORS`); {@link decodeStakeErrorV5} covers all of them. Note
  * `STAKE_ERRORS[32]` still says "VERSION 18": on a v2.2 stake it pins VERSION 19 (see the PR notes).
  */
@@ -521,9 +521,11 @@ export const STAKE_ERRORS_V5: Readonly<Record<number, ErrorInfo>> = Object.freez
   41: { name: "NotSupportedOnFirstLoss", hint: "This feature is not available on a first-loss pool." },
   42: { name: "AssetAdminNotBurned", hint: "The market admin must be burned before this pool can deploy into insurance." },
   43: { name: "NothingToSync", hint: "Nothing to sync: the pool is already close to its target." },
-  44: { name: "InsuranceReadingsDiverged", hint: "The market's insurance is lent out right now; deposits and syncs wait until it is repaid." },
+  44: { name: "InsuranceReadingsDiverged", hint: "The market's insurance is lent out right now; deposits and syncs wait until it is repaid. When binding a pool: the market has unsettled positions; crank and refresh every open position in the same transaction as the bind, or bind before the market has positions." },
   45: { name: "InsuranceUnitsMismatch", hint: "The market's insurance record did not update as expected; nothing was changed." },
   46: { name: "CreatorAccountRequired", hint: "The market creator's token account is needed to return their insurance seed." },
+  47: { name: "InsuranceCustodyNotBound", hint: "The pool must hold the market's insurance authority and operator before the market admin can be burned; bind the pool first." },
+  48: { name: "MultiAssetMarketNotSupported", hint: "A staking pool can only bind a single-asset market; this market can no longer take one. Bind before a second asset can be added." },
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**
@@ -543,7 +545,7 @@ export const STAKE_ERROR_NAMES: Readonly<Record<number, string>> = Object.freeze
 }) as Readonly<Record<number, string>>;
 
 /**
- * Decode a stake error code (0..46) for a v5 program. Codes 33..46 come from {@link STAKE_ERRORS_V5}; the
+ * Decode a stake error code (0..48) for a v5 program. Codes 33..48 come from {@link STAKE_ERRORS_V5}; the
  * rest are looked up by the caller in `STAKE_ERRORS` (returned as `undefined` here).
  *
  * @param code  Custom program error code.

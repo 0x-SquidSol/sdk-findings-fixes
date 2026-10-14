@@ -289,12 +289,16 @@ describe("stake v5", () => {
     expect(() => K.decodeStakePoolV5(d)).toThrow(/version/);
     expect(() => K.decodeStakePoolV5(new Uint8Array(408))).toThrow(/too short/);
   });
-  it("errors 33..46 have the Rust names (46 CreatorAccountRequired, S1)", () => {
+  it("errors 33..48 have the Rust names (46 CreatorAccountRequired, S1; 47/48 close-out bind)", () => {
     const names = ["ConsentRequired", "DeprecatedV5", "InsuranceUnitsInvalid", "LiquidityBufferExhausted", "SyncCooldownActive", "InvalidDeployConfig", "NotProtocolAuthority", "NoPendingDeployTarget", "NotSupportedOnFirstLoss", "AssetAdminNotBurned", "NothingToSync", "InsuranceReadingsDiverged", "InsuranceUnitsMismatch"];
     names.forEach((n, i) => expect(K.decodeStakeErrorV5(33 + i)?.name).toBe(n));
     expect(K.decodeStakeErrorV5(46)?.name).toBe("CreatorAccountRequired");
     expect(K.decodeStakeErrorV5(46)?.hint).toBe("The market creator's token account is needed to return their insurance seed.");
-    expect(K.decodeStakeErrorV5(47)).toBeUndefined();
+    expect(K.decodeStakeErrorV5(44)?.hint).toMatch(/same transaction as the bind/);
+    expect(K.decodeStakeErrorV5(47)?.name).toBe("InsuranceCustodyNotBound");
+    expect(K.decodeStakeErrorV5(48)?.name).toBe("MultiAssetMarketNotSupported");
+    expect(K.decodeStakeErrorV5(48)?.hint).toMatch(/single-asset/);
+    expect(K.decodeStakeErrorV5(49)).toBeUndefined();
   });
   it("layout row sanity: standalone lengths", () => {
     expect(LAYOUT_V22.accounts.insuranceUnitsBody + 16).toBe(208);
