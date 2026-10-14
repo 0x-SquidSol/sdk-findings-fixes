@@ -64,16 +64,35 @@ export interface StaleResolveStatusV22 {
     maturesAtSlot: bigint | null;
     /** Slots still to wait until maturity at `nowSlot` (0 when matured), or null when disabled. */
     slotsRemaining: bigint | null;
+    /** The slot the prediction was evaluated at: the CLUSTER (Clock) slot, which is what the program compares. */
+    evaluatedAtSlot: bigint;
+    /** The `now_slot` the caller put in the instruction, when passed. The program ignores it (it reads the Clock), so it never changes the result. */
+    wireNowSlot: bigint | null;
+    /** True when a `wireNowSlot` was given and differs from the evaluated slot: the program will not use it. */
+    wireNowSlotIgnored: boolean;
     /** True when tag 39 would resolve the market at `nowSlot`. */
     canResolve: boolean;
-    /** The refusal code tag 39 would return (21 resolved, 19 slot behind, 27 not matured), or null. */
+    /**
+     * The refusal code tag 39 would return, or null. 21 = already resolved (EngineLockActive); 27 = not yet matured
+     * (OracleStale), including every case where the instruction's `now_slot` is zero or in the past; 19 = EngineStale,
+     * reachable ONLY when the cluster Clock slot is behind the market's recorded `current_slot` (not a user input).
+     */
     refusalCode: 21 | 19 | 27 | null;
 }
 /**
- * Predict tag 39 on a market from its account data (same checks and order as the handler).
+ * Predict tag 39 on a market from its account data (same checks and order as `handle_resolve_stale_permissionless`,
+ * percolator-prog `v16_program.rs:26833-26857`).
  *
- * @param marketData  Raw market account bytes.
- * @param nowSlot     The cluster slot to evaluate at.
+ * The program IGNORES the instruction's `now_slot`: it reads the Clock sysvar (`authenticated_slot_or_fallback`,
+ * `v16_program.rs:12903`, the wire value is only a fallback when Clock is unavailable) and compares THAT slot with the
+ * market. So a zero or past `now_slot` does not return 19; it returns 27 (OracleStale) while the market has not matured,
+ * and a far-future `now_slot` does not resolve anything early. Pass the real cluster slot as `clusterSlot`.
+ * Verified by `simulateTransaction` on devnet SOL (wire 0 / 1 / slot-1000 / slot / slot+1e6 all returned Custom 27).
+ *
+ * @param marketData     Raw market account bytes.
+ * @param clusterSlot    The cluster (Clock) slot to evaluate at, e.g. `await connection.getSlot()`.
+ * @param wireNowSlot    Optional: the `now_slot` you put in the instruction. Accepted so call sites can pass it; it has no effect
+ *                       on the result because the program ignores it.
  * @returns The status.
  * @example
  * ```ts
@@ -81,7 +100,7 @@ export interface StaleResolveStatusV22 {
  * if (st.canResolve) await sendTx(buildResolveStalePermissionlessIxV22(programId, market, slot));
  * ```
  */
-export declare function staleResolveStatusV22(marketData: Uint8Array, nowSlot: bigint): StaleResolveStatusV22;
+export declare function staleResolveStatusV22(marketData: Uint8Array, clusterSlot: bigint, wireNowSlot?: bigint | number): StaleResolveStatusV22;
 /**
  * The error context for a failed tag 39, so `parseErrorFromLogs` / `getContextualErrorHint` can say how long
  * is left instead of the generic stale-price text for 27.

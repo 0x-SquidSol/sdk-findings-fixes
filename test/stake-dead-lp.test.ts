@@ -123,7 +123,9 @@ describe("stake error copy", () => {
     expect(STAKE_ERRORS[28]).toMatch(/junior/);
     expect(STAKE_ERRORS[28]).not.toMatch(/first-ever/);
   });
-  it("error 29 describes real_lp_supply, not the single-floor rule", () => {
-    expect(STAKE_ERRORS[29]).toMatch(/real_lp_supply/);
+  it("error 29 says there are no REAL holders (the pool holds only the dead-share floor), in plain words", () => {
+    // 2026-10-14: user-facing text; the real_lp_supply detail lives in the source comment next to STAKE_ERRORS[29].
+    expect(STAKE_ERRORS[29]).toMatch(/No real LP holders yet: nobody has staked/);
+    expect(STAKE_ERRORS[29]).not.toMatch(/first-ever|single floor/);
   });
 });

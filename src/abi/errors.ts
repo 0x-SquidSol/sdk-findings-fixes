@@ -163,11 +163,15 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   },
   28: {
     name: "OracleConfTooWide",
-    hint: "Oracle confidence interval too wide. Wait for more stable market conditions.",
+    // Wrapper `OracleConfTooWide` (percolator-prog v16_program.rs:11285, :11414): the Pyth confidence interval exceeds the
+    // market's `conf_filter_bps`. Plain user text; nothing moved.
+    hint: "The price feed is too uncertain right now, so the market is not accepting this action. Nothing was changed. Wait a moment and try again.",
   },
   29: {
     name: "InvalidOracleKey",
-    hint: "Oracle account key does not match the market's configured oracle feed ID.",
+    // Wrapper `InvalidOracleKey` (percolator-prog v16_program.rs:11274, :11370, :11433): the price account (or Pyth feed id)
+    // passed with the instruction is not the one this market is configured to use. Plain user text; nothing moved.
+    hint: "The price account sent with this transaction is not the one this market uses. Nothing was changed. Refresh the page and try again; if it keeps happening, the app is out of date.",
   },
   // ── Fork LP-vault errors (30-41) ─────────────────────────────────────────────
   30: {
@@ -496,7 +500,10 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
   },
   93: {
     name: "GrowthCapacityFull",
-    hint: "New positions on this side are paused: the market's capacity is full. Reducing or closing your position is always allowed. growth-v19: a crowd-side risk-increasing fill would take the LP past its capacity N_cap = lambda * C_m / P (refused only when u > 1; u == 1 is admitted at 100% IMR), the LP's capital is 0, the price is 0, or the market's bankruptcy h-lock is latched.",
+    // Wrapper `GrowthCapacityFull` = 93 (percolator-prog v16_program.rs:1678, raised at :41601): a crowd-side
+    // risk-increasing fill would take the LP past its capacity N_cap = lambda * C_m / P, the LP's capital or the price is 0,
+    // or the market's bankruptcy h-lock is latched. The thin side, reductions and closes stay open.
+    hint: "New positions on this side are paused: the market's capacity is full. Reducing or closing your position is always allowed. You can also open on the other side, or try again later when room frees up.",
   },
   94: {
     name: "GrowthInvalidConfig",
@@ -831,6 +838,9 @@ export function getContextualErrorHint(code: number, context?: ErrorContext): st
     return "This market's price has not been stale for long enough to resolve yet. A new price update restarts the wait; try again later.";
   }
   if (code === 21 && context?.action === "resolve") return "This market is already resolved.";
+  // Tag 39 returns 19 (EngineStale) only if the cluster Clock is behind the market's recorded slot (v16_program.rs:26847); the
+  // instruction's own now_slot is ignored, so a past or zero now_slot gives 27, not 19.
+  if (code === 19 && context?.action === "resolve") return "The network clock is behind this market's last update. Wait a few seconds and try again.";
   return PERCOLATOR_ERRORS[code]?.hint;
 }
 
