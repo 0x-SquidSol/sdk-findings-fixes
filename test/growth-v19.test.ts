@@ -9,7 +9,7 @@ import {
   conservativeEquity, quoteMaxLeverage, encodeInitMarketV19, encodeInitVaultLpV19, encodeSetAssetRiskLimitsV19,
   encodeMatcherCallExtV2, encodeMatcherCallExtV3, encodeMatcherCallExtV3FromV2, encodeInitMarket,
   assetRiskLimitsAccountOffsetP1, PERCOLATOR_ERRORS, decodeError, growthMatcherCapsV3, GROWTH_PIN_MATCHER_EXT_MODE,
-  GROWTH_PIN_MAX_REQUESTED_FEE_BPS, GROWTH_PIN_LP_FLOOR_ATOMS, GROWTH_PIN_MATCHER_KIND, GROWTH_DIALS_NO_CLAMP_MAX_LAMBDA_BPS,
+  growthFlagsOk, depthTwWindowOk, GROWTH_PIN_MAX_REQUESTED_FEE_BPS, GROWTH_PIN_LP_FLOOR_ATOMS, GROWTH_PIN_MATCHER_KIND, GROWTH_DIALS_NO_CLAMP_MAX_LAMBDA_BPS,
   GROWTH_DIALS_NO_CLAMP_MAX_KINK_BPS, rGapFloorBps, usersSideOiQ, utilisationFeeBps, utilFeeMaxEffectiveBps, openingPartQ, previewGrowthOpenFee, GROWTH_UTIL_FEE_DEFAULT_BPS, assertGrowthBatchLegs, GROWTH_BATCH_MAX_LEGS, markExtV3TakerReducing,
 } from "../src/index.js";
 import type { AssetGrowthV19, InitMarketV17Args } from "../src/index.js";
@@ -73,7 +73,7 @@ function growthRecord(over: Partial<Record<string, number | bigint>> = {}): Uint
   v.setBigUint64(0, d.c as bigint, true); v.setBigUint64(8, d.slot as bigint, true); v.setUint32(16, d.lambda as number, true);
   v.setUint16(20, d.launch as number, true); v.setUint16(22, d.tier as number, true); v.setUint16(24, d.ceil as number, true);
   v.setUint16(26, d.kink as number, true); v.setUint16(28, d.gap as number, true);
-  v.setUint16(30, 11, true); v.setUint16(32, 12, true); v.setUint16(34, 13, true); v.setUint16(36, 14, true);
+  v.setUint16(30, 11, true); v.setUint16(32, 12, true); v.setUint16(34, 13, true); v.setUint16(36, 14, true); // legacy dial positions (now the depth window)
   r[38] = d.version as number; r[39] = d.flags as number; v.setUint16(40, d.util as number, true);
   return r;
 }
@@ -82,14 +82,35 @@ describe("AssetGrowthV19 decoder", () => {
   it("round-trips every field from a synthetic 1024-byte asset slot at slot+672", () => {
     const slot = new Uint8Array(1024);
     slot.fill(0xee, 0, 672); slot.fill(0xdd, 792);
-    slot.set(growthRecord({ flags: 3, util: 777 }), 672);
+    // a LEGACY record (flags 0, as the combined build 153c62fc writes it): bytes 0..8 are the retired c_launch, read as "no volatility data"
+    slot.set(growthRecord({ flags: 0, util: 777 }), 672);
     const g = decodeAssetGrowthFromSlotV19(slot) as AssetGrowthV19;
-    expect(g).toEqual({
-      cLaunchAtoms: 5_000_000_000n, ceilSlot: 123_456_789n, lambdaBps: 10_000, lLaunchX100: 550, lTierX100: 1_000, ceilX100: 550,
-      kinkBps: 5_000, rGapBps: 500, allocAlphaBps: 11, allocBufferBps: 12, cushionTargetBps: 13, cushionShareBps: 14, version: 1, flags: 3,
-      utilFeeMaxBps: 777,
+    const common = {
+      ceilSlot: 123_456_789n, lambdaBps: 10_000, lLaunchX100: 550, lTierX100: 1_000, ceilX100: 550,
+      kinkBps: 5_000, rGapBps: 500, version: 1, utilFeeMaxBps: 777, rentKinkBps: 0, rentNCapQ: 0n,
       depthSource: 0, depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthEver: false, depthPrevReal: false, attestedMaxTier: 0, collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseSlot64: 0, depthLastGoodE6: 0n, depthLastGoodSlot: 0n, tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0], // v2.2 G8: zero in a growth-1 record
+    };
+    expect(g).toEqual({
+      ...common, flags: 0, cLaunchAtoms: 5_000_000_000n, r3Layout: false, volHasData: false, volVarX100: 0, rentStamp64: 0,
+      // the test record writes 11..14 at 30..38 (the old dial positions): decoded as the window bytes, bucket 0 (the validator would refuse
+      // a non-zero window without history: growthFlagsOk / depthTwWindowOk)
+      depthTw: { curTokens: 11 | (12 << 16), prevTokens: 13 | (14 << 16), bucketP1: 0 },
     });
+    // a CONTROLLER record (flags 3): 0..4 variance, 4..8 rent stamp, 30..38 + 118..120 the window
+    const r3 = growthRecord({ flags: 3, util: 777, c: (101n << 32n) | 2_500n });
+    const w = new DataView(r3.buffer);
+    w.setUint32(30, 400, true); w.setUint32(34, 0xffff_ffff, true); w.setUint16(118, 7, true);
+    const h = decodeAssetGrowthRecordV19(r3) as AssetGrowthV19;
+    expect({ ...h }).toEqual({
+      ...common, flags: 3, cLaunchAtoms: 0n, r3Layout: true, volHasData: true, volVarX100: 2_500, rentStamp64: 101,
+      depthTw: { curTokens: 400, prevTokens: 0xffff_ffff, bucketP1: 7 },
+    });
+    expect([growthFlagsOk(0), growthFlagsOk(1), growthFlagsOk(3), growthFlagsOk(2), growthFlagsOk(4)]).toEqual([true, true, true, false, false]);
+    expect(depthTwWindowOk(h.depthTw)).toBe(true);
+    expect(depthTwWindowOk(g.depthTw)).toBe(false);
+    // bit 0 set but no data (migrated by a rent stamp only): variance readable, volHasData false
+    const r1 = decodeAssetGrowthRecordV19(growthRecord({ flags: 1, c: 5n << 32n })) as AssetGrowthV19;
+    expect([r1.r3Layout, r1.volHasData, r1.volVarX100, r1.rentStamp64, r1.cLaunchAtoms]).toEqual([true, false, 0, 5, 0n]);
   });
   it("version 0 -> null (growth OFF), even with junk in other fields", () => {
     expect(decodeAssetGrowthRecordV19(growthRecord({ version: 0 }))).toBeNull();

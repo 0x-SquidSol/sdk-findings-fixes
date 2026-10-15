@@ -12,6 +12,7 @@ import * as root from "../src/index.js";
 import {
   IX_TAG_P3,
   ACCOUNTS_INIT_VAULT_LP_P3,
+  ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3,
   ACCOUNTS_VAULT_LP_SET_MATCHER_P3,
   ACCOUNTS_DEPOSIT_JUNIOR_TRANCHE_P3,
   ACCOUNTS_WITHDRAW_JUNIOR_TRANCHE_P3,
@@ -221,13 +222,24 @@ describe("P3 account lists and builders (verified against the handler bodies)", 
       ACCOUNTS_WITHDRAW_JUNIOR_TRANCHE_P3, ACCOUNTS_VAULT_LP_RECALL_P3, ACCOUNTS_SET_VAULT_LP_RISK_P3,
       ACCOUNTS_VAULT_LP_CONVERT_PNL_P3, ACCOUNTS_VAULT_LP_SETTLE_RESOLVED_P3, ACCOUNTS_VAULT_LP_RELEASE_SURPLUS_P3,
     ].map((a) => a.length)).toEqual([11, 8, 7, 11, 8, 3, 4, 12, 7]);
+    expect(ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3.length).toBe(12);
   });
   const market = pk(), lp = pk();
   const m = { programId: W, market, registryDomain: 1, lpPortfolio: lp };
-  it("tag 94 (07a1d0eb): 11 accounts, marketauth only; [8] canonical matcher, [9] ctx (w), [10] delegate derived with the REGISTRY", () => {
+  it("tag 94 (07a1d0eb + controller 666df893): [0..10] marketauth only; [8] canonical matcher, [9] ctx (w), [10] delegate derived with the REGISTRY; [11] ext PDA by default", () => {
     const auth = pk(), ctx = pk();
     const a = buildInitVaultLpIxP3(m, auth, 2_000, ctx);
-    expect(a.keys).toHaveLength(11);
+    // controller round: the optional [11] = ["vault_lp_ext", market] (w) is included by default (the bind creates the ext, cushion ON)
+    expect(a.keys).toHaveLength(12);
+    expect(a.keys[11]).toEqual({ pubkey: PublicKey.findProgramAddressSync([Buffer.from("vault_lp_ext"), market.toBytes()], W)[0], isSigner: false, isWritable: true });
+    const bare = buildInitVaultLpIxP3(m, auth, 2_000, ctx, undefined, { withVaultLpExt: false });
+    expect(bare.keys).toHaveLength(11);
+    expect(bare.keys.map((k) => k.pubkey.toBase58())).toEqual(a.keys.slice(0, 11).map((k) => k.pubkey.toBase58()));
+    expect(Buffer.from(a.data).toString("hex")).toBe("5ed007"); // data unchanged: tag 94 + junior floor 2000
+    // a growth bind passes its own tag-94 data; any other tag is refused client-side
+    const v19 = Uint8Array.from([0x5e, 0xd0, 0x07, 0x26, 0x02]);
+    expect(Buffer.from(buildInitVaultLpIxP3(m, auth, 2_000, ctx, undefined, { data: v19 }).data).toString("hex")).toBe("5ed0072602");
+    expect(() => buildInitVaultLpIxP3(m, auth, 2_000, ctx, undefined, { data: Uint8Array.from([0x5d]) })).toThrow(/tag 94/);
     expect(a.keys[0]).toEqual({ pubkey: auth, isSigner: true, isWritable: true });
     expect(a.keys[2].pubkey.equals(deriveLpVaultRegistry(W, market)[0])).toBe(true);
     expect(a.keys[3].pubkey.equals(deriveVaultLpStateP3(W, market)[0])).toBe(true);
@@ -238,9 +250,9 @@ describe("P3 account lists and builders (verified against the handler bodies)", 
     expect(a.keys[9]).toEqual({ pubkey: ctx, isSigner: false, isWritable: true });
     const [reg] = deriveLpVaultRegistry(W, market);
     expect(a.keys[10]).toEqual({ pubkey: deriveMatcherDelegate(W, market, lp, reg, matcher, ctx)[0], isSigner: false, isWritable: false });
-    // path B stays gone: a stray extra argument adds nothing, the tail constant is not exported
+    // path B stays gone: a stray extra argument adds nothing beyond the default ext, the tail constant is not exported
     const loose = buildInitVaultLpIxP3 as unknown as (...args: unknown[]) => TransactionInstruction;
-    expect(loose(m, auth, 2_000, ctx, matcher, pk()).keys).toHaveLength(11);
+    expect(loose(m, auth, 2_000, ctx, matcher, {}, pk()).keys).toHaveLength(12);
     expect((root as Record<string, unknown>).ACCOUNTS_INIT_VAULT_LP_PATH_B_TAIL_P3).toBeUndefined();
     expect(a.keys.some((k) => k.pubkey.equals(deriveProgramDataAddressP3(W)[0]))).toBe(false);
   });

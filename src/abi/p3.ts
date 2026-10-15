@@ -364,6 +364,16 @@ export const ACCOUNTS_INIT_VAULT_LP_P3: readonly AccountSpec[] = [
   { name: "matcherCtx", signer: false, writable: true },
   { name: "matcherDelegate", signer: false, writable: false },
 ] as const;
+/**
+ * Tag 94 with the controller-round OPTIONAL account `[11]` = the market's `VaultLpExtV19` PDA (`["vault_lp_ext", market]`, writable;
+ * percolator-prog `666df893`, `init_vault_lp_pin_ext_if_passed`). When passed, the ext is created at the bind with the protocol defaults (alpha 50%,
+ * buffer 30%, cushion ON 20% / 50%), the marketauth paying rent through `[5]`, so the fee cushion forms from the first harvest. The program only
+ * acts on it when its key IS the canonical PDA (any other trailing account is ignored); a build without the controller round ignores it too.
+ */
+export const ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3: readonly AccountSpec[] = [
+  ...ACCOUNTS_INIT_VAULT_LP_P3,
+  { name: "vaultLpExt", signer: false, writable: true },
+] as const;
 /** Tag 95: 8 accounts. `matcherDelegate` = deriveMatcherDelegate(wrapper, market, lp, registry, matcherProgram, matcherCtx). */
 export const ACCOUNTS_VAULT_LP_SET_MATCHER_P3: readonly AccountSpec[] = [
   { name: "upgradeAuthority", signer: true, writable: false },

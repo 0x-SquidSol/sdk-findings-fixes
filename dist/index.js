@@ -5621,6 +5621,10 @@ var ACCOUNTS_INIT_VAULT_LP_P3 = [
   { name: "matcherCtx", signer: false, writable: true },
   { name: "matcherDelegate", signer: false, writable: false }
 ];
+var ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3 = [
+  ...ACCOUNTS_INIT_VAULT_LP_P3,
+  { name: "vaultLpExt", signer: false, writable: true }
+];
 var ACCOUNTS_VAULT_LP_SET_MATCHER_P3 = [
   { name: "upgradeAuthority", signer: true, writable: false },
   { name: "programData", signer: false, writable: false },
@@ -6187,7 +6191,8 @@ var ASSET_GROWTH_LEN = 120;
 var ASSET_GROWTH_VERSION_FIELD_OFF = 38;
 var ASSET_WRAPPER_SLOT_LEN = 1024;
 var ASSET_GROWTH_FIELD_OFF = Object.freeze({
-  cLaunchAtoms: 0,
+  volVarX100: 0,
+  rentStamp64: 4,
   ceilSlot: 8,
   lambdaBps: 16,
   lLaunchX100: 20,
@@ -6195,14 +6200,19 @@ var ASSET_GROWTH_FIELD_OFF = Object.freeze({
   ceilX100: 24,
   kinkBps: 26,
   rGapBps: 28,
-  allocAlphaBps: 30,
-  allocBufferBps: 32,
-  cushionTargetBps: 34,
-  cushionShareBps: 36,
+  depthTwCur: 30,
+  depthTwPrev: 34,
   version: 38,
   flags: 39,
   utilFeeMaxBps: 40,
   reserved: 42
+});
+var ASSET_GROWTH_LEGACY_FIELD_OFF = Object.freeze({
+  cLaunchAtoms: 0,
+  allocAlphaBps: 30,
+  allocBufferBps: 32,
+  cushionTargetBps: 34,
+  cushionShareBps: 36
 });
 var ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({
   depthSource: 44,
@@ -6215,7 +6225,8 @@ var ASSET_GROWTH_DEPTH_FIELD_OFF = Object.freeze({
   depthLastGoodSlot: 88,
   tierThresholdUsd: 96,
   tierLeverageX100: 108,
-  depthRiseSlot64: 114
+  depthRiseSlot64: 114,
+  depthTwBucket: 118
 });
 var GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
 var GROWTH_UTIL_FEE_HARD_MAX_BPS = 2e3;
@@ -6248,8 +6259,17 @@ function decodeAssetGrowthRecordV19(rec) {
   const version = rec[F.version];
   if (version === 0) return null;
   const v = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
+  const flags = rec[F.flags];
+  const r3 = (flags & GROWTH_FLAG_R3_LAYOUT) !== 0;
   return {
-    cLaunchAtoms: v.getBigUint64(F.cLaunchAtoms, true),
+    cLaunchAtoms: r3 ? 0n : v.getBigUint64(ASSET_GROWTH_LEGACY_FIELD_OFF.cLaunchAtoms, true),
+    r3Layout: r3,
+    volHasData: (flags & GROWTH_FLAG_VOL_DATA) !== 0,
+    volVarX100: r3 ? v.getUint32(F.volVarX100, true) : 0,
+    rentStamp64: r3 ? v.getUint32(F.rentStamp64, true) : 0,
+    depthTw: { curTokens: v.getUint32(F.depthTwCur, true), prevTokens: v.getUint32(F.depthTwPrev, true), bucketP1: v.getUint16(D.depthTwBucket, true) },
+    rentKinkBps: v.getUint16(42, true),
+    rentNCapQ: v.getBigUint64(48, true),
     ceilSlot: v.getBigUint64(F.ceilSlot, true),
     lambdaBps: v.getUint32(F.lambdaBps, true),
     lLaunchX100: v.getUint16(F.lLaunchX100, true),
@@ -6257,12 +6277,8 @@ function decodeAssetGrowthRecordV19(rec) {
     ceilX100: v.getUint16(F.ceilX100, true),
     kinkBps: v.getUint16(F.kinkBps, true),
     rGapBps: v.getUint16(F.rGapBps, true),
-    allocAlphaBps: v.getUint16(F.allocAlphaBps, true),
-    allocBufferBps: v.getUint16(F.allocBufferBps, true),
-    cushionTargetBps: v.getUint16(F.cushionTargetBps, true),
-    cushionShareBps: v.getUint16(F.cushionShareBps, true),
     version,
-    flags: rec[F.flags],
+    flags,
     utilFeeMaxBps: v.getUint16(F.utilFeeMaxBps, true),
     depthSource: rec[D.depthSource] & DEPTH_SOURCE_MASK,
     depthEver: (rec[D.depthSource] & DEPTH_EVER) !== 0,
@@ -6406,7 +6422,7 @@ function freshDepthE6(depthE6, depthPrevE6, depthSlot, depthSourceByte, nowSlot)
   if ((depthSourceByte & DEPTH_PREV_REAL) === 0) return null;
   return depthE6 < depthPrevE6 ? depthE6 : depthPrevE6;
 }
-function depthPushUpdate(st, source, newDepthE6, nowSlot, seedE6) {
+function depthPushUpdate(st, source, newDepthE6, nowSlot, seedE6, unitAtoms = GROWTH_USD_ATOMS) {
   let src = source;
   let nd = newDepthE6;
   if (src === DEPTH_SOURCE.None || src > DEPTH_SOURCE.OnChainPool) {
@@ -6438,13 +6454,18 @@ function depthPushUpdate(st, source, newDepthE6, nowSlot, seedE6) {
     s = src;
     prevReal = oldSource !== DEPTH_SOURCE.None ? DEPTH_PREV_REAL : 0;
   }
-  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseSlot64: st.riseSlot64 };
+  const tw0 = st.tw ?? DEPTH_TW_EMPTY;
+  const out = { depthE6: d, depthSlot: slot, depthPrevE6: prev, depthSource: s | prevReal | st.depthSource & DEPTH_EVER, lastGoodE6: st.lastGoodE6, lastGoodSlot: st.lastGoodSlot, riseSlot64: st.riseSlot64, tw: tw0 };
   const f = freshDepthE6(d, prev, slot, out.depthSource, nowSlot);
   if (f !== null) {
-    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.riseSlot64, f, slot, seedE6);
+    const tw = depthTwUpdate(tw0, depthTokensFloor(f, unitAtoms), slot);
+    const wm = depthTwMinAtoms(tw, unitAtoms) ?? 0n;
+    const w2 = wm < f ? wm : f;
+    const lg = depthRateLimited(depthEver(st.depthSource), st.lastGoodE6, st.lastGoodSlot, st.riseSlot64, w2, depthTwFull(tw), slot, seedE6);
+    out.tw = tw;
     out.depthSource |= DEPTH_EVER;
     out.lastGoodE6 = lg.lastGoodE6;
-    out.lastGoodSlot = slot;
+    out.lastGoodSlot = lg.lastGoodSlot;
     out.riseSlot64 = lg.riseSlot64;
   }
   return out;
@@ -6453,9 +6474,12 @@ function stickyDepthE6(lastGoodE6, lastGoodSlot, nowSlot) {
   const k = (nowSlot > lastGoodSlot ? nowSlot - lastGoodSlot : 0n) / DEPTH_STICKY_EPOCH_SLOTS;
   return k >= 64n ? 0n : lastGoodE6 >> k;
 }
-function capDepthE6(depthSourceByte, fresh, lastGoodE6, lastGoodSlot, nowSlot) {
+function capDepthE6(depthSourceByte, fresh, lastGoodE6, lastGoodSlot, nowSlot, twMinE6 = null) {
   if (fresh !== null) return fresh;
-  if (depthEver(depthSourceByte)) return stickyDepthE6(lastGoodE6, lastGoodSlot, nowSlot);
+  if (depthEver(depthSourceByte)) {
+    const st = stickyDepthE6(lastGoodE6, lastGoodSlot, nowSlot);
+    return twMinE6 !== null && twMinE6 < st ? twMinE6 : st;
+  }
   return null;
 }
 var GROWTH_MAX_COLLATERAL_DECIMALS = 12;
@@ -6478,20 +6502,55 @@ function depthRiseWindowOpen(riseSlot64, slot) {
   const last = BigInt(riseSlot64) * DEPTH_RISE_STAMP_SLOTS + (DEPTH_RISE_STAMP_SLOTS - 1n);
   return riseSlot64 !== 4294967295 && slot >= last + DEPTH_STICKY_EPOCH_SLOTS;
 }
-function depthRateLimited(ever, lastGoodE6, riseSlot64, r2, slot, seedE6) {
+function depthRateLimited(ever, lastGoodE6, lastGoodSlot, riseSlot64, w2, riseOk, slot, seedE6) {
   const e = depthRiseStamp(slot);
-  if (!ever) return { lastGoodE6: r2 < seedE6 ? r2 : seedE6, riseSlot64: e };
-  if (r2 <= lastGoodE6) return { lastGoodE6: r2, riseSlot64 };
-  if (depthRiseWindowOpen(riseSlot64, slot)) {
-    const doubled = lastGoodE6 * 2n > U64_MAX2 ? U64_MAX2 : lastGoodE6 * 2n;
-    const floor = seedE6 / DEPTH_BOOTSTRAP_DIV;
+  const floor = seedE6 / DEPTH_BOOTSTRAP_DIV;
+  if (!ever) return { lastGoodE6: w2 < floor ? w2 : floor, riseSlot64: e, lastGoodSlot: slot };
+  if (w2 === 0n) return { lastGoodE6, riseSlot64, lastGoodSlot };
+  const base = stickyDepthE6(lastGoodE6, lastGoodSlot, slot);
+  if (w2 <= base) return { lastGoodE6: w2, riseSlot64, lastGoodSlot: slot };
+  if (riseOk && depthRiseWindowOpen(riseSlot64, slot)) {
+    const doubled = base * 2n > U64_MAX2 ? U64_MAX2 : base * 2n;
     const up = doubled > floor ? doubled : floor;
-    return { lastGoodE6: r2 < up ? r2 : up, riseSlot64: e };
+    return { lastGoodE6: w2 < up ? w2 : up, riseSlot64: e, lastGoodSlot: slot };
   }
-  return { lastGoodE6, riseSlot64 };
+  return { lastGoodE6: base, riseSlot64, lastGoodSlot: slot };
 }
-function usableDepthE6(fresh, lastGoodE6) {
-  return fresh === null ? null : fresh < lastGoodE6 ? fresh : lastGoodE6;
+function usableDepthE6(fresh, lastGoodE6, twMinE6 = null) {
+  if (fresh === null) return null;
+  const m = fresh < lastGoodE6 ? fresh : lastGoodE6;
+  return twMinE6 !== null && twMinE6 < m ? twMinE6 : m;
+}
+var DEPTH_TW_BUCKET_SLOTS = 750n;
+var DEPTH_TW_BUCKET_RING = 65535n;
+var DEPTH_TW_ABSENT = 4294967295;
+var DEPTH_TW_EMPTY = Object.freeze({ curTokens: 0, prevTokens: 0, bucketP1: 0 });
+function depthTwBucketP1(slot) {
+  return Number(slot / DEPTH_TW_BUCKET_SLOTS % DEPTH_TW_BUCKET_RING) + 1;
+}
+function depthTokensFloor(depthAtoms, unitAtoms) {
+  if (unitAtoms === 0n) return 0;
+  const t = depthAtoms / unitAtoms;
+  return t >= BigInt(DEPTH_TW_ABSENT) ? DEPTH_TW_ABSENT - 1 : Number(t);
+}
+function depthTwUpdate(w2, rTokens, slot) {
+  const b = depthTwBucketP1(slot);
+  if (w2.bucketP1 !== 0 && b === w2.bucketP1) return { ...w2, curTokens: rTokens < w2.curTokens ? rTokens : w2.curTokens };
+  const next = w2.bucketP1 === 0 ? 0 : BigInt(w2.bucketP1) === DEPTH_TW_BUCKET_RING ? 1 : w2.bucketP1 + 1;
+  const prev = w2.bucketP1 !== 0 && b === next ? w2.curTokens : DEPTH_TW_ABSENT;
+  return { curTokens: rTokens, prevTokens: prev, bucketP1: b };
+}
+function depthTwMinAtoms(w2, unitAtoms) {
+  if (w2.bucketP1 === 0) return null;
+  const m = BigInt(w2.prevTokens < w2.curTokens ? w2.prevTokens : w2.curTokens) * unitAtoms;
+  return m > U64_MAX2 ? U64_MAX2 : m;
+}
+function depthTwWindowOk(w2) {
+  if (w2.bucketP1 === 0) return w2.curTokens === 0 && w2.prevTokens === 0;
+  return w2.curTokens !== DEPTH_TW_ABSENT && BigInt(w2.bucketP1) <= DEPTH_TW_BUCKET_RING;
+}
+function depthTwFull(w2) {
+  return w2.bucketP1 !== 0 && w2.prevTokens !== DEPTH_TW_ABSENT;
 }
 function rentSnapshotNCapQ(nCapQ2, depthCapZero) {
   if (nCapQ2 === 0n && depthCapZero) return 1n;
@@ -6670,10 +6729,16 @@ function depthCapQ(tier, capDepth, priceE6, posScale = GROWTH_POS_SCALE) {
 function nCapG8Q(i) {
   const posScale = i.posScale ?? GROWTH_POS_SCALE;
   if (!i.clamp) return nCapQ(i.cM, i.lambdaBps, i.priceE6, posScale);
-  const n = nCapQ(i.cM, lambdaEffBps(i.lambdaBps, i.tier), i.priceE6, posScale);
+  const kappa = i.dials?.kappaBps ?? kappaDepthBps(i.tier);
+  const lamD = i.dials?.lambdaDepthBps ?? lambdaDepthBps(i.tier);
+  const n = nCapQ(i.cM, Math.min(i.lambdaBps, lamD), i.priceE6, posScale);
   if (n === null) return null;
-  const d = depthCapQ(i.tier, i.capDepth, i.priceE6, posScale);
+  const d = depthCapQKappa(kappa, i.capDepth, i.priceE6, posScale);
   return n < d ? n : d;
+}
+function depthCapQKappa(kappaBps, capDepth, priceE6, posScale = GROWTH_POS_SCALE) {
+  if (capDepth === null) return U128_MAX2;
+  return nCapQ(capDepth * BigInt(kappaBps) / GROWTH_BPS, 1e4, priceE6, posScale) ?? 0n;
 }
 function growthMatcherCapsG8(i) {
   const posScale = i.posScale ?? GROWTH_POS_SCALE;
@@ -6686,8 +6751,9 @@ function growthMatcherCapsG8(i) {
     return { inventoryCapQ: cap2, liquidityNotionalE6: liquidityNotionalE6(i.cM, lam2) ?? 0n };
   };
   if (!i.clamp) return g1(i.lambdaBps);
-  const lam = lambdaEffBps(i.lambdaBps, i.tier);
-  const nd = depthNotionalCapE6(i.tier, i.capDepth);
+  const kappa = i.dials?.kappaBps ?? kappaDepthBps(i.tier);
+  const lam = Math.min(i.lambdaBps, i.dials?.lambdaDepthBps ?? lambdaDepthBps(i.tier));
+  const nd = i.capDepth === null ? null : i.capDepth * BigInt(kappa) / GROWTH_BPS;
   if (nd === null) return g1(lam);
   if (i.hlockActive) return { inventoryCapQ: 0n, liquidityNotionalE6: 0n };
   let cap = nCapG8Q(i) ?? 0n;
@@ -6697,6 +6763,140 @@ function growthMatcherCapsG8(i) {
   const ld = nd * GROWTH_DEPTH_MULT;
   const liqDepth = ld > U128_MAX2 ? U128_MAX2 : ld;
   return { inventoryCapQ: cap, liquidityNotionalE6: liqCapital < liqDepth ? liqCapital : liqDepth };
+}
+var TIER_RAMP_DIV = 4n;
+var KAPPA_TABLE_BPS = Object.freeze([5000n, 10000n, 10000n, 20000n]);
+var LAMBDA_DEPTH_TABLE_BPS = Object.freeze([10000n, 10000n, 20000n, 30000n]);
+function tierRampU64(d, th, table) {
+  const i = depthTierFor(d, th);
+  if (i === 0) return table[0];
+  const loX = th[i - 1];
+  const next = i < 3 ? th[i] : U64_MAX2;
+  const ext = loX + loX / TIER_RAMP_DIV;
+  const rampEnd = (ext > U64_MAX2 ? U64_MAX2 : ext) < next ? ext > U64_MAX2 ? U64_MAX2 : ext : next;
+  const lo = table[i - 1];
+  const hi = table[i];
+  if (d >= rampEnd || rampEnd <= loX || hi <= lo) return hi;
+  return lo + (hi - lo) * (d - loX) / (rampEnd - loX);
+}
+function venueDepthCapped(effectiveDepthE62, depthSourceByte, thresholdsE6, attestedMaxTierStored) {
+  const src = depthSourceOf(depthSourceByte);
+  if (src === DEPTH_SOURCE.OnChainPool) return effectiveDepthE62;
+  if (src === DEPTH_SOURCE.Attested) {
+    const m = attestedMaxTierEff(attestedMaxTierStored);
+    if (m >= GROWTH_MAX_TIER) return effectiveDepthE62;
+    const t = thresholdsE6[m];
+    const cap = t > 0n ? t - 1n : 0n;
+    return effectiveDepthE62 < cap ? effectiveDepthE62 : cap;
+  }
+  return 0n;
+}
+function smoothDials(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
+  const m2 = (t) => {
+    const a = tierRampU64(venueDepthE6, thresholdsE6, t);
+    const b = tierRampU64(bookDepthE62, thresholdsE6, t);
+    return a < b ? a : b;
+  };
+  const lt = [BigInt(lTableX1002[0]), BigInt(lTableX1002[1]), BigInt(lTableX1002[2]), BigInt(lTableX1002[3])];
+  return { lSignalX100: Number(m2(lt)), kappaBps: Number(m2(KAPPA_TABLE_BPS)), lambdaDepthBps: Number(m2(LAMBDA_DEPTH_TABLE_BPS)) };
+}
+var VOL_EWMA_SHIFT = 4;
+var VOL_Z = 3n;
+var VOL_MOVE_CAP_BPS = 10000n;
+var VOL_VAR_SEED_X100 = 2500;
+var GROWTH_FLAG_R3_LAYOUT = 1;
+var GROWTH_FLAG_VOL_DATA = 2;
+function growthFlagsOk(flags) {
+  return (flags & ~(GROWTH_FLAG_R3_LAYOUT | GROWTH_FLAG_VOL_DATA) & 255) === 0 && ((flags & GROWTH_FLAG_VOL_DATA) === 0 || (flags & GROWTH_FLAG_R3_LAYOUT) !== 0);
+}
+function volSampleX100(prevMarkE6, markE6, dtSlots) {
+  if (prevMarkE6 === 0n || dtSlots === 0n) return null;
+  const diff = markE6 > prevMarkE6 ? markE6 - prevMarkE6 : prevMarkE6 - markE6;
+  let mv = divCeil(diff * GROWTH_BPS, prevMarkE6);
+  if (mv > VOL_MOVE_CAP_BPS) mv = VOL_MOVE_CAP_BPS;
+  return divCeil(mv * mv * 100n, dtSlots);
+}
+function volUpdateX100(varX100, hasData, sampleX100) {
+  const sample = sampleX100 > 0xffffffffn ? 4294967295 : Number(sampleX100);
+  if (!hasData) return sample > VOL_VAR_SEED_X100 ? sample : VOL_VAR_SEED_X100;
+  if (sample >= varX100) {
+    const v = varX100 + Math.ceil((sample - varX100) / (1 << VOL_EWMA_SHIFT));
+    return v > 4294967295 ? 4294967295 : v;
+  }
+  return varX100 - Math.floor((varX100 - sample) / (1 << VOL_EWMA_SHIFT));
+}
+function isqrtCeil(x) {
+  if (x < 0n) throw new Error("isqrtCeil: negative input");
+  if (x < 2n) return x;
+  let r2 = x;
+  let y = x / 2n + (x & 1n);
+  while (y < r2) {
+    r2 = y;
+    y = (r2 + x / r2) / 2n;
+  }
+  return r2 * r2 === x ? r2 : r2 + 1n;
+}
+function sigmaHBps(varX100, hSlots) {
+  const s = isqrtCeil(divCeil(BigInt(varX100) * hSlots, 100n));
+  return s > U64_MAX2 ? U64_MAX2 : s;
+}
+function lVolX100(engineImrBps, sigmaHBps_, liqFeeBps) {
+  let need = VOL_Z * sigmaHBps_ + liqFeeBps;
+  if (need > U64_MAX2) need = U64_MAX2;
+  const den = need > engineImrBps ? need : engineImrBps;
+  if (den === 0n) return 65535;
+  const l = 1000000n / den;
+  return l > 0xffffn ? 65535 : Number(l);
+}
+function lSignalWithVol(lSignalX100, vol, launchX100) {
+  const v = vol ?? launchX100;
+  return v < lSignalX100 ? v : lSignalX100;
+}
+function growthLVolX100(g, cfg) {
+  if (!g.volHasData) return null;
+  let h = cfg.bandMaxEpochSlots * 2n;
+  if (h > U64_MAX2) h = U64_MAX2;
+  return lVolX100(cfg.engineImrBps, sigmaHBps(g.volVarX100, h), cfg.liquidationFeeBps);
+}
+var STRESS_NONE = 0;
+var STRESS_DRAW = 1;
+var STRESS_ADL = 2;
+var STRESS_HLOCK = 3;
+function realAdl(modeLong, modeShort) {
+  return modeLong !== 0 || modeShort !== 0;
+}
+function stressLevel(drawOutstanding, realAdl_, hlock) {
+  return hlock ? STRESS_HLOCK : realAdl_ ? STRESS_ADL : drawOutstanding ? STRESS_DRAW : STRESS_NONE;
+}
+function stressCapX100(stress, tier, table) {
+  if (stress === STRESS_NONE) return 65535;
+  if (stress >= STRESS_HLOCK) return table[0];
+  const t = tier > GROWTH_MAX_TIER ? GROWTH_MAX_TIER : tier;
+  return table[Math.max(t - stress, 0)];
+}
+function stressOf(stress) {
+  return typeof stress === "boolean" ? stress ? STRESS_HLOCK : STRESS_NONE : stress;
+}
+var RENT_SNAPSHOT_FALL_SLOTS = 900n;
+function rentStamp64Of(slot) {
+  const e = depthRiseStamp(slot);
+  return e === 4294967295 ? e : e + 1;
+}
+function rentSnapshotSmooth(prev, stamp64, next, nowSlot) {
+  if (prev === 0n || next >= prev) return { snapshot: next, stamp64 };
+  let k;
+  if (stamp64 === 0) k = 1n;
+  else {
+    const last = BigInt(stamp64 - 1) * DEPTH_RISE_STAMP_SLOTS + (DEPTH_RISE_STAMP_SLOTS - 1n);
+    k = (nowSlot > last ? nowSlot - last : 0n) / RENT_SNAPSHOT_FALL_SLOTS;
+  }
+  if (k === 0n) return { snapshot: prev, stamp64 };
+  const floor = k >= 64n ? 0n : prev >> k;
+  return { snapshot: next > floor ? next : floor, stamp64: rentStamp64Of(nowSlot) };
+}
+function bandMinLegFitsDepth(bandMinLegNotional, capDepth) {
+  if (capDepth === null) return true;
+  return bandMinLegNotional <= capDepth * KAPPA_TABLE_BPS[0] / GROWTH_BPS;
 }
 function bandRGapBps(bandBps) {
   const d = big2("bandBps", bandBps);
@@ -6714,17 +6914,19 @@ function clampEnforced(bandBps, rGapBps) {
 function graduationOn(clamp, bandBps, tier) {
   return clamp && big2("bandBps", bandBps) !== 0n && tier >= 1;
 }
-function targetCeilingX100(graduation, forceDown, lLaunchX100, lTierX100, lTableTierX100) {
+function targetCeilingX100(graduation, stress, lLaunchX100, lTierX100, lSignalX100, stressCapX100_ = 65535) {
   const launch = Math.min(lLaunchX100, lTierX100);
-  if (!graduation || forceDown) return launch;
-  return Math.min(Math.max(lTableTierX100, launch), lTierX100);
+  const st = stressOf(stress);
+  if (!graduation || st >= STRESS_HLOCK) return launch;
+  const sig = Math.min(lSignalX100, stressCapX100_);
+  return Math.min(Math.max(sig, launch), lTierX100);
 }
 function ceilingInForceX100(clamp, storedCeilX100, targetX100, lLaunchX100, lTierX100) {
   if (!clamp) return Math.min(lLaunchX100, lTierX100);
   return Math.min(storedCeilX100, targetX100);
 }
-function ratchetCeilingX100(prevCeilX100, prevSlot, targetX100, floorX100, forceDown, nowSlot) {
-  const target = forceDown && floorX100 < targetX100 ? floorX100 : targetX100;
+function ratchetCeilingX100(prevCeilX100, prevSlot, targetX100, floorX100, stress, nowSlot) {
+  const target = stressOf(stress) >= STRESS_HLOCK && floorX100 < targetX100 ? floorX100 : targetX100;
   if (target === prevCeilX100) return { ceilX100: prevCeilX100, ceilSlot: prevSlot };
   if (target < prevCeilX100) return { ceilX100: target, ceilSlot: nowSlot };
   if (nowSlot >= (prevSlot + GROWTH_RATCHET_EPOCH_SLOTS > U64_MAX2 ? U64_MAX2 : prevSlot + GROWTH_RATCHET_EPOCH_SLOTS)) {
@@ -6737,20 +6939,17 @@ var GROWTH_MIN_C_LAUNCH_ATOMS = 1000000000n;
 function cLaunchAtomsFor(cM) {
   return cM > GROWTH_MIN_C_LAUNCH_ATOMS ? cM : GROWTH_MIN_C_LAUNCH_ATOMS;
 }
+function writerStress(i) {
+  return i.stress ?? (i.forceDown ? STRESS_HLOCK : STRESS_NONE);
+}
 function graduationRatchet(i) {
   const launch = Math.min(i.lLaunchX100, i.lTierX100);
-  if (i.cLaunchAtoms === 0n) {
-    const cl = i.cM > 0n ? cLaunchAtomsFor(i.cM) : 0n;
-    const c64 = cl > U64_MAX2 ? U64_MAX2 : cl;
-    const hold = Math.min(launch, i.prevCeilX100);
-    const r2 = ratchetCeilingX100(i.prevCeilX100, i.prevSlot, hold, launch, i.forceDown, i.nowSlot);
-    return { ...r2, cLaunchAtoms: c64 };
-  }
-  const target = targetCeilingX100(i.graduation, i.forceDown, i.lLaunchX100, i.lTierX100, i.lTableTierX100);
-  return { ...ratchetCeilingX100(i.prevCeilX100, i.prevSlot, target, launch, i.forceDown, i.nowSlot), cLaunchAtoms: i.cLaunchAtoms };
+  const st = writerStress(i);
+  const target = targetCeilingX100(i.graduation, st, i.lLaunchX100, i.lTierX100, i.lTableTierX100, i.stressCapX100 ?? 65535);
+  return ratchetCeilingX100(i.prevCeilX100, i.prevSlot, target, launch, st, i.nowSlot);
 }
 function graduationFallOnly(i) {
-  const upper = targetCeilingX100(i.graduation, i.forceDown, i.lLaunchX100, i.lTierX100, i.lTableTierX100);
+  const upper = targetCeilingX100(i.graduation, writerStress(i), i.lLaunchX100, i.lTierX100, i.lTableTierX100, i.stressCapX100 ?? 65535);
   return upper < i.prevCeilX100 ? { ceilX100: upper, ceilSlot: i.nowSlot } : { ceilX100: i.prevCeilX100, ceilSlot: i.prevSlot };
 }
 function slotsToMinutes(slots) {
@@ -6761,7 +6960,8 @@ function depthRateEtaSlots(ever, lastGood, riseSlot64, fresh, threshold, nowSlot
   let cur = lastGood;
   let stamp = riseSlot64;
   if (!ever) {
-    cur = fresh < seed ? fresh : seed;
+    const f = seed / DEPTH_BOOTSTRAP_DIV;
+    cur = fresh < f ? fresh : f;
     stamp = depthRiseStamp(nowSlot);
   }
   if (cur >= threshold) return 0n;
@@ -6779,36 +6979,50 @@ function depthRateEtaSlots(ever, lastGood, riseSlot64, fresh, threshold, nowSlot
   }
   return null;
 }
-function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
+function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
+  const st = stressOf(stress);
   const clamp = clampEnforced(bandBps, g.rGapBps);
   const unit = wholeTokenAtoms(g.collateralDecimals);
   const thresholds = tierThresholdsE6(g.tierThresholdUsd, g.collateralDecimals);
   const table = tierLeverage(g.tierLeverageX100, g.lLaunchX100, g.lTierX100);
   const dsByte = g.depthSource | (g.depthEver ? DEPTH_EVER : 0) | (g.depthPrevReal ? DEPTH_PREV_REAL : 0);
+  const twMin = depthTwMinAtoms(g.depthTw ?? DEPTH_TW_EMPTY, unit);
   const freshRaw = freshDepthE6(g.depthE6, g.depthPrevE6, g.depthSlot, dsByte, nowSlot);
-  const fresh = usableDepthE6(freshRaw, g.depthLastGoodE6);
+  const fresh = usableDepthE6(freshRaw, g.depthLastGoodE6, twMin);
   const eff = fresh ?? 0n;
-  const capDepth = clamp ? capDepthE6(dsByte, fresh, g.depthLastGoodE6, g.depthLastGoodSlot, nowSlot) : null;
+  const capDepth = clamp ? capDepthE6(dsByte, fresh, g.depthLastGoodE6, g.depthLastGoodSlot, nowSlot, twMin) : null;
   const venue = clamp ? venueTier(eff, dsByte, thresholds, g.attestedMaxTier) : 0;
   const bookD = cM === null ? 0n : bookDepthE6(cM, g.lambdaBps);
   const book = clamp && cM !== null ? depthTierFor(bookD, thresholds) : 0;
   const tier = clamp ? combinedTier(venue, book) : 0;
   const grad = graduationOn(clamp, bandBps, tier);
-  const target = targetCeilingX100(grad, forceDown, g.lLaunchX100, g.lTierX100, lTableX100(tier, table));
+  const venueD = clamp ? venueDepthCapped(eff, dsByte, thresholds, g.attestedMaxTier) : 0n;
+  const dials = clamp ? smoothDials(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
+  const volInputsMissing = clamp && g.volHasData === true && vol === void 0;
+  const lVol = clamp && vol !== void 0 ? growthLVolX100(g, vol) : null;
+  const lSignal = clamp ? lSignalWithVol(dials.lSignalX100, lVol, table[0]) : 0;
+  const sCap = clamp ? stressCapX100(st, tier, table) : 65535;
+  const target = targetCeilingX100(grad, st, g.lLaunchX100, g.lTierX100, lSignal, sCap);
   const launch = Math.min(g.lLaunchX100, g.lTierX100);
   const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
   const ceiling = ceilingInForceX100(clamp, stored, target, g.lLaunchX100, g.lTierX100);
   let nextTierUnlock = { kind: "none" };
-  if (clamp && !forceDown) {
+  if (clamp && st < STRESS_HLOCK) {
     for (let t = tier + 1; t <= GROWTH_MAX_TIER; t++) {
-      const lev2 = targetCeilingX100(true, false, g.lLaunchX100, g.lTierX100, lTableX100(t, table));
+      const sig2 = lSignalWithVol(table[t], lVol, table[0]);
+      const lev2 = targetCeilingX100(true, st, g.lLaunchX100, g.lTierX100, sig2, stressCapX100(st, t, table));
       if (lev2 <= target) continue;
       const needDepth = venue < t;
       const needBacking = book < t;
       const depthAtoms = thresholds[t - 1];
       const lam = BigInt(Math.min(g.lambdaBps, 1e4));
       const out = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / unit), leverageX100: lev2 };
-      if (needDepth) out.depthUsd = Number(depthAtoms / unit);
+      if (needDepth) {
+        out.depthUsd = Number(depthAtoms / unit);
+        const ext = depthAtoms + depthAtoms / TIER_RAMP_DIV;
+        const nextTh = t < 3 ? thresholds[t] : U64_MAX2;
+        out.fullDepthUsd = Number(divCeil(ext < nextTh ? ext : nextTh, unit));
+      }
       if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), unit));
       if (needDepth && t > attestedMaxTierEff(g.attestedMaxTier) && g.depthSource !== DEPTH_SOURCE.OnChainPool) out.needsOnChainDepth = true;
       const venueCanReach = depthSourceOf(dsByte) === DEPTH_SOURCE.OnChainPool || depthSourceOf(dsByte) === DEPTH_SOURCE.Attested && t <= attestedMaxTierEff(g.attestedMaxTier);
@@ -6825,13 +7039,38 @@ function growthCeilingView(g, bandBps, nowSlot, cM, forceDown) {
     }
   }
   let nextUnlock = nextTierUnlock;
-  if (clamp && !forceDown && stored < target) {
+  if (clamp && st < STRESS_HLOCK && stored < target) {
     const step = Math.min(stored + GROWTH_RATCHET_STEP_X100, target);
     const due = g.ceilSlot + GROWTH_RATCHET_EPOCH_SLOTS;
     const eta = due > nowSlot ? due - nowSlot : 0n;
     nextUnlock = { kind: "ratchet", leverageX100: step, etaSlots: eta, etaMinutes: slotsToMinutes(eta) };
   }
-  return { tier, freshDepthE6: freshRaw, collateralDecimals: g.collateralDecimals, venueTier: venue, bookTier: book, bookDepthE6: bookD, effectiveDepthE6: eff, capDepthE6: capDepth, thresholdsE6: thresholds, table, clampEnforced: clamp, graduationOn: grad, targetX100: target, ceilingX100: ceiling, nextUnlock, nextTierUnlock };
+  return {
+    tier,
+    freshDepthE6: freshRaw,
+    collateralDecimals: g.collateralDecimals,
+    venueTier: venue,
+    bookTier: book,
+    bookDepthE6: bookD,
+    effectiveDepthE6: eff,
+    capDepthE6: capDepth,
+    thresholdsE6: thresholds,
+    table,
+    clampEnforced: clamp,
+    graduationOn: grad,
+    targetX100: target,
+    ceilingX100: ceiling,
+    nextUnlock,
+    nextTierUnlock,
+    stress: st,
+    stressCapX100: sCap,
+    dials,
+    lVolX100: lVol,
+    lSignalX100: lSignal,
+    volInputsMissing,
+    venueDepthE6: venueD,
+    depthTwMinE6: twMin
+  };
 }
 function quoteMaxLeverage(input, side) {
   const lp = input.lpEffectivePositionQ;
@@ -6873,7 +7112,9 @@ function quoteMaxLeverage(input, side) {
     return out({ imrBps: e, maxLeverageX100: lev2(e) });
   }
   const cM = conservativeEquity(input.lpCapital, input.lpPnl, input.lpFeeCredits);
-  const view2 = input.v22 ? growthCeilingView(g, input.v22.bandBps, input.v22.nowSlot, cM, input.bankruptcyHlockActive) : null;
+  const v = input.v22;
+  const stress = v ? stressLevel(v.drawOutstanding === true, realAdl(v.modeLong ?? 0, v.modeShort ?? 0), input.bankruptcyHlockActive) : STRESS_NONE;
+  const view2 = v ? growthCeilingView(g, v.bandBps, v.nowSlot, cM, stress, v.vol ? { engineImrBps: e, liquidationFeeBps: v.vol.liquidationFeeBps, bandMaxEpochSlots: v.vol.bandMaxEpochSlots } : void 0) : null;
   const lCeil = view2 ? view2.ceilingX100 : Math.min(g.lLaunchX100, g.lTierX100);
   meta = {
     ceilingX100: lCeil,
@@ -6888,7 +7129,7 @@ function quoteMaxLeverage(input, side) {
   const base = ceilingImrBps(e, lCeil);
   if (base === null) return closed("invalid-config");
   if (!input.assetBound) return closed("not-bound", { headroomQ: 0n });
-  const nCap = view2 ? nCapG8Q({ clamp: view2.clampEnforced, cM, lambdaBps: g.lambdaBps, tier: view2.tier, capDepth: view2.capDepthE6, priceE6: input.priceE6, posScale: input.posScale }) : nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
+  const nCap = view2 ? nCapG8Q({ clamp: view2.clampEnforced, cM, lambdaBps: g.lambdaBps, tier: view2.tier, capDepth: view2.capDepthE6, priceE6: input.priceE6, posScale: input.posScale, dials: view2.dials }) : nCapQ(cM, g.lambdaBps, input.priceE6, input.posScale ?? GROWTH_POS_SCALE);
   const usersOi = usersSideOiQ(side === "long" ? input.oiEffLongQ : input.oiEffShortQ, lp, side === "long");
   const util = nCap === null ? null : utilizationBps(usersOi, nCap);
   const info = { nCapQ: nCap, utilizationBps: util };
@@ -7193,6 +7434,19 @@ var LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B = 161;
 var LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B = 162;
 var ALLOC_ALPHA_DEFAULT_BPS_P2B = 5e3;
 var ALLOC_ALPHA_MAX_BPS_P2B = 5e3;
+var ALLOC_ALPHA_MAX_BAND_BPS_P2B = 7e3;
+var F3_PROVEN_P2B = false;
+var ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B = 5e3;
+var CUSHION_TARGET_DEFAULT_BPS_P2B = 2e3;
+var CUSHION_SHARE_DEFAULT_BPS_P2B = 5e3;
+function allocAlphaMaxBpsP2b(bandOn, f3Proven = F3_PROVEN_P2B) {
+  if (bandOn && f3Proven) return ALLOC_ALPHA_MAX_BAND_BPS_P2B;
+  if (bandOn) return ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B;
+  return ALLOC_ALPHA_MAX_BPS_P2B;
+}
+function allocAlphaInForceBpsP2b(storedAlphaBps, f3Proven = F3_PROVEN_P2B) {
+  return f3Proven || storedAlphaBps <= ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B ? storedAlphaBps : ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B;
+}
 var ALLOC_BUFFER_DEFAULT_BPS_P2B = 3e3;
 var ALLOC_BUFFER_MIN_BPS_P2B = 3e3;
 var ALLOC_MIN_JUNIOR_BPS_P2B = 500;
@@ -7244,7 +7498,9 @@ function encodeSetVaultLpRiskV19P2b(a) {
   big3("levCapQ", a.levCapQ, U1282);
   int3("levMaxImrBps", a.levMaxImrBps, 0, 1e4);
   int3("vaultLpMaxLevBps", a.vaultLpMaxLevBps, 0, 5e4);
-  assertVaultLpDialsP2b(a);
+  int3("allocAlphaBps", a.allocAlphaBps, 0, 1e4);
+  const alpha = Math.min(a.allocAlphaBps, allocAlphaMaxBpsP2b(true));
+  assertVaultLpDialsP2b({ ...a, allocAlphaBps: alpha });
   return concatBytes(
     encU8(99),
     encU16(a.assetIndex),
@@ -7254,7 +7510,7 @@ function encodeSetVaultLpRiskV19P2b(a) {
     encU16(a.levMaxImrBps),
     encU32(a.vaultLpMaxLevBps),
     encPubkey(a.approvedMatcherProgram),
-    encU16(a.allocAlphaBps),
+    encU16(alpha),
     encU16(a.allocBufferBps),
     encU16(a.cushionTargetBps),
     encU16(a.cushionShareBps)
@@ -7316,7 +7572,7 @@ var bpsFloor = (v, bps) => v * BigInt(bps) / BPS;
 var bpsCeil = (v, bps) => (v * BigInt(bps) + BPS - 1n) / BPS;
 var sat = (a, b) => a > b ? a - b : 0n;
 function vaultLpAllocLimitP2b(cEff, allocated, drawable, alphaBps, bufferBps) {
-  if (alphaBps > ALLOC_ALPHA_MAX_BPS_P2B || bufferBps < ALLOC_BUFFER_MIN_BPS_P2B || bufferBps > 1e4) return null;
+  if (alphaBps > ALLOC_ALPHA_MAX_BAND_BPS_P2B || bufferBps < ALLOC_BUFFER_MIN_BPS_P2B || bufferBps > 1e4) return null;
   const alphaRoom = sat(bpsFloor(cEff, alphaBps), allocated);
   const liquidRoom = sat(drawable, bpsCeil(cEff, bufferBps));
   return alphaRoom < liquidRoom ? alphaRoom : liquidRoom;
@@ -14391,10 +14647,13 @@ var VAULT_LP_MATCHER_CTX_LEN_P3 = 320;
 function buildCreateVaultLpMatcherCtxIxP3(payer, matcherCtx, lamports, matcherProgram = new PublicKey23(CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3)) {
   return SystemProgram5.createAccount({ fromPubkey: payer, newAccountPubkey: matcherCtx, lamports, space: VAULT_LP_MATCHER_CTX_LEN_P3, programId: matcherProgram });
 }
-function buildInitVaultLpIxP3(m, marketauth, juniorFloorBps, matcherCtx, matcherProgram = new PublicKey23(CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3)) {
+function buildInitVaultLpIxP3(m, marketauth, juniorFloorBps, matcherCtx, matcherProgram = new PublicKey23(CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3), opts = {}) {
   const [registry] = deriveLpVaultRegistry(m.programId, m.market);
   const [matcherDelegate] = deriveMatcherDelegate(m.programId, m.market, m.lpPortfolio, registry, matcherProgram, matcherCtx);
-  return ix(m.programId, ACCOUNTS_INIT_VAULT_LP_P3, {
+  const withExt = opts.withVaultLpExt !== false;
+  const data = opts.data ?? encodeInitVaultLpP3(juniorFloorBps);
+  if (data[0] !== IX_TAG_P3.InitVaultLp) throw new Error(`buildInitVaultLpIxP3: data must start with tag ${IX_TAG_P3.InitVaultLp}, got ${data[0]}`);
+  return ix(m.programId, withExt ? ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3 : ACCOUNTS_INIT_VAULT_LP_P3, {
     authority: marketauth,
     market: m.market,
     registry,
@@ -14404,8 +14663,9 @@ function buildInitVaultLpIxP3(m, marketauth, juniorFloorBps, matcherCtx, matcher
     ...ledgers(m.programId, m.market, m.registryDomain),
     matcherProgram,
     matcherCtx,
-    matcherDelegate
-  }, encodeInitVaultLpP3(juniorFloorBps));
+    matcherDelegate,
+    ...withExt ? { vaultLpExt: PublicKey23.findProgramAddressSync([new TextEncoder().encode(VAULT_LP_EXT_SEED_P2B), m.market.toBytes()], m.programId)[0] } : {}
+  }, data);
 }
 function buildVaultLpSetMatcherIxP3(m, upgradeAuthority, matcherProgram, matcherCtx, args) {
   const [registry] = deriveLpVaultRegistry(m.programId, m.market);
@@ -14924,6 +15184,7 @@ function decodeVaultLpExtV19(data) {
     allocatedTotalAtoms: u128At(v, B + F.allocatedTotalAtoms),
     deallocatedTotalAtoms: u128At(v, B + F.deallocatedTotalAtoms),
     allocAlphaBps: v.getUint16(B + F.allocAlphaBps, true),
+    allocAlphaInForceBps: allocAlphaInForceBpsP2b(v.getUint16(B + F.allocAlphaBps, true)),
     allocBufferBps: v.getUint16(B + F.allocBufferBps, true),
     cushionTargetBps: v.getUint16(B + F.cushionTargetBps, true),
     cushionShareBps: v.getUint16(B + F.cushionShareBps, true),
@@ -14931,7 +15192,7 @@ function decodeVaultLpExtV19(data) {
     bump: data[B + F.bump]
   };
   const zero = (o, n) => data.subarray(B + o, B + o + n).every((b) => b === 0);
-  if (out.version !== VAULT_LP_EXT_VERSION_P2B || marketGroup.equals(PublicKey25.default) || out.allocAlphaBps > ALLOC_ALPHA_MAX_BPS_P2B || out.allocBufferBps < ALLOC_BUFFER_MIN_BPS_P2B || out.allocBufferBps > 1e4 || out.cushionTargetBps > 1e4 || out.cushionShareBps > 1e4 || out.cushionTargetBps === 0 !== (out.cushionShareBps === 0) || !zero(F.padding, 6) || !zero(F.reserved, 16)) {
+  if (out.version !== VAULT_LP_EXT_VERSION_P2B || marketGroup.equals(PublicKey25.default) || out.allocAlphaBps > ALLOC_ALPHA_MAX_BAND_BPS_P2B || out.allocBufferBps < ALLOC_BUFFER_MIN_BPS_P2B || out.allocBufferBps > 1e4 || out.cushionTargetBps > 1e4 || out.cushionShareBps > 1e4 || out.cushionTargetBps === 0 !== (out.cushionShareBps === 0) || !zero(F.padding, 6) || !zero(F.reserved, 16)) {
     throw new Error("VaultLpExtV19: invalid record \u2014 the program would reject it too");
   }
   return out;
@@ -17031,6 +17292,7 @@ export {
   ACCOUNTS_INIT_MATCHER_CTX,
   ACCOUNTS_INIT_USER,
   ACCOUNTS_INIT_VAULT_LP_P3,
+  ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3,
   ACCOUNTS_INSURANCE_BACKSTOP_DRAW_V22,
   ACCOUNTS_KEEPER_CRANK,
   ACCOUNTS_LIQUIDATE_AT_ORACLE,
@@ -17135,7 +17397,9 @@ export {
   ADL_WIND_DOWN_DEFAULT_MAX_EPISODE_SLOTS,
   ADL_WIND_DOWN_MAX_MARK_AGE_SLOTS,
   ALLOC_ALPHA_DEFAULT_BPS_P2B,
+  ALLOC_ALPHA_MAX_BAND_BPS_P2B,
   ALLOC_ALPHA_MAX_BPS_P2B,
+  ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B,
   ALLOC_BUFFER_DEFAULT_BPS_P2B,
   ALLOC_BUFFER_MIN_BPS_P2B,
   ALLOC_MIN_JUNIOR_BPS_P2B,
@@ -17143,6 +17407,7 @@ export {
   ASSET_AUTH_KIND,
   ASSET_GROWTH_DEPTH_FIELD_OFF,
   ASSET_GROWTH_FIELD_OFF,
+  ASSET_GROWTH_LEGACY_FIELD_OFF,
   ASSET_GROWTH_LEN,
   ASSET_GROWTH_SLOT_OFF,
   ASSET_GROWTH_VERSION_FIELD_OFF,
@@ -17206,6 +17471,8 @@ export {
   CTX_RETURN_OFFSET,
   CTX_VAMM_LEN,
   CTX_VAMM_OFFSET,
+  CUSHION_SHARE_DEFAULT_BPS_P2B,
+  CUSHION_TARGET_DEFAULT_BPS_P2B,
   CrankAction,
   DEFAULT_FLOOR_SLIPPAGE_BPS_V22,
   DEFAULT_OI_RAMP_SLOTS,
@@ -17232,6 +17499,10 @@ export {
   DEPTH_SRC_MAX_DECIMALS,
   DEPTH_STICKY_EPOCH_SLOTS,
   DEPTH_TIER_THRESHOLDS_E6,
+  DEPTH_TW_ABSENT,
+  DEPTH_TW_BUCKET_RING,
+  DEPTH_TW_BUCKET_SLOTS,
+  DEPTH_TW_EMPTY,
   ENGINE_ASSET_SLOT_OFF_V18,
   ENGINE_BOUND_SCALE,
   ENGINE_CONFIG_MAX_TRADING_FEE_BPS_OFF,
@@ -17246,6 +17517,7 @@ export {
   EXECUTE_REDEMPTION_COMPUTE_UNITS_V22,
   EXIT_DIP_BPS_V22,
   EXPECTED_SLAB_VERSION,
+  F3_PROVEN_P2B,
   FEE_SPLIT,
   FILL_FIXED_LEN_V22,
   FILL_FLAG_V22,
@@ -17265,6 +17537,8 @@ export {
   GROWTH_DEPTH_MULT,
   GROWTH_DIALS_NO_CLAMP_MAX_KINK_BPS,
   GROWTH_DIALS_NO_CLAMP_MAX_LAMBDA_BPS,
+  GROWTH_FLAG_R3_LAYOUT,
+  GROWTH_FLAG_VOL_DATA,
   GROWTH_LEVERAGE_X100_ONE,
   GROWTH_MAX_COLLATERAL_DECIMALS,
   GROWTH_MAX_IMR_BPS,
@@ -17306,8 +17580,10 @@ export {
   IX_TAG_P2B_EARN,
   IX_TAG_P3,
   IX_TAG_V22,
+  KAPPA_TABLE_BPS,
   KIND_BACKING_DOMAIN_LEDGER_P2B,
   KIND_VAULT_LP_EXT_P2B,
+  LAMBDA_DEPTH_TABLE_BPS,
   LAYOUTS_BY_VERSION,
   LAYOUT_V21,
   LAYOUT_V22,
@@ -17455,6 +17731,7 @@ export {
   RENOUNCE_ADMIN_CONFIRMATION,
   RENT_MAX_KINK_BPS_V22,
   RENT_MIN_E9_PER_SLOT_V22,
+  RENT_SNAPSHOT_FALL_SLOTS,
   RESCUE_MAX_MULT_V22,
   RESCUE_MIN_ATOMS_V22,
   RESCUE_NAV_FLOOR_BPS_V22,
@@ -17514,10 +17791,15 @@ export {
   STAKE_PROGRAM_ID,
   STAKE_PROGRAM_IDS,
   STAKE_RISK_MODE,
+  STRESS_ADL,
+  STRESS_DRAW,
+  STRESS_HLOCK,
+  STRESS_NONE,
   SYNC_COOLDOWN_DEFAULT_SLOTS_V5,
   TAG_SET_DEPTH_SOURCE_V22,
   TIER_CONFIG_WIRE_LEN,
   TIER_LEVERAGE_DEFAULT_X100,
+  TIER_RAMP_DIV,
   TIER_THRESHOLD_DEFAULT_USD,
   TIER_THRESHOLD_FLOOR_USD,
   TOKEN_2022_PROGRAM_ID2 as TOKEN_2022_PROGRAM_ID,
@@ -17584,6 +17866,10 @@ export {
   VAULT_LP_STATE_ACCOUNT_LEN_P3,
   VAULT_LP_STATE_BODY_LEN_P3,
   VAULT_LP_STATE_OFF_P3,
+  VOL_EWMA_SHIFT,
+  VOL_MOVE_CAP_BPS,
+  VOL_VAR_SEED_X100,
+  VOL_Z,
   ValidationError,
   WELL_KNOWN,
   WRAPPER_ACCOUNT_MAGIC,
@@ -17603,6 +17889,8 @@ export {
   adminUpdateFeeSplitAccounts,
   adminUpdateMaintenanceFeePerSlotAccounts,
   adminUpdateTradeFeePolicyAccounts,
+  allocAlphaInForceBpsP2b,
+  allocAlphaMaxBpsP2b,
   allocJuniorOkP2b,
   allocWrittenDownP2b,
   assertBandBlockV22,
@@ -17625,6 +17913,7 @@ export {
   bandDefaultsV22,
   bandFloorStuckV22,
   bandGenesisPriceOkV22,
+  bandMinLegFitsDepth,
   bandMinWideAnchorV22,
   bandRGapBps,
   bandWidthOkV22,
@@ -17803,6 +18092,7 @@ export {
   depositAccounts,
   depositJuniorAccounts,
   depthCapQ,
+  depthCapQKappa,
   depthEver,
   depthNotionalCapE6,
   depthPushUpdate,
@@ -17812,6 +18102,12 @@ export {
   depthSourceByteOk,
   depthSourceOf,
   depthTierFor,
+  depthTokensFloor,
+  depthTwBucketP1,
+  depthTwFull,
+  depthTwMinAtoms,
+  depthTwUpdate,
+  depthTwWindowOk,
   deriveBondPositionV22,
   deriveBondTrancheV22,
   deriveCanonicalVault,
@@ -18124,6 +18420,8 @@ export {
   graduationRatchet,
   growthCeilingView,
   growthCollateralDecimalsOk,
+  growthFlagsOk,
+  growthLVolX100,
   growthMatcherCapsG8,
   growthMatcherCapsV3,
   impliedFundingRateE9V22,
@@ -18154,11 +18452,14 @@ export {
   isV17Account,
   isV17MarketAccount,
   isValidChainlinkOracle,
+  isqrtCeil,
   isqrtU128,
   kappaDepth,
   kappaDepthBps,
   knownWrapperVersions,
+  lSignalWithVol,
   lTableX100,
+  lVolX100,
   lambdaDepthBps,
   lambdaEffBps,
   layoutHasBandRentV22,
@@ -18249,6 +18550,7 @@ export {
   readPotEngineRecordsP2b,
   readTradeFeeInputsV22,
   readWrapperHeader,
+  realAdl,
   recoverFlushedInsuranceAccounts,
   recoverTerminalInsuranceAccounts,
   redemptionDataSizesV22,
@@ -18260,6 +18562,8 @@ export {
   rentRateE9V22,
   rentRatesFromStateV22,
   rentSnapshotNCapQ,
+  rentSnapshotSmooth,
+  rentStamp64Of,
   requireDecimalUIntString,
   rescueAdmittedV22,
   rescueClaimDeltaV22,
@@ -18281,12 +18585,14 @@ export {
   seniorCapitalHaltP2b,
   seniorFloorDecodeP2b,
   seniorFloorEncodeP2b,
+  sigmaHBps,
   signV1Message,
   simulateOrSend,
   simulateV1,
   skewFundingRateE9V22,
   slabDataSize,
   slabDataSizeV1,
+  smoothDials,
   stakeDeadLp,
   stakeGroupAProxyAccounts,
   stakeGroupBProxyAccounts,
@@ -18300,11 +18606,14 @@ export {
   staleResolveErrorContextV22,
   staleResolveStatusV22,
   stickyDepthE6,
+  stressCapX100,
+  stressLevel,
   stripLighthouseFromTransaction,
   stripLighthouseInstructions,
   targetCeilingX100,
   tierConfigOk,
   tierLeverage,
+  tierRampU64,
   tierThresholdsE6,
   tokenPriceToLotE6V22,
   tokenQToQV22,
@@ -18344,7 +18653,10 @@ export {
   vaultPhysicalIdleBackingAtomsP3,
   vaultPotHeldAtomsP3,
   vaultValueWorseV22,
+  venueDepthCapped,
   venueTier,
+  volSampleX100,
+  volUpdateX100,
   walletSupportsV1,
   wholeTokenAtoms,
   withBondTailV22,

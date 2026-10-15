@@ -15,7 +15,7 @@ import {
   lambdaDepthBps, kappaDepthBps, lambdaEffBps, depthNotionalCapE6, depthCapQ, nCapG8Q, growthMatcherCapsG8, nCapQ, growthMatcherCapsV3,
   targetCeilingX100, ceilingInForceX100, ratchetCeilingX100, graduationRatchet, graduationFallOnly, graduationOn, clampEnforced,
   growthCeilingView, quoteMaxLeverage, encodeInitVaultLpV22Tiers, encodeSetAssetRiskLimitsV22Tiers, encodeInitVaultLpV19,
-  decodeError,
+  decodeError, STRESS_NONE, STRESS_DRAW, STRESS_ADL, STRESS_HLOCK, DEPTH_TW_BUCKET_SLOTS, depthTwBucketP1, depthTwMinAtoms,
 } from "../src/index.js";
 import type { AssetGrowthV19, QuoteMaxLeverageInput, DepthState } from "../src/index.js";
 
@@ -24,7 +24,7 @@ const M = 1_000_000n;
 const PS = 1_000_000n;
 const DEF = tierThresholdsE6([0, 0, 0]);
 const U64MAX = (1n << 64n) - 1n;
-const dpu = (st: DepthState, src: number, d: bigint, now: bigint, seed: bigint = U64MAX): DepthState => depthPushUpdate(st, src, d, now, seed);
+const dpu = (st: DepthState, src: number, d: bigint, now: bigint, seed: bigint = U64MAX): DepthState => depthPushUpdate(st, src, d, now, seed, M);
 const hex = (b: Uint8Array): string => Buffer.from(b).toString("hex");
 
 describe("record decoder (bytes 44, 45, 80, 88, 96, 108)", () => {
@@ -236,9 +236,13 @@ describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_read
     s = dpu(s, a, 4n * T1, 101n);
     expect(fresh(s, 101n)).toBe(4n * T1);
     const z = dpu(s, a, 0n, 102n);
+    const tw = (x: DepthState): bigint | null => depthTwMinAtoms(x.tw!, M);
+    const usable = (x: DepthState, now: bigint): bigint | null => usableDepthE6(fresh(x, now), x.lastGoodE6, tw(x));
     expect(fresh(z, 102n)).toBe(0n);
-    expect([z.lastGoodE6, z.lastGoodSlot]).toEqual([0n, 102n]);
-    expect(capDepthE6(z.depthSource, fresh(z, 102n), z.lastGoodE6, z.lastGoodSlot, 102n)).toBe(0n);
+    expect(usable(z, 102n)).toBe(0n);
+    // controller round D2: last_good is HELD through a real zero (round 2 zeroed it); the window keeps every reader at 0
+    expect([z.lastGoodE6, z.lastGoodSlot]).toEqual([4n * T1, 101n]);
+    expect(capDepthE6(z.depthSource, usable(z, 102n), z.lastGoodE6, z.lastGoodSlot, 102n, tw(z))).toBe(0n);
     expect(venueTier(0n, z.depthSource, tierThresholdsE6([0, 0, 0]), 3)).toBe(0);
     const d = dpu(empty, DEPTH_SOURCE.OnChainPool, 0n, 7n);
     expect([fresh(d, 7n), depthEver(d.depthSource)]).toEqual([0n, true]);
@@ -246,12 +250,7 @@ describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_read
     expect(fresh(p1, 103n)).toBe(0n);
     const p2 = dpu(p1, a, 4n * T1, 104n);
     expect(fresh(p2, 104n)).toBe(4n * T1); // the fresh min-of-two is restored ...
-    expect(p2.lastGoodE6).toBe(0n); // ... but the rate-limited depth does not rise again in the epoch of its last rise
-    expect(usableDepthE6(fresh(p2, 104n), p2.lastGoodE6)).toBe(0n);
-    // D-L2: the window is 9,000 slots after the last rise (slot 101, stamp 1 -> 64..127)
-    expect(dpu(p2, a, 4n * T1, 127n + 9_000n - 1n, T1 - 1n).lastGoodE6).toBe(0n); // one slot before the window: no rise
-    const p3 = dpu(p2, a, 4n * T1, 127n + 9_000n, T1 - 1n);
-    expect(p3.lastGoodE6).toBe((T1 - 1n) / DEPTH_BOOTSTRAP_DIV); // window open: the bootstrap floor
+    expect(usable(p2, 104n)).toBe(0n); // ... but the zero is still inside the window
   });
   it("absent (35 B / mode 0) is NOT zero: sticky last good", () => {
     let s = dpu(empty, a, 4n * T1, 100n);
@@ -270,7 +269,8 @@ describe("a real zero reading closes opens at once (Rust r2_fresh_real_zero_read
     expect(fresh(dpu(ab, a, 0n, 102n), 102n)).toBe(0n);
     expect(fresh(dpu(z, DEPTH_SOURCE.None, 0n, 102n), 102n)).toBe(0n);
     expect(fresh(z, 102n + 151n)).toBeNull();
-    expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 302n)).toBe(0n);
+    // stale real 0 -> absent; the sticky cap is still 0 (the window holds the zero)
+    expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 302n, depthTwMinAtoms(z.tw!, M))).toBe(0n);
     expect(depthSourceByteOk(DEPTH_EVER | DEPTH_PREV_REAL | DEPTH_SOURCE.OnChainPool)).toBe(true);
     expect(depthSourceByteOk(0x08)).toBe(false);
   });
@@ -324,8 +324,9 @@ describe("N_cap (Rust g8_n_cap_...)", () => {
   });
 });
 
-describe("target / ceiling / ratchet (Rust g8_target_ceiling_ratchet_and_force_down)", () => {
+describe("target / ceiling / ratchet (Rust g8_target_ceiling_ratchet_and_force_down @ 666df893)", () => {
   const tab = tierLeverage([0, 0, 0], 500, 2_000);
+  const n = 0xffff;
   it("target", () => {
     expect(targetCeilingX100(false, false, 300, 1_000, 500)).toBe(300);
     expect(targetCeilingX100(true, true, 300, 1_000, 500)).toBe(300);
@@ -333,37 +334,50 @@ describe("target / ceiling / ratchet (Rust g8_target_ceiling_ratchet_and_force_d
     expect(targetCeilingX100(true, false, 500, 2_000, lTableX100(3, tab))).toBe(2_000);
     expect(targetCeilingX100(true, false, 300, 1_000, 2_000)).toBe(1_000);
     expect(targetCeilingX100(true, false, 800, 1_000, 500)).toBe(800);
+    // controller round: graded stress at tier 3 (20x): draw -> L_table(2) 10x; ADL -> L_table(1) 5x; h-lock -> launch
+    const l3 = lTableX100(3, tab);
+    expect(targetCeilingX100(true, STRESS_HLOCK, 300, 1_000, 500, n)).toBe(300);
+    expect(targetCeilingX100(true, STRESS_DRAW, 500, 2_000, l3, 1_000)).toBe(1_000);
+    expect(targetCeilingX100(true, STRESS_ADL, 500, 2_000, l3, 500)).toBe(500);
   });
   it("ceiling in force", () => {
     expect(ceilingInForceX100(false, 900, 900, 300, 1_000)).toBe(300);
     expect(ceilingInForceX100(true, 900, 400, 300, 1_000)).toBe(400);
     expect(ceilingInForceX100(true, 400, 900, 300, 1_000)).toBe(400);
+    // F-1 fix A: min(stored, target) -- down at once, up only via the ratchet
+    expect(ceilingInForceX100(true, 900, 850, 300, 1_000)).toBe(850);
   });
-  const gr = (o: { prev: number; slot: bigint; cl: bigint; cm: bigint; grad: boolean; force: boolean; tab: number; now: bigint }): [number, bigint, bigint] => {
-    const r = graduationRatchet({ prevCeilX100: o.prev, prevSlot: o.slot, cLaunchAtoms: o.cl, cM: o.cm, graduation: o.grad, forceDown: o.force, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: o.tab, nowSlot: o.now });
-    return [r.ceilX100, r.ceilSlot, r.cLaunchAtoms];
+  const gr = (prev: number, slot: bigint, grad: boolean, stress: number, sig: number, cap: number, now: bigint): [number, bigint] => {
+    const r = graduationRatchet({ prevCeilX100: prev, prevSlot: slot, graduation: grad, stress, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: sig, stressCapX100: cap, nowSlot: now });
+    return [r.ceilX100, r.ceilSlot];
   };
-  it("ratchet writer", () => {
-    expect(gr({ prev: 500, slot: 0n, cl: 0n, cm: 5_000_000_000n, grad: true, force: false, tab: 1_000, now: 50_000n })).toEqual([500, 0n, 5_000_000_000n]);
-    expect(gr({ prev: 500, slot: 0n, cl: 0n, cm: 1n, grad: true, force: false, tab: 1_000, now: 50_000n })).toEqual([500, 0n, 1_000_000_000n]);
-    const c = 1_000_000_000n;
-    const base = { cl: c, cm: 1n, grad: true, force: false, tab: 1_000 };
-    expect(gr({ ...base, prev: 500, slot: 0n, now: 8_999n })).toEqual([500, 0n, c]);
-    expect(gr({ ...base, prev: 500, slot: 0n, now: 9_000n })).toEqual([600, 9_000n, c]);
-    expect(gr({ ...base, prev: 600, slot: 9_000n, now: 18_000n })).toEqual([700, 18_000n, c]);
-    expect(gr({ ...base, prev: 1_000, slot: 18_000n, now: 40_000n })).toEqual([1_000, 18_000n, c]);
-    expect(gr({ ...base, grad: false, tab: 500, prev: 1_000, slot: 18_000n, now: 40_001n })).toEqual([500, 40_001n, c]);
-    expect(gr({ ...base, force: true, prev: 1_000, slot: 18_000n, now: 40_001n })).toEqual([500, 40_001n, c]);
-    expect(gr({ ...base, prev: 2_000, slot: 18_000n, now: 40_001n })).toEqual([1_000, 40_001n, c]);
+  it("ratchet writer (no c_launch snapshot; down at once; graded stress picks the target)", () => {
+    // a climb waits a full epoch from the stamp (bind / I-1 reset stamp ceil_slot = now)
+    expect(gr(500, 50_000n, true, STRESS_NONE, 1_000, n, 50_000n)).toEqual([500, 50_000n]);
+    expect(gr(500, 0n, true, STRESS_NONE, 1_000, n, 8_999n)).toEqual([500, 0n]);
+    expect(gr(500, 0n, true, STRESS_NONE, 1_000, n, 9_000n)).toEqual([600, 9_000n]);
+    expect(gr(600, 9_000n, true, STRESS_NONE, 1_000, n, 18_000n)).toEqual([700, 18_000n]);
+    expect(gr(1_000, 18_000n, true, STRESS_NONE, 1_000, n, 40_000n)).toEqual([1_000, 18_000n]); // at target: stamp kept
+    expect(gr(1_000, 18_000n, false, STRESS_NONE, 500, n, 40_001n)).toEqual([500, 40_001n]); // depth gone: launch at once
+    expect(gr(1_000, 18_000n, true, STRESS_HLOCK, 1_000, n, 40_001n)).toEqual([500, 40_001n]); // h-lock: launch at once
+    expect(gr(2_000, 18_000n, true, STRESS_DRAW, 2_000, 1_000, 40_001n)).toEqual([1_000, 40_001n]); // draw: L_table(tier 3 - 1) at once
+    expect(gr(2_000, 18_000n, true, STRESS_NONE, 1_000, n, 40_001n)).toEqual([1_000, 40_001n]); // tier 3 -> 2 at once
+    // legacy boolean forceDown still reads as the h-lock
+    expect(graduationRatchet({ prevCeilX100: 1_000, prevSlot: 18_000n, graduation: true, forceDown: true, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: 1_000, nowSlot: 40_001n })).toEqual({ ceilX100: 500, ceilSlot: 40_001n });
   });
-  it("fall-only", () => {
-    const f = (prev: number, slot: bigint, grad: boolean, tabv: number) => { const r = graduationFallOnly({ prevCeilX100: prev, prevSlot: slot, graduation: grad, forceDown: false, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: tabv, nowSlot: 99n }); return [r.ceilX100, r.ceilSlot]; };
-    expect(f(500, 7n, true, 1_000)).toEqual([500, 7n]);
-    expect(f(1_000, 7n, false, 500)).toEqual([500, 99n]);
-    expect(f(2_000, 7n, true, 1_000)).toEqual([1_000, 99n]);
+  it("fall-only: never rises; falls to the bound at once (the h-lock too)", () => {
+    const f = (prev: number, slot: bigint, grad: boolean, stress: number, tabv: number) => { const r = graduationFallOnly({ prevCeilX100: prev, prevSlot: slot, graduation: grad, stress, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: tabv, stressCapX100: n, nowSlot: 99n }); return [r.ceilX100, r.ceilSlot]; };
+    expect(f(500, 7n, true, STRESS_NONE, 1_000)).toEqual([500, 7n]);
+    expect(f(1_000, 7n, false, STRESS_NONE, 500)).toEqual([500, 99n]);
+    expect(f(2_000, 7n, true, STRESS_NONE, 1_000)).toEqual([1_000, 99n]);
+    expect(f(2_000, 7n, true, STRESS_HLOCK, 1_000)).toEqual([500, 99n]);
   });
   it("ratchet primitive", () => {
     expect(ratchetCeilingX100(500, 0n, 1_000, 500, false, 9_000n)).toEqual({ ceilX100: 600, ceilSlot: 9_000n });
+    // Rust (666df893): 8x -> 6x in one call; h-lock to the floor; ADL to its graded target at once
+    expect(ratchetCeilingX100(800, 0n, 600, 500, STRESS_NONE, 1n)).toEqual({ ceilX100: 600, ceilSlot: 1n });
+    expect(ratchetCeilingX100(800, 0n, 900, 500, STRESS_HLOCK, 1n)).toEqual({ ceilX100: 500, ceilSlot: 1n });
+    expect(ratchetCeilingX100(800, 0n, 500, 500, STRESS_ADL, 1n)).toEqual({ ceilX100: 500, ceilSlot: 1n });
     expect(ratchetCeilingX100(500, 0n, 550, 500, false, 9_000n)).toEqual({ ceilX100: 550, ceilSlot: 9_000n });
     expect(ratchetCeilingX100(900, 5n, 400, 500, false, 6n)).toEqual({ ceilX100: 400, ceilSlot: 6n });
   });
@@ -378,11 +392,14 @@ interface RecOver {
   lambda?: number; lLaunch?: number; lTier?: number; ceil?: number; ceilSlot?: bigint; cLaunch?: bigint; rGap?: number;
   src?: number; attested?: number; depth?: bigint; prev?: bigint; slot?: bigint; lastGood?: bigint; lastGoodSlot?: bigint;
   th?: [number, number, number]; lv?: [number, number, number]; dec?: number; riseSlot64?: number;
+  /** A legacy (combined-build) record: c_launch at 0..8, flags 0, no volatility data. */
+  legacy?: boolean; volVar?: number;
 }
 function g(o: RecOver): AssetGrowthV19 {
   const b = new Uint8Array(ASSET_GROWTH_LEN);
   const v = new DataView(b.buffer);
-  v.setBigUint64(0, o.cLaunch ?? 1_000_000_000n, true);
+  if (o.legacy) v.setBigUint64(0, o.cLaunch ?? 1_000_000_000n, true);
+  else { v.setUint32(0, o.volVar ?? 0, true); b[39] = 0x03; }
   v.setBigUint64(8, o.ceilSlot ?? 0n, true);
   v.setUint32(16, o.lambda ?? 10_000, true);
   v.setUint16(20, o.lLaunch ?? 500, true);
@@ -406,85 +423,119 @@ function g(o: RecOver): AssetGrowthV19 {
 }
 const BAND = 1000; // G(1000) = 3445
 const NOW = 1_000n;
+/** Engine config of the fixtures: IMR 5% (L_tier 20x), no liquidation fee, band epoch 600 slots (H = 1,200). */
+const VOL = { engineImrBps: 500n, liquidationFeeBps: 0n, bandMaxEpochSlots: 600n };
+const view = (gr: AssetGrowthV19, band: number, now: bigint, cM: bigint | null, stress: number | boolean) => growthCeilingView(gr, band, now, cM, stress, VOL);
 const dex = (usd: bigint, extra: RecOver = {}): RecOver => ({ src: DEPTH_SOURCE.OnChainPool | DEPTH_EVER | DEPTH_PREV_REAL, depth: usd * M, prev: usd * M, slot: 990n, lastGood: usd * M, lastGoodSlot: 990n, ...extra });
 
 describe("growthCeilingView: explainer worked examples (tiered 20x meme market, launch 5x)", () => {
   it("tier 0: thin pool $8k, backing $10k -> 5x, tier 0", () => {
-    const v = growthCeilingView(g(dex(8_000n)), BAND, NOW, 10_000n * M, false);
+    const v = view(g(dex(8_000n)), BAND, NOW, 10_000n * M, false);
     expect([v.tier, v.venueTier, v.bookTier, v.ceilingX100, v.targetX100, v.graduationOn]).toEqual([0, 0, 0, 500, 500, false]);
     // next: tier 1 needs $25k depth and $25k backing; 5x is the table's L1 = launch, so no gain -> tier 2 (10x) is the first that raises it
-    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000 });
+    // controller round item 5: 10x starts ramping at $100k and is reached in full at $125k (T2 + 25%)
+    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 125_000 });
   });
   it("tier 1: depth $30k, backing $40k -> 5x; 10x needs both at $100k", () => {
-    const v = growthCeilingView(g(dex(30_000n)), BAND, NOW, 40_000n * M, false);
+    const v = view(g(dex(30_000n)), BAND, NOW, 40_000n * M, false);
     expect([v.tier, v.ceilingX100]).toEqual([1, 500]);
-    expect(v.nextUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000 });
+    expect(v.nextUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 125_000 });
   });
-  it("tier 2: depth $150k, backing $120k -> target 10x, ceiling climbs +1x per hour; ETA in minutes", () => {
-    const v = growthCeilingView(g(dex(150_000n)), BAND, NOW, 120_000n * M, false);
-    expect([v.tier, v.venueTier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([2, 2, 2, 1_000, 500]);
+  it("tier 2: depth $150k, backing $120k -> target 9x on the ramp, ceiling climbs +1x per hour; ETA in minutes", () => {
+    const v = view(g(dex(150_000n)), BAND, NOW, 120_000n * M, false);
+    // item 5 ramps: venue $150k is past T2's ramp ($125k) -> 10x; book $120k is on it -> 5x + 5x * 20/25 = 9x; target = min = 9x
+    expect([v.tier, v.venueTier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([2, 2, 2, 900, 500]);
+    expect(v.dials).toEqual({ lSignalX100: 900, kappaBps: 10_000, lambdaDepthBps: 18_000 });
+    expect([v.lVolX100, v.lSignalX100, v.stress, v.volInputsMissing]).toEqual([2_000, 900, STRESS_NONE, false]);
     // stored ceil 500 stamped at slot 0: next step allowed at slot 9000, now 1000 -> 8000 slots = 3200 s = 53.3 min -> 54
     expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 600, etaSlots: 8_000n, etaMinutes: 54 });
-    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 3, depthUsd: 500_000, backingUsd: 500_000, thresholdUsd: 500_000, leverageX100: 2_000 });
+    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 3, depthUsd: 500_000, backingUsd: 500_000, thresholdUsd: 500_000, leverageX100: 2_000, fullDepthUsd: 625_000 });
     // once the ceiling reached 8x the step is 9x
-    const v8 = growthCeilingView(g(dex(150_000n, { ceil: 800, ceilSlot: 500n })), BAND, NOW, 120_000n * M, false);
+    const v8 = view(g(dex(150_000n, { ceil: 800, ceilSlot: 500n })), BAND, NOW, 120_000n * M, false);
     expect(v8.ceilingX100).toBe(800);
     expect(v8.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 900, etaSlots: 8_500n, etaMinutes: 57 });
-    // fully climbed: only the tier requirement is left
-    const v10 = growthCeilingView(g(dex(150_000n, { ceil: 1_000 })), BAND, NOW, 120_000n * M, false);
+    // stored above the target: in force = min(stored, target) = 9x, only the tier requirement is left
+    const v10 = view(g(dex(150_000n, { ceil: 1_000 })), BAND, NOW, 120_000n * M, false);
+    expect(v10.ceilingX100).toBe(900);
     expect(v10.nextUnlock.kind).toBe("both");
   });
   it("backing falls to $90k at hour 3: tier drops to 1 and the cap goes straight to 5x", () => {
-    const v = growthCeilingView(g(dex(150_000n, { ceil: 800 })), BAND, NOW, 90_000n * M, false);
+    const v = view(g(dex(150_000n, { ceil: 800 })), BAND, NOW, 90_000n * M, false);
     expect([v.tier, v.bookTier, v.ceilingX100]).toEqual([1, 1, 500]);
     expect(v.nextUnlock).toEqual({ kind: "backing", tier: 2, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000 });
   });
-  it("tier 3 major: depth $700k backing $600k -> 20x target", () => {
-    const v = growthCeilingView(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 600_000n * M, false);
-    expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([3, 2_000, 1_000]);
+  it("tier 3 major: depth $700k backing $600k -> 18x target on the book ramp", () => {
+    const v = view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 600_000n * M, false);
+    // book $600k on T3's ramp ($500k..$625k): 10x + 10x * 100/125 = 18x; venue $700k past it: 20x
+    expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([3, 1_800, 1_000]);
+    expect(view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 625_000n * M, false).targetX100).toBe(2_000);
     expect(v.nextUnlock.kind).toBe("ratchet");
   });
   it("a market built for 5x never graduates, whatever its depth", () => {
-    const v = growthCeilingView(g(dex(700_000n, { lTier: 500 })), BAND, NOW, 600_000n * M, false);
+    const v = view(g(dex(700_000n, { lTier: 500 })), BAND, NOW, 600_000n * M, false);
     expect([v.tier, v.targetX100, v.nextUnlock.kind, v.nextTierUnlock.kind]).toEqual([3, 500, "none", "none"]);
   });
   it("keeper-attested depth is tier-1 capped: tier 2 says it needs an on-chain pool; attested_max_tier 3 lifts it", () => {
     const att = { src: DEPTH_SOURCE.Attested | DEPTH_EVER | DEPTH_PREV_REAL };
-    const v = growthCeilingView(g(dex(700_000n, att)), BAND, NOW, 600_000n * M, false);
+    const v = view(g(dex(700_000n, att)), BAND, NOW, 600_000n * M, false);
     expect([v.venueTier, v.bookTier, v.tier, v.targetX100]).toEqual([1, 3, 1, 500]);
     expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthUsd: 100_000, leverageX100: 1_000, needsOnChainDepth: true });
     expect(v.nextTierUnlock.backingUsd).toBeUndefined();
-    const v3 = growthCeilingView(g(dex(700_000n, { ...att, attested: 3 })), BAND, NOW, 600_000n * M, false);
-    expect([v3.venueTier, v3.tier, v3.targetX100]).toEqual([3, 3, 2_000]);
+    expect(v.venueDepthE6).toBe(T2 - 1n); // the attested ramp is clamped below T2
+    const v3 = view(g(dex(700_000n, { ...att, attested: 3 })), BAND, NOW, 600_000n * M, false);
+    expect([v3.venueTier, v3.tier, v3.targetX100]).toEqual([3, 3, 1_800]);
   });
   it("per-market thresholds and leverage drive tier and target", () => {
     // thresholds $5k / $20k / $100k, leverage 6x / 8x / 12x
     const o = dex(25_000n, { th: [5_000, 20_000, 100_000], lv: [600, 800, 1_200], lTier: 2_000 });
-    const v = growthCeilingView(g(o), BAND, NOW, 30_000n * M, false);
+    const v = view(g(o), BAND, NOW, 30_000n * M, false);
+    // $25k is exactly T2's ramp end (20k + 5k) and the book $30k is past it: the full 8x
     expect([v.tier, v.targetX100]).toEqual([2, 800]);
     expect(v.nextTierUnlock).toMatchObject({ tier: 3, depthUsd: 100_000, leverageX100: 1_200 });
   });
   it("backing needed grows when lambda is below 1x (book capacity = C_m * min(lambda, 1x))", () => {
-    const v = growthCeilingView(g(dex(30_000n, { lambda: 5_000 })), BAND, NOW, 40_000n * M, false);
+    const v = view(g(dex(30_000n, { lambda: 5_000 })), BAND, NOW, 40_000n * M, false);
     expect(v.bookDepthE6).toBe(20_000n * M);
     expect(v.nextTierUnlock.backingUsd).toBe(200_000);
   });
   it("unknown LP equity reads book tier 0 (never looser)", () => {
-    const v = growthCeilingView(g(dex(700_000n)), BAND, NOW, null, false);
+    const v = view(g(dex(700_000n)), BAND, NOW, null, false);
     expect([v.bookTier, v.tier, v.ceilingX100]).toEqual([0, 0, 500]);
   });
   it("off the clamp: launch ceiling, nothing to unlock, tier 0", () => {
-    const v = growthCeilingView(g(dex(700_000n, { rGap: 400, ceil: 1_000 })), BAND, NOW, 600_000n * M, false);
+    const v = view(g(dex(700_000n, { rGap: 400, ceil: 1_000 })), BAND, NOW, 600_000n * M, false);
     expect([v.clampEnforced, v.tier, v.ceilingX100, v.nextUnlock.kind]).toEqual([false, 0, 500, "none"]);
-    expect(growthCeilingView(g(dex(700_000n)), 0, NOW, 600_000n * M, false).clampEnforced).toBe(false);
+    expect(view(g(dex(700_000n)), 0, NOW, 600_000n * M, false).clampEnforced).toBe(false);
   });
-  it("force-down gives the launch ceiling", () => {
-    const v = growthCeilingView(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 600_000n * M, true);
-    expect([v.ceilingX100, v.targetX100, v.nextUnlock.kind]).toEqual([500, 500, "none"]);
+  it("force-down (legacy boolean) and the h-lock give the launch ceiling", () => {
+    const v = view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 600_000n * M, true);
+    expect([v.ceilingX100, v.targetX100, v.nextUnlock.kind, v.stress]).toEqual([500, 500, "none", STRESS_HLOCK]);
+  });
+  it("graded stress (item 3): draw -> one tier down, real ADL -> two, binding in the same read", () => {
+    const o = dex(700_000n, { ceil: 2_000 });
+    const d = view(g(o), BAND, NOW, 625_000n * M, STRESS_DRAW);
+    expect([d.tier, d.stressCapX100, d.targetX100, d.ceilingX100]).toEqual([3, 1_000, 1_000, 1_000]);
+    const a = view(g(o), BAND, NOW, 625_000n * M, STRESS_ADL);
+    expect([a.stressCapX100, a.targetX100, a.ceilingX100]).toEqual([500, 500, 500]);
+    expect(view(g(o), BAND, NOW, 625_000n * M, STRESS_NONE).ceilingX100).toBe(2_000);
+  });
+  it("volatility (item 6): no data -> launch; seed variance over H = 1,200 caps a 20x market at 17.48x; inputs missing -> launch", () => {
+    const o = dex(700_000n, { ceil: 2_000 });
+    // a legacy (combined-build) record: flags 0, c_launch at 0..8 -> no volatility data -> launch at once
+    const leg = g({ ...o, legacy: true, cLaunch: 5_000_000_000n });
+    expect([leg.r3Layout, leg.volHasData, leg.volVarX100, leg.cLaunchAtoms]).toEqual([false, false, 0, 5_000_000_000n]);
+    expect(view(leg, BAND, NOW, 625_000n * M, STRESS_NONE).ceilingX100).toBe(500);
+    // seed variance 2,500: sigma_H = ceil(sqrt(2,500 * 1,200 / 100)) = 174; L_vol = 1e6 / max(500, 3 * 174 + 0) = 1e6 / 522 = 1,915
+    const seeded = view(g({ ...o, volVar: 2_500 }), BAND, NOW, 625_000n * M, STRESS_NONE);
+    expect([seeded.lVolX100, seeded.lSignalX100, seeded.ceilingX100]).toEqual([1_915, 1_915, 1_915]);
+    // with the Rust unit test's liquidation fee 50 bps: 1e6 / 572 = 1,748
+    expect(growthCeilingView(g({ ...o, volVar: 2_500 }), BAND, NOW, 625_000n * M, STRESS_NONE, { ...VOL, liquidationFeeBps: 50n }).ceilingX100).toBe(1_748);
+    const miss = growthCeilingView(g({ ...o, volVar: 2_500 }), BAND, NOW, 625_000n * M, STRESS_NONE);
+    expect([miss.volInputsMissing, miss.ceilingX100]).toEqual([true, 500]);
   });
   it("stale depth: tier 0 for leverage, sticky cap for capacity", () => {
     const o = dex(150_000n, { slot: 100n, lastGoodSlot: 100n, ceil: 1_000 });
-    const v = growthCeilingView(g(o), BAND, 100n + 18_000n, 120_000n * M, false);
+    const v = view(g(o), BAND, 100n + 18_000n, 120_000n * M, false);
     expect([v.effectiveDepthE6, v.venueTier, v.tier, v.ceilingX100]).toEqual([0n, 0, 0, 500]);
     expect(v.capDepthE6).toBe(37_500n * M);
   });
@@ -493,7 +544,8 @@ describe("growthCeilingView: explainer worked examples (tiered 20x meme market, 
 function qin(growth: AssetGrowthV19, cap: bigint, now = NOW, lpPos = 1n): QuoteMaxLeverageInput {
   return {
     engineImrBps: 500n, growth, lpCapital: cap, lpPnl: 0n, lpFeeCredits: 0n, lpEffectivePositionQ: lpPos, assetBound: true,
-    oiEffLongQ: 0n, oiEffShortQ: 0n, priceE6: M, bankruptcyHlockActive: false, v22: { bandBps: BAND, nowSlot: now },
+    oiEffLongQ: 0n, oiEffShortQ: 0n, priceE6: M, bankruptcyHlockActive: false,
+    v22: { bandBps: BAND, nowSlot: now, vol: { liquidationFeeBps: VOL.liquidationFeeBps, bandMaxEpochSlots: VOL.bandMaxEpochSlots } },
   };
 }
 
@@ -598,7 +650,7 @@ describe("R2-L2: thresholds are whole collateral tokens scaled by the mint decim
     expect(ASSET_GROWTH_DEPTH_FIELD_OFF.depthRiseSlot64).toBe(114);
     // a 9-decimal collateral market: $100k-equivalent depth is 100_000 tokens = 1e14 atoms
     const o = dex(100_000n, { dec: 9 });
-    const v = growthCeilingView(g(o), BAND, NOW, null, false);
+    const v = view(g(o), BAND, NOW, null, false);
     expect(v.collateralDecimals).toBe(9);
     expect(v.thresholdsE6[1]).toBe(100_000n * 1_000_000_000n);
     // the same atoms are only 100 tokens at 9 decimals: tier 0, and tier 2 needs 100,000 TOKENS of depth
@@ -612,65 +664,80 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
   const a = DEPTH_SOURCE.OnChainPool;
   const usable = (x: DepthState, now: bigint): bigint | null => usableDepthE6(freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now), x.lastGoodE6);
   const empty: DepthState = { depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 };
-  it("the flash-liquidity scenario: a $500M reading for two adjacent slots adds nothing in the same epoch; honest pair takes it down at once", () => {
-    const real = 2_000n * M, inflated = 500_000_000n * M;
-    const s0 = dpu(empty, a, real, 1_000n, seed);
-    const s1 = dpu(s0, a, real, 1_001n, seed);
-    expect(usable(s1, 1_001n)).toBe(real);
-    const w1 = dpu(s1, a, inflated, 1_014n, seed);
-    const w2 = dpu(w1, a, inflated, 1_015n, seed);
-    const u = usable(w2, 1_015n)!;
-    expect(u).toBe(real);
-    expect(venueTier(u, w2.depthSource, th, 0)).toBe(0);
-    const h1 = dpu(w2, a, real, 1_016n, seed);
-    expect(usable(h1, 1_016n)).toBe(real);
-    expect(h1.lastGoodE6).toBe(real);
-    const z = dpu(h1, DEPTH_SOURCE.None, 0n, 1_017n, seed);
-    expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 1_200n)).toBe(real);
+  // Port of the Rust unit test at 666df893 (round 3 item 4: D-I1 first reading T1/16, the time-weighted window, D2 held zero).
+  const floor = seed / DEPTH_BOOTSTRAP_DIV;
+  const B = DEPTH_TW_BUCKET_SLOTS;
+  const usableOf = (x: DepthState, now: bigint): bigint | null => usableDepthE6(freshDepthE6(x.depthE6, x.depthPrevE6, x.depthSlot, x.depthSource, now), x.lastGoodE6, depthTwMinAtoms(x.tw!, M));
+  const hold = (st0: DepthState, from: bigint, to: bigint, d: bigint): DepthState => {
+    let st = st0;
+    for (let x = from; x <= to; x += 10n) st = dpu(st, a, d, x, seed);
+    return st;
+  };
+  const real = 2_000n * M, inflated = 500_000_000n * M;
+  it("D-I1: a first-pair flash of $500M reads T1/16 (~$1,562), tier 0; two inflated reads in the same bucket add nothing", () => {
+    const f0 = dpu(dpu(empty, a, inflated, 1_000n, seed), a, inflated, 1_001n, seed);
+    expect(f0.lastGoodE6).toBe(floor);
+    expect(venueTier(usableOf(f0, 1_001n)!, f0.depthSource, th, 0)).toBe(0);
+    const s1 = dpu(dpu(empty, a, real, 1_000n, seed), a, real, 1_001n, seed);
+    expect(s1.lastGoodE6).toBe(floor); // first reading: T1/16
+    const w2 = dpu(dpu(s1, a, inflated, 1_014n, seed), a, inflated, 1_015n, seed);
+    expect(usableOf(w2, 1_015n)).toBe(floor); // the spike adds nothing
+    expect(depthTwMinAtoms(w2.tw!, M)).toBe(real); // the window keeps the real min
+    // the whale withdraws, then a 35 B push: sticky at the rate-limited value, never the inflated one
+    const z = dpu(dpu(w2, a, real, 1_016n, seed), DEPTH_SOURCE.None, 0n, 1_017n, seed);
+    expect(capDepthE6(z.depthSource, null, z.lastGoodE6, z.lastGoodSlot, 1_200n, depthTwMinAtoms(z.tw!, M))).toBe(floor);
   });
-  it("one doubling per epoch from the tier-0 seed; a second spike in the same epoch adds nothing; tier 3 needs >= 5 epochs", () => {
-    const inflated = 500_000_000n * M;
-    let st = dpu(empty, a, inflated, 9_000n, seed);
-    st = dpu(st, a, inflated, 9_001n, seed);
-    expect(st.lastGoodE6).toBe(seed); // the first reading is tier 0
+  it("a rise needs liquidity HELD over a full bucket pair AND 9,000 slots per doubling; an honest reading takes it down at once", () => {
+    const s1 = dpu(dpu(empty, a, real, 1_000n, seed), a, real, 1_001n, seed);
+    let st = s1;
+    let s = 10_100n; // the first rise window opens at stamp(1,001) * 64 + 63 + 9,000 = 10,023
     let prev = st.lastGoodE6;
-    for (let k = 1n; k <= 6n; k++) {
-      const sl = 9_000n + 9_100n * k; // D-L2: >= 9,000 slots after the previous rise
-      st = dpu(st, a, inflated, sl, seed);
-      st = dpu(st, a, inflated, sl + 1n, seed);
-      expect(st.lastGoodE6, `epoch ${k}`).toBe(prev * 2n);
-      const again = dpu(st, a, inflated, sl + 2n, seed);
-      expect(again.lastGoodE6).toBe(st.lastGoodE6);
-      st = again;
+    for (let k = 1; k <= 4; k++) {
+      st = hold(st, s - 2n * B, s - 80n, inflated);
+      expect(st.lastGoodE6, `window ${k}: no rise before 9,000 slots`).toBe(prev);
+      st = hold(st, s, s + 2n * B, inflated);
+      expect(st.lastGoodE6, `window ${k}: exactly one doubling`).toBe(prev * 2n);
+      st = hold(st, s + 2n * B + 10n, s + 4_000n, inflated);
+      expect(st.lastGoodE6, `window ${k}: no second rise`).toBe(prev * 2n);
       prev = st.lastGoodE6;
+      s += 9_064n;
     }
-    expect(prev >= th[2] && prev / 64n < th[2]).toBe(true);
-    const zr = dpu(st, a, 0n, 9_000n * 9n, seed);
-    expect(zr.lastGoodE6).toBe(0n);
-    const p1 = dpu(zr, a, inflated, 9_000n * 9n + 1n, seed);
-    const p2 = dpu(p1, a, inflated, 9_000n * 9n + 2n, seed);
-    expect(p2.lastGoodE6).toBe(seed / DEPTH_BOOTSTRAP_DIV);
+    const h = dpu(dpu(st, a, real, s, seed), a, real, s + 1n, seed);
+    expect(usableOf(h, s + 1n)).toBe(real);
+    expect(h.lastGoodE6).toBe(real); // down at once
   });
-  it("depthRateLimited primitives and the 2^e mutant", () => {
-    const real = 2_000n * M;
-    expect(depthRateLimited(true, real, 0, 500_000_000n * M, 63n + 9_000n, seed).lastGoodE6).toBe(2n * real);
-    expect(depthRateLimited(true, seed, 0, 500_000_000n * M, 9_000n * 21n, seed).lastGoodE6).toBe(seed * 2n);
-    expect(depthRateLimited(true, 100n, 5, 50n, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseSlot64: 5 }); // down at once, stamp kept
-    expect(depthRateLimited(false, 0n, 0, 9n * T1, 20_000n, seed)).toEqual({ lastGoodE6: seed, riseSlot64: 312 });
+  it("D2: a real 0 caps at 0 at once but last_good is HELD; recovery within ~10 min, a long zero decays it", () => {
+    const deep = 150_000n * M;
+    let d: DepthState = { lastGoodE6: deep, lastGoodSlot: 50_000n, riseSlot64: 0, depthSource: DEPTH_EVER | a | DEPTH_PREV_REAL, depthE6: deep, depthPrevE6: deep, depthSlot: 50_000n,
+      tw: { curTokens: 150_000, prevTokens: 150_000, bucketP1: depthTwBucketP1(50_000n) } };
+    d = dpu(d, a, 0n, 50_010n, seed);
+    expect(usableOf(d, 50_010n)).toBe(0n); // fresh-zero: 0 at once
+    expect([d.lastGoodE6, d.lastGoodSlot]).toEqual([deep, 50_000n]); // held through the zero
+    expect(capDepthE6(d.depthSource, null, d.lastGoodE6, d.lastGoodSlot, 50_300n, depthTwMinAtoms(d.tw!, M))).toBe(0n); // stale after a zero: still 0
+    const r1 = hold(d, 50_020n, 50_020n + 300n, deep);
+    expect(usableOf(r1, 50_320n)).toBe(0n); // the zero is still in the window
+    const r2 = hold(r1, 50_330n, 50_000n + 3n * B, deep);
+    expect(usableOf(r2, r2.depthSlot)).toBe(deep); // recovered within ~10 min, not ~7 h
+    expect(floor * 32n < deep).toBe(true); // round 2 needed > 6 doublings (~7 h) to get back
+    const long = hold(d, 50_020n, 50_000n + 9_000n * 2n + 500n, 0n);
+    const back = hold(long, 50_000n + 9_000n * 2n + 510n, 50_000n + 9_000n * 2n + 510n + 3n * B, deep);
+    expect(back.lastGoodE6).toBe((deep >> 2n) * 2n); // two epochs of zero: a quarter, then one doubling
+  });
+  it("depthRateLimited direct checks (D-L2 kept; no full window: no rise); depth_rise_stamp saturation", () => {
+    const a1 = depthRateLimited(true, seed, 9_062n, 0, inflated, true, 63n + 9_000n, seed);
+    expect(a1.lastGoodE6).toBe(2n * seed);
+    const a2 = depthRateLimited(true, a1.lastGoodE6, 63n + 9_000n, a1.riseSlot64, inflated, true, 63n + 9_001n, seed);
+    expect(a2.lastGoodE6).toBe(a1.lastGoodE6); // one slot later: no second doubling
+    const a3 = depthRateLimited(true, seed, 9_062n, 0, inflated, false, 63n + 9_000n, seed);
+    expect(a3.lastGoodE6).toBe(seed); // no full window: no rise
+    expect(depthRateLimited(true, 100n, 44_999n, 5, 50n, true, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseSlot64: 5, lastGoodSlot: 45_000n }); // down at once, stamp kept
+    // base is the STICKY last good: 100 last seen at slot 5 is 100 >> 4 = 6 at slot 45,000, so 50 is a rise (one doubling of 6, floored at seed/16, capped at w)
+    expect(depthRateLimited(true, 100n, 5n, 5, 50n, true, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 50n, riseSlot64: depthRiseStamp(45_000n), lastGoodSlot: 45_000n });
+    expect(depthRateLimited(true, 100n, 5n, 5, 0n, true, 9_000n * 5n, seed)).toEqual({ lastGoodE6: 100n, riseSlot64: 5, lastGoodSlot: 5n }); // D2: a zero holds
+    expect(depthRateLimited(false, 0n, 0n, 0, 9n * T1, false, 20_000n, seed)).toEqual({ lastGoodE6: floor, riseSlot64: 312, lastGoodSlot: 20_000n });
     expect(depthRiseStamp(20_000n)).toBe(312);
     expect(depthRiseStamp(1n << 60n)).toBe(0xffff_ffff);
     expect(depthRiseWindowOpen(0xffff_ffff, 1n << 62n)).toBe(false); // a saturated stamp never opens
-    const mutant = (lg: bigint, e: number): bigint => lg * (1n << BigInt(Math.min(e, 63)));
-    expect(mutant(seed, 20) >= th[2]).toBe(true);
-  });
-  it("D-L2 straddle: 9,000 slots since the LAST RISE, not a calendar boundary (Rust vectors)", () => {
-    const big = 500_000_000n * M;
-    const a1 = depthRateLimited(true, seed, 0, big, 63n + 9_000n, seed);
-    expect(a1.lastGoodE6).toBe(2n * seed);
-    const a2 = depthRateLimited(true, a1.lastGoodE6, a1.riseSlot64, big, 63n + 9_001n, seed);
-    expect(a2.lastGoodE6).toBe(a1.lastGoodE6); // one slot later: no second doubling
-    const calendarMutant = (reSlot: bigint, slot: bigint): boolean => slot / 9_000n > reSlot / 9_000n;
-    expect(calendarMutant(8_999n, 9_000n)).toBe(true); // the round-2 gate would allow it
     expect(depthRiseWindowOpen(depthRiseStamp(8_999n), 9_000n)).toBe(false);
     expect(depthRiseWindowOpen(depthRiseStamp(8_999n), (8_999n / 64n) * 64n + 63n + 9_000n)).toBe(true);
     expect(depthRiseWindowOpen(depthRiseStamp(8_999n), (8_999n / 64n) * 64n + 63n + 8_999n)).toBe(false);
@@ -694,20 +761,20 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
   it("view: the depth is there but rate-limited -> tier from the usable depth, ETA from the doubling schedule", () => {
     // fresh $400k on-chain, last good rate-limited at $25k (tier 1), rise epoch 0, now in epoch 0; backing $600k
     const o = dex(400_000n, { lastGood: 25_000n * M, riseSlot64: 0 });
-    const v = growthCeilingView(g(o), BAND, NOW, 600_000n * M, false);
+    const v = view(g(o), BAND, NOW, 600_000n * M, false);
     expect([v.venueTier, v.bookTier, v.tier]).toEqual([1, 3, 1]);
     expect(v.freshDepthE6).toBe(400_000n * M);
     expect(v.effectiveDepthE6).toBe(25_000n * M);
     // tier 2 needs $100k: 25k -> 50k at slot 9,063 (window opens 63 + 9,000 after stamp 0) -> 100k at 18,087 (stamp 141): 17,087 slots from slot 1000
     expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_087n, depthEtaMinutes: 114 });
-    // capacity follows the usable depth, not the fresh one
+    // capacity follows the usable depth, not the fresh one; item 5: at exactly T1 the kappa ramp starts at the tier-0 value 0.5
     const q = quoteMaxLeverage(qin(g(o), 600_000n * M), "long");
     expect(q.capDepthE6).toBe(25_000n * M);
-    expect(q.nCapQ).toBe(25_000n * M);
+    expect(q.nCapQ).toBe(12_500n * M);
   });
   it("ratchet kind: usable depth already supports a higher target -> the +1x step ETA", () => {
     const o = dex(150_000n, { lastGood: 150_000n * M, ceil: 500 });
-    const v = growthCeilingView(g(o), BAND, NOW, 120_000n * M, false);
+    const v = view(g(o), BAND, NOW, 120_000n * M, false);
     expect(v.nextUnlock.kind).toBe("ratchet");
   });
 });

@@ -231,6 +231,13 @@ export declare function encodeVaultLpReleaseSurplusP3(amount: bigint, sourceDoma
  * + {@link pinnedMatcherCapsP3}. `lpPortfolio` must be pre-created (program-owned, portfolio length).
  */
 export declare const ACCOUNTS_INIT_VAULT_LP_P3: readonly AccountSpec[];
+/**
+ * Tag 94 with the controller-round OPTIONAL account `[11]` = the market's `VaultLpExtV19` PDA (`["vault_lp_ext", market]`, writable;
+ * percolator-prog `666df893`, `init_vault_lp_pin_ext_if_passed`). When passed, the ext is created at the bind with the protocol defaults (alpha 50%,
+ * buffer 30%, cushion ON 20% / 50%), the marketauth paying rent through `[5]`, so the fee cushion forms from the first harvest. The program only
+ * acts on it when its key IS the canonical PDA (any other trailing account is ignored); a build without the controller round ignores it too.
+ */
+export declare const ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3: readonly AccountSpec[];
 /** Tag 95: 8 accounts. `matcherDelegate` = deriveMatcherDelegate(wrapper, market, lp, registry, matcherProgram, matcherCtx). */
 export declare const ACCOUNTS_VAULT_LP_SET_MATCHER_P3: readonly AccountSpec[];
 /** Tag 96: 7 accounts. */

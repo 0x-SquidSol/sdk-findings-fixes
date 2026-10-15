@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
-  decodeAssetGrowthRecordV19, ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, effectiveDepthE6, bandRGapBps, clampEnforced,
+  decodeAssetGrowthRecordV19, ASSET_GROWTH_LEN, ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_LEGACY_FIELD_OFF, effectiveDepthE6, bandRGapBps, clampEnforced,
   DEPTH_MAX_AGE_SLOTS, encodePushAuthMark, IX_TAG, stakePoolValue, collateralForLpV5, creatorCollateralAtaV5, decodeError, PERCOLATOR_ERRORS,
 } from "../src/index.js";
 
@@ -15,7 +15,7 @@ function rec(over: Partial<Record<"cLaunch" | "ceil" | "lambda" | "lLaunch" | "l
   const b = new Uint8Array(ASSET_GROWTH_LEN);
   const v = new DataView(b.buffer);
   const F = { ...ASSET_GROWTH_FIELD_OFF, ...ASSET_GROWTH_DEPTH_FIELD_OFF };
-  v.setBigUint64(F.cLaunchAtoms, over.cLaunch ?? 0n, true);
+  v.setBigUint64(ASSET_GROWTH_LEGACY_FIELD_OFF.cLaunchAtoms, over.cLaunch ?? 0n, true); // a legacy (flags 0) record
   v.setUint32(F.lambdaBps, Number(over.lambda ?? 10_000n), true);
   v.setUint16(F.lLaunchX100, Number(over.lLaunch ?? 300n), true);
   v.setUint16(F.lTierX100, Number(over.lTier ?? 1000n), true);
@@ -48,7 +48,8 @@ describe("AssetGrowthV19 depth fields", () => {
   });
   it("does not disturb the existing fields and a growth-off record is still null", () => {
     const g = decodeAssetGrowthRecordV19(rec({ cLaunch: 7n, lLaunch: 550n, depth: 9n }))!;
-    expect(g.cLaunchAtoms).toBe(7n);
+    expect(g.cLaunchAtoms).toBe(7n); // flags 0: the retired c_launch is still decoded for legacy records
+    expect([g.r3Layout, g.volHasData, g.volVarX100]).toEqual([false, false, 0]);
     expect(g.lLaunchX100).toBe(550);
     expect(g.depthE6).toBe(9n);
     expect(decodeAssetGrowthRecordV19(new Uint8Array(120))).toBeNull();

@@ -44,9 +44,16 @@ export declare const ASSET_GROWTH_LEN = 120;
 export declare const ASSET_GROWTH_VERSION_FIELD_OFF = 38;
 /** Length of one wrapper asset slot (same stride base as `AssetRiskLimitsV17`). */
 export declare const ASSET_WRAPPER_SLOT_LEN = 1024;
-/** Field offsets inside the 120-byte `AssetGrowthV19` record (rustc `repr(C)`, no u128). */
+/**
+ * Field offsets inside the 120-byte `AssetGrowthV19` record (rustc `repr(C)`, no u128), as of the v2.2 controller round
+ * (percolator-prog `feat/v22-growth-controller` @ `666df893`, `offset_of!` asserts `src/v16_program.rs` "Round 3 item 4 allocation claims").
+ * Bytes 0..4 / 4..8 are the volatility EWMA and the rent stamp ONLY when `flags` bit 0 ({@link GROWTH_FLAG_R3_LAYOUT}) is set; a record
+ * without it (written by the combined build or earlier) still holds the retired `c_launch_atoms` u64 there
+ * ({@link ASSET_GROWTH_LEGACY_FIELD_OFF}). Bytes 30..38 are the time-weighted depth window (were the dead growth-1 dials, always 0).
+ */
 export declare const ASSET_GROWTH_FIELD_OFF: Readonly<{
-    readonly cLaunchAtoms: 0;
+    readonly volVarX100: 0;
+    readonly rentStamp64: 4;
     readonly ceilSlot: 8;
     readonly lambdaBps: 16;
     readonly lLaunchX100: 20;
@@ -54,14 +61,24 @@ export declare const ASSET_GROWTH_FIELD_OFF: Readonly<{
     readonly ceilX100: 24;
     readonly kinkBps: 26;
     readonly rGapBps: 28;
-    readonly allocAlphaBps: 30;
-    readonly allocBufferBps: 32;
-    readonly cushionTargetBps: 34;
-    readonly cushionShareBps: 36;
+    readonly depthTwCur: 30;
+    readonly depthTwPrev: 34;
     readonly version: 38;
     readonly flags: 39;
     readonly utilFeeMaxBps: 40;
     readonly reserved: 42;
+}>;
+/**
+ * The PRE-controller meaning of the reused bytes (records with `flags == 0`: the combined build `153c62fc` and f6e7180d). `cLaunchAtoms`
+ * (u64 at 0..8) is retired: the program reads it as "no volatility data, no rent stamp" until the first push migrates the record. The four
+ * dials at 30..38 were validated 0 and are now the depth window (bucket 0 = no history). Kept so tooling can still name the old bytes.
+ */
+export declare const ASSET_GROWTH_LEGACY_FIELD_OFF: Readonly<{
+    readonly cLaunchAtoms: 0;
+    readonly allocAlphaBps: 30;
+    readonly allocBufferBps: 32;
+    readonly cushionTargetBps: 34;
+    readonly cushionShareBps: 36;
 }>;
 /**
  * v2.2 G8 depth fields, relative to the record start (inside the formerly reserved bytes; 42..44 = rent kink, 48..56 = rent
@@ -79,6 +96,7 @@ export declare const ASSET_GROWTH_DEPTH_FIELD_OFF: Readonly<{
     readonly tierThresholdUsd: 96;
     readonly tierLeverageX100: 108;
     readonly depthRiseSlot64: 114;
+    readonly depthTwBucket: 118;
 }>;
 /** N-2: utilisation fee at `u = 1` when the per-asset dial is 0 (bps of the opening notional). */
 export declare const GROWTH_UTIL_FEE_DEFAULT_BPS = 500;
@@ -99,10 +117,36 @@ export declare const MATCHER_CALL_EXT_V3_LEN = 72;
 /** `CALL_EXT_VERSION_V2`. */
 export declare const MATCHER_CALL_EXT_VERSION_V2 = 2;
 type Num = bigint | number;
+/**
+ * The stored time-weighted depth window (`growth_v19::DepthWindow`; record bytes 30..34, 34..38, 118..120).
+ * `bucketP1 == 0` = no window history (every record written before the controller round).
+ */
+export interface DepthWindow {
+    /** Minimum fresh reading in the current 750-slot bucket, WHOLE collateral tokens (floor). */
+    curTokens: number;
+    /** Minimum of the previous adjacent bucket, or {@link DEPTH_TW_ABSENT} (`u32::MAX`). */
+    prevTokens: number;
+    /** `(slot / 750) % 65,535 + 1`; 0 = no history. */
+    bucketP1: number;
+}
 /** Decoded `AssetGrowthV19` (version != 0). */
 export interface AssetGrowthV19 {
-    /** Junior risk capital at launch (atoms); 0 = not recorded. */
+    /**
+     * @deprecated Retired by the controller round (bytes 0..8 now carry the volatility EWMA and the rent stamp). Legacy records
+     * (`flags` bit 0 clear) still hold the old `c_launch_atoms` there and it is returned here; on a migrated record this is `0n`.
+     * Nothing on chain reads it.
+     */
     cLaunchAtoms: bigint;
+    /** `flags` bit 0 ({@link GROWTH_FLAG_R3_LAYOUT}): bytes 0..8 hold controller data (variance + rent stamp). */
+    r3Layout: boolean;
+    /** `flags` bit 1 ({@link GROWTH_FLAG_VOL_DATA}): the variance has at least one sample (else the volatility term reads "no data" = launch). */
+    volHasData: boolean;
+    /** Round 3 item 6 (bytes 0..4, u32): EWMA variance of the authenticated mark, bps^2 per slot x100. 0 unless {@link AssetGrowthV19.r3Layout} (`vol_var_x100()`). */
+    volVarX100: number;
+    /** Round 3 item 7 (bytes 4..8, u32): rent-snapshot stamp `slot / 64 + 1` of the last applied fall; 0 = none (and on a legacy record). */
+    rentStamp64: number;
+    /** Round 3 item 4: the time-weighted depth window (`depth_tw()`). */
+    depthTw: DepthWindow;
     /** Slot of the last ceiling change. */
     ceilSlot: bigint;
     /** `N_cap = lambda * C_m / P`; 10_000 = 1x of capital. */
@@ -117,12 +161,13 @@ export interface AssetGrowthV19 {
     kinkBps: number;
     /** Worst move between liquidation opportunities (bps). */
     rGapBps: number;
-    allocAlphaBps: number;
-    allocBufferBps: number;
-    cushionTargetBps: number;
-    cushionShareBps: number;
     version: number;
+    /** Raw `flags` byte 39 (bits 0..1 only; bit 1 requires bit 0: {@link growthFlagsOk}). */
     flags: number;
+    /** Item 2: the holding-fee rent kink u_k (bps, bytes 42..44). */
+    rentKinkBps: number;
+    /** Item 2 (+ round 3 item 7 smoothing): the rent `N_cap` snapshot (engine Q, bytes 48..56); 0 = not measured. */
+    rentNCapQ: bigint;
     /** N-2: stored utilisation-fee dial at `u = 1` (bps); 0 = {@link GROWTH_UTIL_FEE_DEFAULT_BPS}. */
     utilFeeMaxBps: number;
     /** v2.2 G8: source of the stored depth (byte 44 bits 0-1): 0 = none, 1 = keeper-attested (PushAuthMark mode 1), 2 = on-chain DEX pool (mode 2). */
@@ -445,26 +490,32 @@ export interface DepthState {
     lastGoodSlot: bigint;
     /** R2-M1 / D-L2: stamp (`slot / 64`) of the last rise of `lastGoodE6` (bytes 114..118). */
     riseSlot64: number;
+    /** Round 3 item 4 (GAP-5): the time-weighted two-bucket window (bytes 30..38, 118..120). Omitted = no history (a legacy record). */
+    tw?: DepthWindow;
 }
 /**
  * The wrapper's depth writer (every PushAuthMark form). Port of `depth_push_update`. `source` none / unknown is an ABSENT sample; a REAL reading
  * (source 1 or 2) of 0 is a real zero depth. A later-slot push stores the new sample and the old one becomes `prev` (with {@link DEPTH_PREV_REAL}
  * = it was real); a same-slot (or earlier) push can only lower the stored depth, keeps `prev` (W-L2), and at a tie of zeros the real zero
  * beats an absent one. A fresh reading ({@link freshDepthE6}, a real 0 included) sets {@link DEPTH_EVER} and updates the last good depth to its
- * RATE-LIMITED value ({@link depthRateLimited}: down at once, up at most 2x per epoch, the first reading below T1), stamped with the sample's slot.
+ * RATE-LIMITED value, stamped with the sample's slot. Controller round (item 4, GAP-5): the fresh reading first enters the time-weighted window
+ * ({@link depthTwUpdate}, whole tokens, floor) and the rate limiter is fed `w = min(window minimum, fresh)` with `riseOk` = the window spans a full
+ * adjacent bucket pair ({@link depthTwFull}); `lastGoodSlot` is the limiter's returned slot (held through a real zero, D2).
+ * Port of `growth_v19::depth_push_update` (`666df893`).
  *
- * @param st          Stored state.
+ * @param st          Stored state (`tw` omitted = no window history).
  * @param source      The new reading's source (0 none, 1 attested, 2 DEX; others are absent).
  * @param newDepthE6  The new depth (ignored for an absent sample).
  * @param nowSlot     Authenticated slot of the push.
- * @param seedE6      The market's T1 in atoms minus 1 (`tierThresholdsE6(..)[0] - 1n`).
- * @returns The new state.
+ * @param seedE6      The market's T1 in atoms minus 1 (`tierThresholdsE6(..)[0] - 1n`; `depth_seed_e6`).
+ * @param unitAtoms   One whole collateral token in atoms (`collateral_unit_atoms`; default 10^6 = 6-decimal collateral).
+ * @returns The new state (always with `tw`).
  * @example
  * ```ts
  * depthPushUpdate({ depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthSource: 0, lastGoodE6: 0n, lastGoodSlot: 0n, riseSlot64: 0 }, 1, 0n, 100n, 24_999_999_999n).lastGoodE6; // 0n, DEPTH_EVER set
  * ```
  */
-export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint, seedE6: bigint): DepthState;
+export declare function depthPushUpdate(st: DepthState, source: number, newDepthE6: bigint, nowSlot: bigint, seedE6: bigint, unitAtoms?: bigint): DepthState;
 /**
  * Sticky depth (W-M1): `lastGood >> k`, `k = floor((now - lastGoodSlot) / 9000)`; 0 once `k >= 64`. A `lastGoodSlot` after `now`
  * reads as age 0. Port of `sticky_depth_e6`.
@@ -481,21 +532,23 @@ export declare function depthPushUpdate(st: DepthState, source: number, newDepth
 export declare function stickyDepthE6(lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint;
 /**
  * The depth the capacity cap uses on a clamp-enforced market: a fresh reading ({@link freshDepthE6}; a real 0 caps at 0 at once); else, once
- * {@link DEPTH_EVER}, the sticky depth (the cap stays and decays towards 0, never "uncapped"); else `null` (never had a depth: no depth cap).
- * Port of `cap_depth_e6`.
+ * {@link DEPTH_EVER}, `min(sticky depth, last window minimum)` (the cap stays and decays towards 0, never "uncapped"; a real zero still in the
+ * window keeps it at 0); else `null` (never had a depth: no depth cap). Port of `growth_v19::cap_depth_e6` (`666df893`).
  *
  * @param depthSourceByte  Byte 44.
- * @param fresh            {@link freshDepthE6} (`null` = absent).
+ * @param fresh            The USABLE reading ({@link usableDepthE6}; `null` = absent).
  * @param lastGoodE6       `depth_last_good_e6`.
  * @param lastGoodSlot     `depth_last_good_slot`.
  * @param nowSlot          Current slot.
+ * @param twMinE6          {@link depthTwMinAtoms} of the stored window; `null` (default) = no window history (round-2 behaviour).
  * @returns Cap depth (USD e6) or `null` for no depth cap.
  * @example
  * ```ts
  * capDepthE6(0x81, null, 100_000_000_000n, 0n, 9_000n); // 50_000_000_000n
+ * capDepthE6(0x80, null, 1_000n, 100n, 200n, 0n); // 0n: a zero in the window
  * ```
  */
-export declare function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint): bigint | null;
+export declare function capDepthE6(depthSourceByte: number, fresh: bigint | null, lastGoodE6: bigint, lastGoodSlot: bigint, nowSlot: bigint, twMinE6?: bigint | null): bigint | null;
 /**
  * D-L1: the largest collateral decimals a GROWTH market accepts (`MAX_COLLATERAL_DECIMALS` = 12; InitMarket refuses more with 94
  * `GrowthInvalidConfig`; byte 46 holds decimals + 1 and the record validator bounds it at 13). Above it the tier thresholds and the depths they are
@@ -539,40 +592,126 @@ export declare function depthRiseStamp(slot: bigint): number;
  */
 export declare function depthRiseWindowOpen(riseSlot64: number, slot: bigint): boolean;
 /**
- * R2-M1 + D-L2 ("up slowly, down at once" for the depth itself): the rate-limited last good depth after a FRESH reading `r` at `slot`. The market's FIRST
- * fresh reading (`ever` false) is `min(r, seed)` (tier 0 whatever the pool shows); `r <= lastGood` -> `r` at once (a real 0 included, the rise stamp is
- * kept); `r > lastGood` with the window open ({@link depthRiseWindowOpen}: >= 9,000 slots after the last rise) -> `min(r, max(2 * lastGood, seed / 16))`;
- * otherwise unchanged. `seed` = the market's T1 in atoms minus 1. Port of `depth_rate_limited`.
+ * R2-M1 + D-L2 + controller round item 4 (GAP-5, D-I1, D2): the rate-limited last good depth after a fresh sample folded into the window. `w` is the
+ * TIME-WEIGHTED window minimum (`min(window min, fresh)`), `riseOk` = the window spans a full adjacent bucket pair ({@link depthTwFull}).
+ * - the market's FIRST fresh reading (`ever` false): `min(w, seed / 16)` (D-I1; round 2 seeded `T1 - 1`), a rise;
+ * - `w == 0` (a real zero in the window): `lastGood` and its slot are HELD (D2; the zero still caps every reader at 0 through the window);
+ * - otherwise against `base = stickyDepthE6(lastGood, lastGoodSlot, slot)`: `w <= base` -> `w` at once (rise stamp kept); `w > base` with `riseOk` and
+ *   the rise window open ({@link depthRiseWindowOpen}) -> `min(w, max(2 * base, seed / 16))`, a rise; otherwise `base`.
  *
- * @param ever        `DEPTH_EVER` already set.
- * @param lastGoodE6  Stored rate-limited depth.
- * @param riseSlot64  Stamp (`slot / 64`) of the last rise.
- * @param r           The fresh reading (collateral atoms).
- * @param slot        Slot of the reading's sample.
- * @param seedE6      T1 in atoms minus 1.
- * @returns `{ lastGoodE6, riseSlot64 }`.
+ * Port of `growth_v19::depth_rate_limited` (`666df893`).
+ *
+ * @param ever          `DEPTH_EVER` already set.
+ * @param lastGoodE6    Stored rate-limited depth.
+ * @param lastGoodSlot  Its slot (the sticky decay clock).
+ * @param riseSlot64    Stamp (`slot / 64`) of the last rise.
+ * @param w             The window-minimum reading (collateral atoms).
+ * @param riseOk        The window spans a full adjacent bucket pair.
+ * @param slot          Slot of the reading's sample.
+ * @param seedE6        T1 in atoms minus 1.
+ * @returns `{ lastGoodE6, riseSlot64, lastGoodSlot }`.
  * @example
  * ```ts
- * depthRateLimited(true, 2_000_000_000n, 0, 500_000_000_000_000n, 9_063n, 24_999_999_999n); // { lastGoodE6: 4_000_000_000n, riseSlot64: 141 }
+ * // seed $25k -> floor $1,562.5; one doubling per 9,000 slots once the window is full
+ * depthRateLimited(true, 24_999_999_999n, 9_062n, 0, 500_000_000_000_000n, true, 9_063n, 24_999_999_999n).lastGoodE6; // 49_999_999_998n
  * ```
  */
-export declare function depthRateLimited(ever: boolean, lastGoodE6: bigint, riseSlot64: number, r: bigint, slot: bigint, seedE6: bigint): {
+export declare function depthRateLimited(ever: boolean, lastGoodE6: bigint, lastGoodSlot: bigint, riseSlot64: number, w: bigint, riseOk: boolean, slot: bigint, seedE6: bigint): {
     lastGoodE6: bigint;
     riseSlot64: number;
+    lastGoodSlot: bigint;
 };
 /**
- * The depth every reader uses (tiers and the capacity cap): `min(fresh reading, rate-limited last good)`; `null` while there is no fresh reading
- * (the sticky path then applies). Port of `usable_depth_e6`.
+ * The depth every reader uses (tiers and the capacity cap): `min(fresh reading, rate-limited last good, time-weighted window minimum)`; `null`
+ * while there is no fresh reading (the sticky path then applies). Port of `growth_v19::usable_depth_e6` (`666df893`).
  *
  * @param fresh       {@link freshDepthE6}.
  * @param lastGoodE6  {@link AssetGrowthV19.depthLastGoodE6}.
+ * @param twMinE6     {@link depthTwMinAtoms} of the stored window; `null` (default) = no window history: round 2's `min(fresh, lastGood)` exactly.
  * @returns Usable depth or `null`.
  * @example
  * ```ts
  * usableDepthE6(500_000_000_000n, 25_000_000_000n); // 25_000_000_000n
+ * usableDepthE6(500_000_000_000n, 25_000_000_000n, 2_000_000_000n); // 2_000_000_000n
  * ```
  */
-export declare function usableDepthE6(fresh: bigint | null, lastGoodE6: bigint): bigint | null;
+export declare function usableDepthE6(fresh: bigint | null, lastGoodE6: bigint, twMinE6?: bigint | null): bigint | null;
+/** `DEPTH_TW_BUCKET_SLOTS`: one window bucket (~5 min). The window is the current and the previous bucket. A rise needs a full adjacent pair, so
+ * depth must be pushed at least once per 750 slots or the rate-limited depth can never rise (security review F-8 liveness note). */
+export declare const DEPTH_TW_BUCKET_SLOTS = 750n;
+/** `DEPTH_TW_BUCKET_RING`: the stored bucket code is `(slot / 750) % 65,535 + 1` (wraps after ~227 days). */
+export declare const DEPTH_TW_BUCKET_RING = 65535n;
+/** `DEPTH_TW_ABSENT`: `prevTokens` value meaning "no previous bucket" (`u32::MAX`). Real readings saturate at `u32::MAX - 1`. */
+export declare const DEPTH_TW_ABSENT = 4294967295;
+/** The all-zero window (no history). */
+export declare const DEPTH_TW_EMPTY: DepthWindow;
+/**
+ * The stored bucket code of `slot`. Port of `depth_tw_bucket_p1`.
+ * @param slot  Slot.
+ * @returns `(slot / 750) % 65,535 + 1`.
+ * @example
+ * ```ts
+ * depthTwBucketP1(749n); // 1
+ * ```
+ */
+export declare function depthTwBucketP1(slot: bigint): number;
+/**
+ * Atoms -> whole tokens (floor), saturating at `u32::MAX - 1` (never the absent marker); 0 when `unitAtoms` is 0. Port of `depth_tokens_floor`.
+ * @param depthAtoms  Depth in collateral atoms.
+ * @param unitAtoms   One whole token in atoms.
+ * @returns Whole tokens.
+ * @example
+ * ```ts
+ * depthTokensFloor(1_999_999n, 1_000_000n); // 1
+ * ```
+ */
+export declare function depthTokensFloor(depthAtoms: bigint, unitAtoms: bigint): number;
+/**
+ * Fold one FRESH sample into the window: same bucket -> `cur = min(cur, r)`; the next bucket -> `prev = cur, cur = r`; otherwise (first sample, or a
+ * gap of more than one bucket) -> `prev = ABSENT, cur = r`. Port of `depth_tw_update`.
+ * @param w        Stored window.
+ * @param rTokens  The sample in whole tokens ({@link depthTokensFloor}).
+ * @param slot     Sample slot.
+ * @returns The new window.
+ * @example
+ * ```ts
+ * depthTwUpdate(DEPTH_TW_EMPTY, 100, 5n); // { curTokens: 100, prevTokens: DEPTH_TW_ABSENT, bucketP1: 1 }
+ * ```
+ */
+export declare function depthTwUpdate(w: DepthWindow, rTokens: number, slot: bigint): DepthWindow;
+/**
+ * The window minimum in ATOMS, `min(cur, prev)` (an absent prev is `u32::MAX`, so it never wins); `null` without history. Saturating multiply.
+ * Port of `depth_tw_min_atoms`.
+ * @param w          Window.
+ * @param unitAtoms  One whole token in atoms.
+ * @returns Atoms or `null`.
+ * @example
+ * ```ts
+ * depthTwMinAtoms({ curTokens: 500, prevTokens: 40, bucketP1: 2 }, 1_000_000n); // 40_000_000n
+ * ```
+ */
+export declare function depthTwMinAtoms(w: DepthWindow, unitAtoms: bigint): bigint | null;
+/**
+ * Validator: bucket 0 means an all-zero window; with history the current minimum is never the absent marker and the bucket code is in `1..=65,535`.
+ * Port of `depth_tw_window_ok` (part of `validate_asset_growth`).
+ * @param w  Window.
+ * @returns Whether the program accepts it.
+ * @example
+ * ```ts
+ * depthTwWindowOk(DEPTH_TW_EMPTY); // true
+ * ```
+ */
+export declare function depthTwWindowOk(w: DepthWindow): boolean;
+/**
+ * Whether the window spans a full adjacent bucket pair (a RISE of the rate-limited depth needs it). Port of `depth_tw_full`.
+ * @param w  Window.
+ * @returns `bucketP1 != 0 && prevTokens != ABSENT`.
+ * @example
+ * ```ts
+ * depthTwFull({ curTokens: 500, prevTokens: 40, bucketP1: 2 }); // true
+ * ```
+ */
+export declare function depthTwFull(w: DepthWindow): boolean;
 /**
  * R2-L1: the rent `N_cap` snapshot (0 means "not measured", rent 0). When the DEPTH cap is what makes N_cap 0 (a real 0 reading or a fully decayed
  * sticky cap) the snapshot is 1, so open interest pays the maximum rent, never 0. Otherwise `min(nCap, u64::MAX)`. Port of `rent_snapshot_n_cap_q`.
@@ -821,6 +960,14 @@ export interface NCapG8Input {
     capDepth: bigint | null;
     priceE6: bigint;
     posScale?: bigint;
+    /**
+     * Controller round item 5: the SMOOTHED κ / λ_depth ({@link smoothDials}, as {@link GrowthCeilingView.dials}). Omitted = the step values at
+     * `tier` (`kappaDepthBps(tier)` / `lambdaDepthBps(tier)`), i.e. `n_cap_g8_q`; given = `n_cap_g8_q_dials`, what the program reads since `666df893`.
+     */
+    dials?: {
+        kappaBps: number;
+        lambdaDepthBps: number;
+    };
 }
 /**
  * G8 `N_cap`. Off a clamp-enforced market: exactly growth-1 `nCapQ(cM, stored lambda)`. On one: `min(nCapQ(cM, lambda_eff), depth cap)` with
@@ -834,6 +981,21 @@ export interface NCapG8Input {
  * ```
  */
 export declare function nCapG8Q(i: NCapG8Input): bigint | null;
+/**
+ * `depth_cap_q` with an explicit κ (bps): `n_cap_q(floor(depth * κ / 1e4), 1x, P)`; `U128_MAX` with no cap depth, 0 on a zero price.
+ * Port of `growth_v19::depth_cap_q_kappa`.
+ *
+ * @param kappaBps  κ in bps (smoothed or a step value).
+ * @param capDepth  {@link capDepthE6}.
+ * @param priceE6   Price.
+ * @param posScale  Engine POS_SCALE.
+ * @returns Q.
+ * @example
+ * ```ts
+ * depthCapQKappa(5_000, 100_000_000n, 1_000_000n); // 50_000_000n
+ * ```
+ */
+export declare function depthCapQKappa(kappaBps: number, capDepth: bigint | null, priceE6: bigint, posScale?: bigint): bigint;
 /**
  * G8 ext-v3 `(inventoryCapQ, liquidityNotionalE6)`. Off the clamp or with no cap depth: the growth-1 caps at the lambda {@link nCapG8Q}
  * uses. With a cap depth (fresh or sticky): `cap = min(N_cap(lambda_eff), depth cap, engine limit)` and the liquidity is
@@ -850,6 +1012,269 @@ export declare function growthMatcherCapsG8(i: NCapG8Input & {
     hlockActive: boolean;
     maxPositionAbsQ?: bigint;
 }): MatcherCallExtCapsV3;
+/** `TIER_RAMP_DIV`: the ramp above each threshold `T_i` spans `T_i / 4` (25%), capped at the next threshold. */
+export declare const TIER_RAMP_DIV = 4n;
+/** `KAPPA_TABLE_BPS`: κ by tier, 0.5 / 1 / 1 / 2 (the step values of {@link kappaDepthBps}). */
+export declare const KAPPA_TABLE_BPS: readonly [bigint, bigint, bigint, bigint];
+/** `LAMBDA_DEPTH_TABLE_BPS`: λ_depth by tier, 1x / 1x / 2x / 3x (the step values of {@link lambdaDepthBps}). */
+export declare const LAMBDA_DEPTH_TABLE_BPS: readonly [bigint, bigint, bigint, bigint];
+/**
+ * Piecewise-linear tier ramp of a monotone 4-entry table at depth `d`: `i = depthTierFor(d, th)`; `i == 0` -> `table[0]`; on the ramp
+ * `[T_i, E_i)` with `E_i = min(T_i + T_i / 4, T_{i+1})` linear (floor) from `table[i-1]` to `table[i]`; past it `table[i]`. Never looser than the
+ * step table, continuous, monotone. A non-monotone table returns the step value. Applies to L, κ and λ_depth. Port of `growth_v19::tier_ramp_u64`.
+ *
+ * @param d      Depth (collateral atoms).
+ * @param th     Thresholds (atoms, {@link tierThresholdsE6}).
+ * @param table  4-entry table, index = tier.
+ * @returns The ramped value.
+ * @example
+ * ```ts
+ * tierRampU64(110_000n, [25_000n, 100_000n, 500_000n], [500n, 500n, 1_000n, 2_000n]); // 700n (T2 + 10%: 5x + 5x * 0.4)
+ * ```
+ */
+export declare function tierRampU64(d: bigint, th: Triple<bigint>, table: readonly [bigint, bigint, bigint, bigint]): bigint;
+/**
+ * The venue depth the ramps read: a DEX reading as is; a keeper-attested one clamped to `T_{m+1} - 1` with `m = attestedMaxTierEff` (so its ramp
+ * never exceeds `L_m`); no source: 0. Port of `growth_v19::venue_depth_capped`.
+ *
+ * @param effectiveDepthE6       The usable depth (0 when absent).
+ * @param depthSourceByte        Byte 44.
+ * @param thresholdsE6           Thresholds (atoms).
+ * @param attestedMaxTierStored  Byte 45.
+ * @returns Depth for the venue ramp.
+ * @example
+ * ```ts
+ * venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, [25_000n, 100_000n, 500_000n], 0); // 99_999n
+ * ```
+ */
+export declare function venueDepthCapped(effectiveDepthE6: bigint, depthSourceByte: number, thresholdsE6: Triple<bigint>, attestedMaxTierStored: number): bigint;
+/** The smoothed growth dials (`growth_v19::SmoothDials`). */
+export interface SmoothDials {
+    /** Leverage signal x100 = min(ramp_L(venue), ramp_L(book)) (BEFORE the volatility term). */
+    lSignalX100: number;
+    /** κ (bps of the cap depth). */
+    kappaBps: number;
+    /** λ_depth (bps). */
+    lambdaDepthBps: number;
+}
+/**
+ * The smoothed dials at a (venue, book) depth pair: each is `min(ramp(venue), ramp(book))` over the market's table, so never looser than the step
+ * values at `min(venue tier, book tier)`. Port of `growth_v19::smooth_dials`.
+ *
+ * @param venueDepthE6  {@link venueDepthCapped}.
+ * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param lTableX100    `[L0..L3]` ({@link tierLeverage}).
+ * @returns Dials.
+ * @example
+ * ```ts
+ * smoothDials(110_000n, 600_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // { lSignalX100: 700, kappaBps: 10_000, lambdaDepthBps: 14_000 }
+ * ```
+ */
+export declare function smoothDials(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): SmoothDials;
+/** `VOL_EWMA_SHIFT`: EWMA weight 1/16 PER PUSH (not per unit of time; security review F-4). */
+export declare const VOL_EWMA_SHIFT = 4;
+/** `VOL_Z`: z of the volatility term. */
+export declare const VOL_Z = 3n;
+/** `VOL_MOVE_CAP_BPS`: one move is capped at 100% for the arithmetic. */
+export declare const VOL_MOVE_CAP_BPS = 10000n;
+/** `VOL_VAR_SEED_X100`: the first sample seeds `max(sample, 2,500)` ((5 bps)^2 per slot x100). */
+export declare const VOL_VAR_SEED_X100 = 2500;
+/** `GROWTH_FLAG_R3_LAYOUT`: `flags` bit 0, bytes 0..8 hold controller data (variance 0..4, rent stamp 4..8). Clear = legacy `c_launch`. */
+export declare const GROWTH_FLAG_R3_LAYOUT = 1;
+/** `GROWTH_FLAG_VOL_DATA`: `flags` bit 1, the variance has at least one sample (requires bit 0). */
+export declare const GROWTH_FLAG_VOL_DATA = 2;
+/**
+ * Validator for the `flags` byte: only bits 0-1, and bit 1 only with bit 0 (0x00 / 0x01 / 0x03). Port of `growth_v19::growth_flags_ok`.
+ * @param flags  Byte 39.
+ * @returns Whether the program accepts it (it refuses the whole record otherwise).
+ * @example
+ * ```ts
+ * growthFlagsOk(0x02); // false
+ * ```
+ */
+export declare function growthFlagsOk(flags: number): boolean;
+/**
+ * One squared move, bps^2 per slot x100: `ceil(min(ceil(|p - p0| * 1e4 / p0), 1e4)^2 * 100 / dt)`; `null` with no previous mark or `dt == 0`.
+ * Port of `growth_v19::vol_sample_x100`.
+ * @param prevMarkE6  Previous authenticated mark.
+ * @param markE6      This mark.
+ * @param dtSlots     Slots between them.
+ * @returns Sample or `null`.
+ * @example
+ * ```ts
+ * volSampleX100(1_000_000n, 1_010_000n, 10n); // 100_000n
+ * ```
+ */
+export declare function volSampleX100(prevMarkE6: bigint, markE6: bigint, dtSlots: bigint): bigint | null;
+/**
+ * The EWMA update (u32, saturating): the first sample seeds `max(sample, 2,500)`; later `var + ceil((sample - var) / 16)` on a rise,
+ * `var - floor((var - sample) / 16)` on a fall (never understates). Port of `growth_v19::vol_update_x100`.
+ * @param varX100     Stored variance.
+ * @param hasData     `flags` bit 1.
+ * @param sampleX100  {@link volSampleX100}.
+ * @returns New variance.
+ * @example
+ * ```ts
+ * volUpdateX100(1_600, true, 0n); // 1500
+ * ```
+ */
+export declare function volUpdateX100(varX100: number, hasData: boolean, sampleX100: bigint): number;
+/**
+ * `ceil(sqrt(x))` for a non-negative bigint (exact; `isqrt_ceil_u128` after security review F-8, so `isqrtCeil(2) == 2`).
+ * @param x  Non-negative integer.
+ * @returns Ceiling square root.
+ * @example
+ * ```ts
+ * isqrtCeil(17n); // 5n
+ * ```
+ */
+export declare function isqrtCeil(x: bigint): bigint;
+/**
+ * σ over the horizon, bps: `ceil(sqrt(ceil(var * h / 100)))`, saturating at u64. Port of `growth_v19::sigma_h_bps`.
+ * @param varX100  Variance x100.
+ * @param hSlots   Horizon `H = 2 * band_max_epoch_slots` (saturating).
+ * @returns σ_H bps.
+ * @example
+ * ```ts
+ * sigmaHBps(2_500, 1_200n); // 174n
+ * ```
+ */
+export declare function sigmaHBps(varX100: number, hSlots: bigint): bigint;
+/**
+ * The volatility leverage ceiling x100: `floor(1e6 / max(engine IMR, 3 * σ_H + liq fee))`, `0xffff` on a zero denominator, saturating at u16.
+ * Port of `growth_v19::l_vol_x100`.
+ * @param engineImrBps   Engine `initial_margin_bps`.
+ * @param sigmaHBps_     {@link sigmaHBps}.
+ * @param liqFeeBps      Engine `liquidation_fee_bps`.
+ * @returns L_vol x100.
+ * @example
+ * ```ts
+ * lVolX100(500n, 174n, 50n); // 1748 (17.48x)
+ * ```
+ */
+export declare function lVolX100(engineImrBps: bigint, sigmaHBps_: bigint, liqFeeBps: bigint): number;
+/**
+ * The leverage signal with the volatility term: `min(lSignal, L_vol)`; no data (`null`) -> launch (`table[0]`). Port of `growth_v19::l_signal_with_vol`.
+ * @param lSignalX100  Smoothed signal ({@link SmoothDials.lSignalX100}).
+ * @param vol          {@link lVolX100}, or `null` when the record has no volatility data.
+ * @param launchX100   `L_table[0]`.
+ * @returns Signal x100.
+ * @example
+ * ```ts
+ * lSignalWithVol(2_000, null, 500); // 500: no data -> launch
+ * ```
+ */
+export declare function lSignalWithVol(lSignalX100: number, vol: number | null, launchX100: number): number;
+/** Engine-config inputs of the volatility term (`growth_g8_ctx_view`). */
+export interface GrowthVolInputs {
+    /** Engine `initial_margin_bps`. */
+    engineImrBps: bigint;
+    /** Engine `liquidation_fee_bps`. */
+    liquidationFeeBps: bigint;
+    /** Engine `band_max_epoch_slots` (the horizon is twice it). */
+    bandMaxEpochSlots: bigint;
+}
+/**
+ * `L_vol` of a decoded record exactly as `growth_g8_ctx_view` computes it: `null` without volatility data (the caller then uses launch), else
+ * `lVolX100(IMR, sigmaHBps(var, 2 * band_max_epoch_slots), liq fee)`.
+ * @param g    Decoded growth record.
+ * @param cfg  Engine config inputs.
+ * @returns L_vol x100 or `null`.
+ * @example
+ * ```ts
+ * growthLVolX100(g, { engineImrBps: 500n, liquidationFeeBps: 50n, bandMaxEpochSlots: 600n });
+ * ```
+ */
+export declare function growthLVolX100(g: Pick<AssetGrowthV19, "volHasData" | "volVarX100">, cfg: GrowthVolInputs): number | null;
+/** `STRESS_NONE`. */
+export declare const STRESS_NONE = 0;
+/** `STRESS_DRAW`: a senior draw / G9 backstop outstanding: target capped one tier below. */
+export declare const STRESS_DRAW = 1;
+/** `STRESS_ADL`: REAL ADL (an engine side mode != Normal): two tiers below. */
+export declare const STRESS_ADL = 2;
+/** `STRESS_HLOCK`: the bankruptcy h-lock: launch. */
+export declare const STRESS_HLOCK = 3;
+/**
+ * D1(a): real ADL is an engine side mode other than Normal (0) on either side; the A factor alone is not read. Port of `growth_v19::real_adl`.
+ * @param modeLong   Engine `mode_long`.
+ * @param modeShort  Engine `mode_short`.
+ * @returns Whether either side is in ADL.
+ * @example
+ * ```ts
+ * realAdl(0, 2); // true
+ * ```
+ */
+export declare function realAdl(modeLong: number, modeShort: number): boolean;
+/**
+ * The graded stress level (highest wins). Port of `growth_v19::stress_level`.
+ * @param drawOutstanding  `outstanding_mirror_atoms != 0 || pending_moved_atoms != 0` on the asset's draw record.
+ * @param realAdl_         {@link realAdl}.
+ * @param hlock            The market's bankruptcy h-lock is latched.
+ * @returns 0..3.
+ * @example
+ * ```ts
+ * stressLevel(true, true, false); // STRESS_ADL
+ * ```
+ */
+export declare function stressLevel(drawOutstanding: boolean, realAdl_: boolean, hlock: boolean): number;
+/**
+ * The stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the h-lock.
+ * Port of `growth_v19::stress_cap_x100`.
+ * @param stress  Level 0..3.
+ * @param tier    Combined tier (step).
+ * @param table   `[L0..L3]`.
+ * @returns Cap x100.
+ * @example
+ * ```ts
+ * stressCapX100(STRESS_DRAW, 3, [500, 500, 1_000, 2_000]); // 1000
+ * ```
+ */
+export declare function stressCapX100(stress: number, tier: number, table: readonly [number, number, number, number]): number;
+/** `RENT_SNAPSHOT_FALL_SLOTS`: the rent `N_cap` snapshot falls at most 2x per 900 slots. */
+export declare const RENT_SNAPSHOT_FALL_SLOTS = 900n;
+/**
+ * The rent stamp of `slot`: `slot / 64 + 1`, saturating (never 0). Port of `growth_v19::rent_stamp64_of`.
+ * @param slot  Slot.
+ * @returns Stamp.
+ * @example
+ * ```ts
+ * rentStamp64Of(6_400n); // 101
+ * ```
+ */
+export declare function rentStamp64Of(slot: bigint): number;
+/**
+ * Item 7 (GAP-10): the rent snapshot a writer stores. A rise or a first measurement (`prev == 0`) applies at once, stamp kept; a fall is
+ * `max(new, prev >> k)` with `k` = whole 900-slot windows since the latest slot the stamp stands for (`(stamp - 1) * 64 + 63`; a never-stamped
+ * snapshot gets one halving at once), stamped now; `k == 0` holds `prev`. Port of `growth_v19::rent_snapshot_smooth`.
+ *
+ * @param prev     Stored `rent_n_cap_q`.
+ * @param stamp64  Stored rent stamp ({@link AssetGrowthV19.rentStamp64}; 0 = none, incl. a legacy record).
+ * @param next     The new snapshot ({@link rentSnapshotNCapQ}).
+ * @param nowSlot  Current slot.
+ * @returns `{ snapshot, stamp64 }`.
+ * @example
+ * ```ts
+ * rentSnapshotSmooth(1_000n, 0, 1n, 6_400n); // { snapshot: 500n, stamp64: 101 }
+ * ```
+ */
+export declare function rentSnapshotSmooth(prev: bigint, stamp64: number, next: bigint, nowSlot: bigint): {
+    snapshot: bigint;
+    stamp64: number;
+};
+/**
+ * Item 7 (GAP-13c) bind guard: on a clamp-enforced market with a measured depth, one minimum band leg must fit in the tier-0 depth capacity,
+ * `minLeg <= floor(κ0 * capDepth)`; `null` (never measured) passes. Tag 94 refuses with GrowthInvalidConfig otherwise.
+ * Port of `growth_v19::band_min_leg_fits_depth`.
+ * @param bandMinLegNotional  The band's minimum leg notional (atoms).
+ * @param capDepth            {@link capDepthE6}.
+ * @returns Whether the bind passes.
+ * @example
+ * ```ts
+ * bandMinLegFitsDepth(10_000_000n, 10_000_000n); // false: 0.5 x $10 < $10
+ * ```
+ */
+export declare function bandMinLegFitsDepth(bandMinLegNotional: bigint, capDepth: bigint | null): boolean;
 /**
  * The engine's worst two-epoch adverse move for a band: `G(d) = ceil((1e4 + d)^2 / (1e4 - d)) - 1e4` bps
  * (engine `band_rent::band_worst_adverse_bps`; wrapper `band_r_gap_bps`).
@@ -879,24 +1304,29 @@ export declare function clampEnforced(bandBps: Num, rGapBps: Num): boolean;
 /** Graduation in force: the clamp predicate, a band, and a tier >= 1 (`graduation_on`). */
 export declare function graduationOn(clamp: boolean, bandBps: Num, tier: number): boolean;
 /**
- * Live ceiling target (x100), R2.1 amendment: graduation on and no force-down: `min(L_tier, max(L_launch, L_table(tier)))`; otherwise
- * `min(L_launch, L_tier)`. The capital-doublings term is gone: the book tier is the capital term. Port of `target_ceiling_x100`.
+ * Live ceiling target (x100), R2.1 + controller round item 3: graduation on and `stress < h-lock`:
+ * `min(L_tier, max(L_launch, min(L_signal, stressCap)))`; otherwise `min(L_launch, L_tier)`. `L_signal` is the smoothed, volatility-capped signal
+ * ({@link GrowthCeilingView.lSignalX100}; `L_table(tier)` at step values) and `stressCap` the graded cap ({@link stressCapX100}).
+ * Port of `growth_v19::target_ceiling_x100` (`666df893`).
  *
  * @param graduation     {@link graduationOn}.
- * @param forceDown      A draw outstanding, the h-lock latched, or ADL on either side.
+ * @param stress         Stress level 0..3 ({@link stressLevel}). A legacy boolean `forceDown` is accepted: `true` reads as the h-lock (launch).
  * @param lLaunchX100    Launch leverage x100.
  * @param lTierX100      Tier maximum x100.
- * @param lTableTierX100 `L_table(tier)` ({@link lTableX100}).
+ * @param lSignalX100    The leverage signal x100 (round-2 name `lTableTierX100`).
+ * @param stressCapX100_ {@link stressCapX100} (default `0xffff` = no cap).
  * @returns Target x100.
  * @example
  * ```ts
- * targetCeilingX100(true, false, 500, 2_000, 1_000); // 1000
+ * targetCeilingX100(true, STRESS_NONE, 500, 2_000, 1_000); // 1000
+ * targetCeilingX100(true, STRESS_DRAW, 500, 2_000, 2_000, 1_000); // 1000: draw -> one tier down
  * ```
  */
-export declare function targetCeilingX100(graduation: boolean, forceDown: boolean, lLaunchX100: number, lTierX100: number, lTableTierX100: number): number;
+export declare function targetCeilingX100(graduation: boolean, stress: number | boolean, lLaunchX100: number, lTierX100: number, lSignalX100: number, stressCapX100_?: number): number;
 /**
- * Ceiling the gate applies (x100). Off the clamp: `min(L_launch, L_tier)` (growth-1). On it: `min(stored ratcheted ceiling, live target)`.
- * Port of `ceiling_in_force_x100`.
+ * Ceiling the gate applies (x100). Off the clamp: `min(L_launch, L_tier)` (growth-1). On it: `min(stored ratcheted ceiling, live target)` -- UP
+ * gradually (only through the ratchet) and DOWN AT ONCE: stale / zero / missing depth, a depth collapse, draw / ADL stress, the h-lock or a lower
+ * tier table all bind in the same read (security review F-1 fix A). Port of `growth_v19::ceiling_in_force_x100`.
  *
  * @param clamp        {@link clampEnforced}.
  * @param storedCeilX100 `ceil_x100`.
@@ -907,76 +1337,87 @@ export declare function targetCeilingX100(graduation: boolean, forceDown: boolea
  * @example
  * ```ts
  * ceilingInForceX100(true, 700, 1_000, 500, 2_000); // 700
+ * ceilingInForceX100(true, 2_000, 500, 500, 2_000); // 500: down at once
  * ```
  */
 export declare function ceilingInForceX100(clamp: boolean, storedCeilX100: number, targetX100: number, lLaunchX100: number, lTierX100: number): number;
 /**
- * Ratchet the stored ceiling toward a target: falls at once (stamped `now`), rises at most +1x per 9,000 slots, an unchanged ceiling keeps
- * its stamp; `forceDown` clamps the target to the floor. Port of `ratchet_ceiling_x100`.
+ * Ratchet the stored ceiling toward a target: UP GRADUALLY (+1x per 9,000 slots), DOWN AT ONCE (to the target in one call, stamped `now`); an
+ * unchanged ceiling keeps its stamp; under the h-lock (`stress >= STRESS_HLOCK`) the target is the floor (launch). Graded draw / ADL stress only
+ * chooses the TARGET ({@link stressCapX100}); there is no per-call descent limit. Port of `growth_v19::ratchet_ceiling_x100` (`666df893`).
  *
  * @param prevCeilX100 Stored ceiling x100.
  * @param prevSlot     Stored stamp.
  * @param targetX100   Target x100.
  * @param floorX100    Floor (launch) x100.
- * @param forceDown    Force the target down to the floor.
+ * @param stress       Stress level (a legacy boolean `forceDown`: `true` = h-lock).
  * @param nowSlot      Current slot.
  * @returns `{ ceilX100, ceilSlot }`.
  * @example
  * ```ts
- * ratchetCeilingX100(500, 0n, 1_000, 500, false, 9_000n); // { ceilX100: 600, ceilSlot: 9000n }
+ * ratchetCeilingX100(500, 0n, 1_000, 500, STRESS_NONE, 9_000n); // { ceilX100: 600, ceilSlot: 9000n }
  * ```
  */
-export declare function ratchetCeilingX100(prevCeilX100: number, prevSlot: bigint, targetX100: number, floorX100: number, forceDown: boolean, nowSlot: bigint): {
+export declare function ratchetCeilingX100(prevCeilX100: number, prevSlot: bigint, targetX100: number, floorX100: number, stress: number | boolean, nowSlot: bigint): {
     ceilX100: number;
     ceilSlot: bigint;
 };
 /** `MIN_C_LAUNCH_ATOMS`: the recorded launch capital is never below $1,000 of 6-decimal collateral. */
 export declare const GROWTH_MIN_C_LAUNCH_ATOMS = 1000000000n;
-/** `c_launch_atoms_for(C_m)`: `max(C_m, $1,000)`. Recorded for the ledger; the R2.1 target no longer reads it. */
-export declare function cLaunchAtomsFor(cM: bigint): bigint;
 /**
- * The ratchet writer at a site with the bound LP's `C_m` in hand (clamp-enforced markets): `c_launch == 0` snapshots `c_launch` and
- * does not climb in that call (it can only fall to launch); otherwise ratchets toward {@link targetCeilingX100}. Port of `graduation_ratchet`.
+ * `c_launch_atoms_for(C_m)`: `max(C_m, $1,000)`.
+ * @deprecated Retired by the controller round: nothing on chain records or reads `c_launch` any more (its bytes carry the volatility EWMA and the
+ * rent stamp). Kept for tooling that inspects legacy records.
+ */
+export declare function cLaunchAtomsFor(cM: bigint): bigint;
+/** Inputs of {@link graduationRatchet} / {@link graduationFallOnly}. */
+export interface GraduationWriterInput {
+    prevCeilX100: number;
+    prevSlot: bigint;
+    graduation: boolean;
+    /** Stress level 0..3 ({@link stressLevel}). */
+    stress?: number;
+    /** @deprecated Round-2 flag: `true` reads as the h-lock (launch). Ignored when `stress` is given. */
+    forceDown?: boolean;
+    lLaunchX100: number;
+    lTierX100: number;
+    /** The leverage signal x100 (smoothed + volatility; the venue ramp for the fall-only writer). */
+    lTableTierX100: number;
+    /** {@link stressCapX100} at the writer's tier (default `0xffff` = none). */
+    stressCapX100?: number;
+    nowSlot: bigint;
+}
+/**
+ * The ratchet writer at a site with the bound LP's `C_m` in hand (clamp-enforced markets; tags 5 / 78 / fills / 103 / 106): ratchets toward
+ * {@link targetCeilingX100} (falls to it at once, rises <= +1x per 9,000 slots). The retired `c_launch` snapshot is gone (controller round item 6).
+ * Port of `growth_v19::graduation_ratchet` (`666df893`).
  *
- * @returns `{ ceilX100, ceilSlot, cLaunchAtoms }`.
+ * @param i  {@link GraduationWriterInput}.
+ * @returns `{ ceilX100, ceilSlot }`.
  * @example
  * ```ts
- * graduationRatchet({ prevCeilX100: 500, prevSlot: 0n, cLaunchAtoms: 1_000_000_000n, cM: 1n, graduation: true, forceDown: false, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: 1_000, nowSlot: 9_000n });
- * // { ceilX100: 600, ceilSlot: 9000n, cLaunchAtoms: 1000000000n }
+ * graduationRatchet({ prevCeilX100: 500, prevSlot: 0n, graduation: true, stress: STRESS_NONE, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: 1_000, nowSlot: 9_000n });
+ * // { ceilX100: 600, ceilSlot: 9000n }
  * ```
  */
-export declare function graduationRatchet(i: {
-    prevCeilX100: number;
-    prevSlot: bigint;
-    cLaunchAtoms: bigint;
-    cM: bigint;
-    graduation: boolean;
-    forceDown: boolean;
-    lLaunchX100: number;
-    lTierX100: number;
-    lTableTierX100: number;
-    nowSlot: bigint;
-}): {
+export declare function graduationRatchet(i: GraduationWriterInput): {
     ceilX100: number;
     ceilSlot: bigint;
-    cLaunchAtoms: bigint;
 };
 /**
- * The fall-only ratchet (PushAuthMark: the depth changed, no `C_m` in hand). The caller passes the VENUE tier's graduation and
- * `L_table(venue tier)`, an upper bound of the real target, so the stored ceiling only ever falls here (stamped `now`). Port of `graduation_fall_only`.
+ * The fall-only ratchet (PushAuthMark: the depth changed, no `C_m` in hand). The caller passes the VENUE tier's graduation, the venue leverage ramp
+ * (with the volatility term) and the stress cap at the venue tier: an upper bound of the real target, so the stored ceiling only ever falls here,
+ * to that bound at once, stamped `now`. Port of `growth_v19::graduation_fall_only` (`666df893`).
  *
+ * @param i  {@link GraduationWriterInput}.
  * @returns `{ ceilX100, ceilSlot }`.
+ * @example
+ * ```ts
+ * graduationFallOnly({ prevCeilX100: 2_000, prevSlot: 7n, graduation: true, stress: STRESS_HLOCK, lLaunchX100: 500, lTierX100: 2_000, lTableTierX100: 1_000, nowSlot: 99n });
+ * // { ceilX100: 500, ceilSlot: 99n }
+ * ```
  */
-export declare function graduationFallOnly(i: {
-    prevCeilX100: number;
-    prevSlot: bigint;
-    graduation: boolean;
-    forceDown: boolean;
-    lLaunchX100: number;
-    lTierX100: number;
-    lTableTierX100: number;
-    nowSlot: bigint;
-}): {
+export declare function graduationFallOnly(i: GraduationWriterInput): {
     ceilX100: number;
     ceilSlot: bigint;
 };
@@ -1014,6 +1455,11 @@ export interface NextUnlock {
     etaSlots?: bigint;
     /** `ratchet`: the same in whole minutes, rounded up (display "next step in about N min"). */
     etaMinutes?: number;
+    /**
+     * Controller round item 5: the pool depth (whole collateral tokens) at which this tier's leverage is reached IN FULL. Leverage ramps linearly
+     * from the tier below at {@link NextUnlock.depthUsd} up to the tier's value here (`min(1.25 * T, next threshold)`).
+     */
+    fullDepthUsd?: number;
 }
 /** Everything derived from the growth record + band + depth + LP equity for the app. */
 export interface GrowthCeilingView {
@@ -1042,28 +1488,48 @@ export interface GrowthCeilingView {
     targetX100: number;
     /** What the gate reads. */
     ceilingX100: number;
+    /** Controller round: the graded stress level used (0 none, 1 draw, 2 real ADL, 3 h-lock). */
+    stress: number;
+    /** {@link stressCapX100} at the combined tier (`0xffff` = none). */
+    stressCapX100: number;
+    /** Item 5: the smoothed dials (κ / λ_depth feed the capacity; `lSignalX100` is BEFORE the volatility term). Step values at tier 0 off the clamp. */
+    dials: SmoothDials;
+    /** Item 6: `L_vol` x100, or `null` without volatility data (the signal then falls back to launch). */
+    lVolX100: number | null;
+    /** The leverage signal the target reads: `min(dials.lSignalX100, L_vol)` (launch with no volatility data). */
+    lSignalX100: number;
+    /** The record has volatility data but no {@link GrowthVolInputs} were passed: the view failed closed to launch. */
+    volInputsMissing: boolean;
+    /** Item 5: the venue depth the ramps read ({@link venueDepthCapped}). */
+    venueDepthE6: bigint;
+    /** Item 4: the time-weighted window minimum (atoms), `null` without history. */
+    depthTwMinE6: bigint | null;
     /** The next thing that raises the ceiling: the ratchet step when the target is already higher, else the tier requirements. */
     nextUnlock: NextUnlock;
     /** The next tier's requirements regardless of the ratchet. */
     nextTierUnlock: NextUnlock;
 }
 /**
- * Derive tier, ceiling and next unlock for one asset, exactly as the wrapper's gate does: `tier = min(venue, book)` with the book tier
- * from `cM` and the stored lambda, the per-market thresholds and leverage table, and `ceiling = min(stored, target)` on a clamp-enforced market.
+ * Derive tier, ceiling and next unlock for one asset, exactly as the wrapper's gate does (`growth_g8_ctx_view` + `growth_ceiling_x100`,
+ * percolator-prog `666df893`): usable depth = `min(fresh, rate-limited last good, window minimum)`; `tier = min(venue, book)` (step tiers, for
+ * graduation and the stress cap); the smoothed dials `min(ramp(venue), ramp(book))`; the leverage signal capped by `L_vol` (launch with no volatility
+ * data); the graded stress cap; `ceiling = min(stored, target)` on a clamp-enforced market.
  *
  * @param g          Decoded growth record.
  * @param bandBps    Engine `band_bps`.
  * @param nowSlot    Current slot.
  * @param cM         Conservative LP equity (atoms), or `null` when the LP is not in hand (the book tier reads 0: never looser).
- * @param forceDown  Draw outstanding / h-lock / ADL.
+ * @param stress     Stress level ({@link stressLevel}); a legacy boolean `forceDown` is accepted (`true` = h-lock, launch).
+ * @param vol        Engine config for the volatility term ({@link GrowthVolInputs}). Required for an exact ceiling once the record has volatility
+ *                   data; omitted -> the view fails closed to launch and sets `volInputsMissing`.
  * @returns {@link GrowthCeilingView}.
  * @example
  * ```ts
- * const v = growthCeilingView(g, 1000, slot, cM, false);
+ * const v = growthCeilingView(g, 1000, slot, cM, stressLevel(drawOut, realAdl(mL, mS), hlock), { engineImrBps: 500n, liquidationFeeBps: 50n, bandMaxEpochSlots: 600n });
  * if (v.nextUnlock.kind === "both") console.log(`${v.nextUnlock.leverageX100! / 100}x unlocks at $${v.nextUnlock.depthUsd} pool depth and $${v.nextUnlock.backingUsd} market backing`);
  * ```
  */
-export declare function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint | null, forceDown: boolean): GrowthCeilingView;
+export declare function growthCeilingView(g: AssetGrowthV19, bandBps: number, nowSlot: bigint, cM: bigint | null, stress: number | boolean, vol?: GrowthVolInputs): GrowthCeilingView;
 /** Inputs of {@link quoteMaxLeverage}. */
 export interface QuoteMaxLeverageInput {
     /** Engine initial margin (bps) of the asset. */
@@ -1100,6 +1566,16 @@ export interface QuoteMaxLeverageInput {
     v22?: {
         bandBps: number;
         nowSlot: bigint;
+        /** Controller round item 3: a senior draw / G9 backstop outstanding on the asset (`outstanding_mirror_atoms != 0 || pending_moved_atoms != 0`). */
+        drawOutstanding?: boolean;
+        /** Engine side modes (`mode_long`, `mode_short`): any non-zero is REAL ADL ({@link realAdl}). */
+        modeLong?: number;
+        modeShort?: number;
+        /** Item 6: engine `liquidation_fee_bps` and `band_max_epoch_slots` for `L_vol` (the IMR is `engineImrBps`). Omitted on a record with volatility data -> launch (fail closed). */
+        vol?: {
+            liquidationFeeBps: bigint;
+            bandMaxEpochSlots: bigint;
+        };
     };
 }
 /** Why a side is closed. */

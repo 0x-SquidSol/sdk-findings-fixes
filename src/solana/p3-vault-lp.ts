@@ -24,6 +24,7 @@ import type { CrankObservationHint } from "../abi/instructions.js";
 import {
   ACCOUNTS_DEPOSIT_JUNIOR_TRANCHE_P3,
   ACCOUNTS_INIT_VAULT_LP_P3,
+  ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3,
   ACCOUNTS_SET_VAULT_LP_RISK_P3,
   ACCOUNTS_VAULT_LP_CONVERT_PNL_P3,
   ACCOUNTS_VAULT_LP_RECALL_P3,
@@ -42,7 +43,9 @@ import {
   encodeVaultLpSettleResolvedP3,
   encodeWithdrawJuniorTrancheP3,
   CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3,
+  IX_TAG_P3,
 } from "../abi/p3.js";
+import { VAULT_LP_EXT_SEED_P2B } from "../abi/p2b-earn.js";
 import type { SetVaultLpRiskArgsP3, VaultLpSetMatcherArgsP3 } from "../abi/p3.js";
 import { deriveInsuranceLpMint, deriveLpBackingLedger, deriveLpEscrow, deriveLpRedemption, deriveLpVaultRegistry, deriveMatcherDelegate, deriveNftRegistry, deriveVaultAuthority } from "./pda.js";
 import { V17_HEADER_LEN } from "./slab.js";
@@ -488,26 +491,40 @@ export function buildCreateVaultLpMatcherCtxIxP3(
  * @param m               Market context.
  * @param marketauth      The market's marketauth (signer; becomes the junior owner).
  * @param juniorFloorBps  1000..=10000.
+ * Controller round (percolator-prog `666df893`): by DEFAULT the market's `VaultLpExtV19` PDA is appended as `[11]` (writable), so the bind creates
+ * the ext with the cushion ON (20% / 50%) and the marketauth pays its rent (~0.002 SOL). Pass `opts.withVaultLpExt: false` for the bare
+ * 11-account bind. Builds without the controller round ignore the extra account.
+ *
+ * @param m               Market context.
+ * @param marketauth      The market's marketauth (signer; becomes the junior owner; pays the ext rent).
+ * @param juniorFloorBps  1000..=10000.
  * @param matcherCtx      Pre-created 320-byte ctx owned by the matcher program (writable).
  * @param matcherProgram  Must be the canonical matcher (default: devnet v2.2 AsHvEJ8z…; PROGRAM_IDS_DEVNET_V1.matcher for a v1 market).
- * @returns Instruction (11 accounts).
+ * @param opts            `withVaultLpExt` (default true): append `[11]`. `data`: override the instruction data (e.g. `encodeInitVaultLpV19`
+ *                        or `encodeInitVaultLpV22Tiers` for a growth bind); must start with tag 94.
+ * @returns Instruction (12 accounts by default; 11 with `withVaultLpExt: false`).
  * @example
  * ```ts
- * const ix = buildInitVaultLpIxP3({ programId, market, registryDomain: 0, lpPortfolio }, marketauth, 2_000);
+ * const ix = buildInitVaultLpIxP3({ programId, market, registryDomain: 0, lpPortfolio }, marketauth, 2_000, ctx.publicKey);
  * ```
  */
 export function buildInitVaultLpIxP3(
   m: VaultLpMarketP3, marketauth: PublicKey, juniorFloorBps: number, matcherCtx: PublicKey,
   matcherProgram: PublicKey = new PublicKey(CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3),
+  opts: { withVaultLpExt?: boolean; data?: Uint8Array } = {},
 ): TransactionInstruction {
   const [registry] = deriveLpVaultRegistry(m.programId, m.market);
   const [matcherDelegate] = deriveMatcherDelegate(m.programId, m.market, m.lpPortfolio, registry, matcherProgram, matcherCtx);
-  return ix(m.programId, ACCOUNTS_INIT_VAULT_LP_P3, {
+  const withExt = opts.withVaultLpExt !== false;
+  const data = opts.data ?? encodeInitVaultLpP3(juniorFloorBps);
+  if (data[0] !== IX_TAG_P3.InitVaultLp) throw new Error(`buildInitVaultLpIxP3: data must start with tag ${IX_TAG_P3.InitVaultLp}, got ${data[0]}`);
+  return ix(m.programId, withExt ? ACCOUNTS_INIT_VAULT_LP_WITH_EXT_P3 : ACCOUNTS_INIT_VAULT_LP_P3, {
     authority: marketauth, market: m.market, registry,
     vaultLpState: deriveVaultLpStateP3(m.programId, m.market)[0], lpPortfolio: m.lpPortfolio,
     systemProgram: SystemProgram.programId, ...ledgers(m.programId, m.market, m.registryDomain),
     matcherProgram, matcherCtx, matcherDelegate,
-  }, encodeInitVaultLpP3(juniorFloorBps));
+    ...(withExt ? { vaultLpExt: PublicKey.findProgramAddressSync([new TextEncoder().encode(VAULT_LP_EXT_SEED_P2B), m.market.toBytes()], m.programId)[0] } : {}),
+  }, data);
 }
 
 /**

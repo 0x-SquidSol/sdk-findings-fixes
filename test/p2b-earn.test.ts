@@ -23,9 +23,11 @@ import {
   liveBoundPrincipalPortionP2b, lpAtomsForRedemptionP2b, lpSharesForDepositP2b, nonboundPotAvailableE3P2b, nonboundPotEntryAvailableP2b,
   nonboundVaultPricingP2b, potPhysicalNetAtomsP2b, seniorCapitalHaltP2b, seniorFloorDecodeP2b, seniorFloorEncodeP2b, vaultLpAllocAdmittedP2b,
   vaultLpAllocLimitP2b, vaultLpAllocSplitP2b, vaultLpDeallocP2b,
+  ALLOC_ALPHA_MAX_BAND_BPS_P2B, ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B, allocAlphaInForceBpsP2b, allocAlphaMaxBpsP2b, F3_PROVEN_P2B,
+  CUSHION_TARGET_DEFAULT_BPS_P2B, CUSHION_SHARE_DEFAULT_BPS_P2B,
 } from "../src/abi/p2b-earn.js";
 import { ADL_WIND_DOWN_DEFAULT_MAX_EPISODE_SLOTS, ADL_WIND_DOWN_MAX_MARK_AGE_SLOTS, adlEpisodeKey, adlWindDownDustNotionalAtoms, decodeAdlEpisodeRecord } from "../src/abi/p2b-lock-exits.js";
-import { ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_LEN, ASSET_GROWTH_SLOT_OFF } from "../src/abi/growth-v19.js";
+import { ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_LEGACY_FIELD_OFF, ASSET_GROWTH_LEN, ASSET_GROWTH_SLOT_OFF } from "../src/abi/growth-v19.js";
 import {
   BACKING_BUCKET_FIELD_OFF_P2B, BACKING_DOMAIN_LEDGER_ACCOUNT_LEN_P2B, BACKING_DOMAIN_LEDGER_BODY_LEN_P2B, BACKING_DOMAIN_LEDGER_FIELD_OFF_P2B,
   KIND_BACKING_DOMAIN_LEDGER_P2B, SOURCE_CREDIT_FIELD_OFF_P2B, SOURCE_CREDIT_LEN_P2B, SOURCE_CREDIT_REL_P2B,
@@ -125,7 +127,14 @@ describe("wire: every SDK encoder is decoded AND re-encoded byte-identically by 
     expect(() => assertVaultLpDialsP2b({ ...ok, cushionTargetBps: 1_000 })).toThrow(/both zero or both non-zero/);
     expect(() => assertVaultLpDialsP2b({ ...ok, cushionShareBps: 1_000 })).toThrow(/both zero or both non-zero/);
     expect(() => assertVaultLpDialsP2b({ ...ok, cushionTargetBps: 10_001, cushionShareBps: 1 })).toThrow();
-    expect(() => encodeSetVaultLpRiskV19P2b({ ...ok, allocAlphaBps: 5_001, assetIndex: 0, skewSlopeE9: 0n, skewMaxE9: 0n, levCapQ: 0n, levMaxImrBps: 0, vaultLpMaxLevBps: 0, approvedMatcherProgram: P2B_MATCHER })).toThrow();
+    // controller round: the ENCODER clamps alpha to the protocol cap (50% while F3 is unproven; tag 99 refuses above it on every market)
+    const base = { ...ok, assetIndex: 0, skewSlopeE9: 0n, skewMaxE9: 0n, levCapQ: 0n, levMaxImrBps: 0, vaultLpMaxLevBps: 0, approvedMatcherProgram: P2B_MATCHER };
+    const clamped = encodeSetVaultLpRiskV19P2b({ ...base, allocAlphaBps: 7_000 });
+    expect(Buffer.from(clamped.subarray(73, 75)).readUInt16LE(0)).toBe(ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B);
+    expect(Buffer.from(clamped).equals(Buffer.from(encodeSetVaultLpRiskV19P2b({ ...base, allocAlphaBps: 5_000 })))).toBe(true);
+    expect(Buffer.from(encodeSetVaultLpRiskV19P2b({ ...base, allocAlphaBps: 4_000 }).subarray(73, 75)).readUInt16LE(0)).toBe(4_000);
+    expect(() => encodeSetVaultLpRiskV19P2b({ ...base, allocAlphaBps: 10_001 })).toThrow();
+    expect(() => encodeSetVaultLpRiskV19P2b({ ...base, allocAlphaBps: 1.5 })).toThrow();
   });
   it("tags 104 / 105 (#525) and the growth trailers 0 / 93 / 94 (#524) round-trip against the SAME wrapper head", () => {
     const a = FX.vectors.adlWindDown.rust.decoded as Record<string, string>;
@@ -188,8 +197,11 @@ describe("layout: SDK offsets equal rustc offset_of on the real structs", () => 
   it("growth record offsets (#524 re-verified against this head): every named field", () => {
     expect(L.assetGrowthSlotOff).toBe(ASSET_GROWTH_SLOT_OFF);
     expect(L.assetGrowthLen).toBe(ASSET_GROWTH_LEN);
-    const { reserved: _reserved, ...named } = ASSET_GROWTH_FIELD_OFF;
-    expect(L.assetGrowthFieldOff).toEqual({ ...named });
+    // controller round (666df893): 0..8 / 30..38 were renamed (variance + rent stamp / depth window); their byte positions are unchanged, so
+    // the #524 fixture still pins every offset under the LEGACY names, and every other field keeps its name and position.
+    const { reserved: _reserved, volVarX100, rentStamp64, depthTwCur, depthTwPrev, ...named } = ASSET_GROWTH_FIELD_OFF;
+    expect([volVarX100, rentStamp64, depthTwCur, depthTwPrev]).toEqual([0, 4, 30, 34]);
+    expect(L.assetGrowthFieldOff).toEqual({ ...named, ...ASSET_GROWTH_LEGACY_FIELD_OFF });
   });
   it("P2b lock exits (#525) re-verified against this head: episode key mix and the dust bound", () => {
     for (const r of FX.adlEpisodeKey as { marketId: string; epochLong: string; epochShort: string; keyLong: number; keyShort: number }[]) {
@@ -198,6 +210,15 @@ describe("layout: SDK offsets equal rustc offset_of on the real structs", () => 
     for (const r of FX.adlDust as { decimals: number; dust: string }[]) expect(adlWindDownDustNotionalAtoms(r.decimals), `decimals ${r.decimals}`).toBe(BigInt(r.dust));
     expect(FX.constants.adlWindDownDefaultMaxEpisodeSlots).toBe(ADL_WIND_DOWN_DEFAULT_MAX_EPISODE_SLOTS);
     expect(FX.constants.adlWindDownMaxMarkAgeSlots).toBe(ADL_WIND_DOWN_MAX_MARK_AGE_SLOTS);
+  });
+  it("controller round: alpha <= 50% everywhere until F3 is proven (Rust r3_gap8_alpha_cap_truth_table @ 666df893); cushion defaults", () => {
+    expect(F3_PROVEN_P2B).toBe(false);
+    for (const band of [false, true]) expect(allocAlphaMaxBpsP2b(band, false)).toBe(5_000);
+    expect(allocAlphaMaxBpsP2b(false, true)).toBe(5_000);
+    expect(allocAlphaMaxBpsP2b(true, true)).toBe(ALLOC_ALPHA_MAX_BAND_BPS_P2B);
+    expect(allocAlphaMaxBpsP2b(true)).toBe(5_000); // F3 not proven in this round
+    expect([allocAlphaInForceBpsP2b(7_000), allocAlphaInForceBpsP2b(5_000), allocAlphaInForceBpsP2b(1), allocAlphaInForceBpsP2b(7_000, true)]).toEqual([5_000, 5_000, 1, 7_000]);
+    expect([CUSHION_TARGET_DEFAULT_BPS_P2B, CUSHION_SHARE_DEFAULT_BPS_P2B]).toEqual([2_000, 5_000]);
   });
   it("constants", () => {
     const c = FX.constants;
@@ -236,9 +257,16 @@ describe("PDA and VaultLpExtV19 decoder", () => {
     expect(x.marketGroup.toBytes()).toEqual(new Uint8Array(32).fill(0xab));
   });
   it("rejects what the program rejects (alpha above the hard max), and bad header / kind / length", () => {
-    expect(FX.vaultLpExt.badAlpha.programReadsSame).toBe(false); // the REAL read_vault_lp_ext refuses it
-    expect(() => decodeVaultLpExtV19(unhex(FX.vaultLpExt.badAlpha.hex))).toThrow(/invalid record/);
+    // v2.2 (combined 153c62fc and the controller 666df893): the validator's alpha ceiling is the BAND maximum (7000 on devnet), not 5000, so the
+    // fixture's alpha-5001 record (p2b d9e3e2d7 refused it) is VALID now and decodes with alpha in force = 50% while F3 is unproven.
+    expect(FX.vaultLpExt.badAlpha.programReadsSame).toBe(false); // what the p2b head refused
+    const a5001 = decodeVaultLpExtV19(unhex(FX.vaultLpExt.badAlpha.hex));
+    expect([a5001.allocAlphaBps, a5001.allocAlphaInForceBps]).toEqual([5_001, 5_000]);
     const good = unhex(FX.vaultLpExt.default.hex);
+    const a7000 = good.slice(); a7000.set([0x58, 0x1b], 16 + 96); // 7000: a pre-controller band record
+    expect([decodeVaultLpExtV19(a7000).allocAlphaBps, decodeVaultLpExtV19(a7000).allocAlphaInForceBps]).toEqual([7_000, 5_000]);
+    const a7001 = good.slice(); a7001.set([0x59, 0x1b], 16 + 96);
+    expect(() => decodeVaultLpExtV19(a7001)).toThrow(/invalid record/);
     expect(() => decodeVaultLpExtV19(good.subarray(0, 143))).toThrow(/need 144/);
     const kind = good.slice(); kind[10] = 9;
     expect(() => decodeVaultLpExtV19(kind)).toThrow(/kind 9/);
@@ -326,7 +354,15 @@ describe("pure rules equal the program's vault_lp_v18 on every fixture row", () 
   it("vault_lp_alloc_limit (incl. out-of-range dials -> null)", () => {
     const rs = rows("allocLimit");
     expect(rs.length).toBeGreaterThan(5);
-    for (const r of rs) expect(vaultLpAllocLimitP2b(B(r.cEff), B(r.allocated), B(r.drawable), r.alpha as number, r.buffer as number), JSON.stringify(r)).toBe(r.limit === null ? null : B(r.limit));
+    // rows with alpha in (5000, 7000] were refused by the p2b head (d9e3e2d7); v2.2's ceiling is the band maximum (`vault_lp_alloc_limit` @ 666df893)
+    for (const r of rs.filter((x) => !((x.alpha as number) > 5_000 && (x.alpha as number) <= ALLOC_ALPHA_MAX_BAND_BPS_P2B))) {
+      expect(vaultLpAllocLimitP2b(B(r.cEff), B(r.allocated), B(r.drawable), r.alpha as number, r.buffer as number), JSON.stringify(r)).toBe(r.limit === null ? null : B(r.limit));
+    }
+    expect(vaultLpAllocLimitP2b(1_000n, 0n, 1_000n, 5_001, 3_000)).toBe(500n); // floor(1000 * 0.5001) = 500 < 1000 - 300
+    expect(vaultLpAllocLimitP2b(1_000n, 0n, 1_000n, 7_000, 3_000)).toBe(700n);
+    expect(vaultLpAllocLimitP2b(1_000n, 0n, 1_000n, 7_001, 3_000)).toBeNull();
+    // what tag 103 passes: the alpha IN FORCE (min(stored, 50%) while F3 is unproven)
+    expect(vaultLpAllocLimitP2b(1_000n, 0n, 1_000n, allocAlphaInForceBpsP2b(7_000), 3_000)).toBe(500n);
   });
   it("vault_lp_alloc_admitted", () => {
     for (const r of rows("allocAdmitted")) expect(vaultLpAllocAdmittedP2b(B(r.outstanding), r.pending as boolean, B(r.v), B(r.cEff), B(r.lpEquity)), JSON.stringify(r)).toBe(r.admitted);

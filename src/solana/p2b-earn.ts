@@ -29,7 +29,8 @@ import {
   VAULT_LP_EXT_FIELD_OFF_P2B,
   VAULT_LP_EXT_SEED_P2B,
   VAULT_LP_EXT_VERSION_P2B,
-  ALLOC_ALPHA_MAX_BPS_P2B,
+  ALLOC_ALPHA_MAX_BAND_BPS_P2B,
+  allocAlphaInForceBpsP2b,
   ALLOC_BUFFER_MIN_BPS_P2B,
   BACKING_BUCKET_FIELD_OFF_P2B,
   BACKING_DOMAIN_LEDGER_ACCOUNT_LEN_P2B,
@@ -116,8 +117,10 @@ export interface VaultLpExtV19 {
   cushionAccruedAtoms: bigint;
   allocatedTotalAtoms: bigint;
   deallocatedTotalAtoms: bigint;
-  /** Allocation fraction of C_eff (<= 5000 until L3). */
+  /** Stored allocation fraction of C_eff (validator ceiling: the band maximum 7000; a pre-controller band record may hold > 5000). */
   allocAlphaBps: number;
+  /** The alpha tag 103 allocates with: `min(stored, 5000)` while F3 is unproven ({@link allocAlphaInForceBpsP2b}). */
+  allocAlphaInForceBps: number;
   /** Redemption buffer kept liquid in the pots (>= 3000). */
   allocBufferBps: number;
   cushionTargetBps: number;
@@ -135,7 +138,7 @@ function u128At(v: DataView, o: number): bigint {
 
 /**
  * Decode a `VaultLpExtV19` account (kind 10, 144 bytes), mirroring `read_vault_lp_ext`'s header and
- * `validate_vault_lp_ext` (version 1, non-zero market, alpha <= 5000, buffer in [3000, 10000],
+ * `validate_vault_lp_ext` (version 1, non-zero market, alpha <= the band maximum 7000, buffer in [3000, 10000],
  * cushion target / share <= 10000 and both-or-neither, zero padding and reserved).
  *
  * @param data  Raw account bytes (header included).
@@ -163,6 +166,7 @@ export function decodeVaultLpExtV19(data: Uint8Array): VaultLpExtV19 {
     allocatedTotalAtoms: u128At(v, B + F.allocatedTotalAtoms),
     deallocatedTotalAtoms: u128At(v, B + F.deallocatedTotalAtoms),
     allocAlphaBps: v.getUint16(B + F.allocAlphaBps, true),
+    allocAlphaInForceBps: allocAlphaInForceBpsP2b(v.getUint16(B + F.allocAlphaBps, true)),
     allocBufferBps: v.getUint16(B + F.allocBufferBps, true),
     cushionTargetBps: v.getUint16(B + F.cushionTargetBps, true),
     cushionShareBps: v.getUint16(B + F.cushionShareBps, true),
@@ -172,7 +176,7 @@ export function decodeVaultLpExtV19(data: Uint8Array): VaultLpExtV19 {
   const zero = (o: number, n: number): boolean => data.subarray(B + o, B + o + n).every((b) => b === 0);
   if (
     out.version !== VAULT_LP_EXT_VERSION_P2B || marketGroup.equals(PublicKey.default) ||
-    out.allocAlphaBps > ALLOC_ALPHA_MAX_BPS_P2B || out.allocBufferBps < ALLOC_BUFFER_MIN_BPS_P2B || out.allocBufferBps > 10_000 ||
+    out.allocAlphaBps > ALLOC_ALPHA_MAX_BAND_BPS_P2B || out.allocBufferBps < ALLOC_BUFFER_MIN_BPS_P2B || out.allocBufferBps > 10_000 ||
     out.cushionTargetBps > 10_000 || out.cushionShareBps > 10_000 || (out.cushionTargetBps === 0) !== (out.cushionShareBps === 0) ||
     !zero(F.padding, 6) || !zero(F.reserved, 16)
   ) {

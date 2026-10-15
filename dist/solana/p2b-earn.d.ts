@@ -63,8 +63,10 @@ export interface VaultLpExtV19 {
     cushionAccruedAtoms: bigint;
     allocatedTotalAtoms: bigint;
     deallocatedTotalAtoms: bigint;
-    /** Allocation fraction of C_eff (<= 5000 until L3). */
+    /** Stored allocation fraction of C_eff (validator ceiling: the band maximum 7000; a pre-controller band record may hold > 5000). */
     allocAlphaBps: number;
+    /** The alpha tag 103 allocates with: `min(stored, 5000)` while F3 is unproven ({@link allocAlphaInForceBpsP2b}). */
+    allocAlphaInForceBps: number;
     /** Redemption buffer kept liquid in the pots (>= 3000). */
     allocBufferBps: number;
     cushionTargetBps: number;
@@ -74,7 +76,7 @@ export interface VaultLpExtV19 {
 }
 /**
  * Decode a `VaultLpExtV19` account (kind 10, 144 bytes), mirroring `read_vault_lp_ext`'s header and
- * `validate_vault_lp_ext` (version 1, non-zero market, alpha <= 5000, buffer in [3000, 10000],
+ * `validate_vault_lp_ext` (version 1, non-zero market, alpha <= the band maximum 7000, buffer in [3000, 10000],
  * cushion target / share <= 10000 and both-or-neither, zero padding and reserved).
  *
  * @param data  Raw account bytes (header included).

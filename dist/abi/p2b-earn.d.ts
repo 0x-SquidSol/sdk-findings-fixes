@@ -25,9 +25,50 @@ export declare const LP_VAULT_REGISTRY_EXT_FLAG_OFF_P2B = 161;
  * bond tranche as account `[9]` (`load_bond_tranche_if_flagged`, `v16_program.rs:39210`).
  */
 export declare const LP_VAULT_REGISTRY_BOND_FLAG_OFF_P2B = 162;
-/** `vault_lp_v18::ALLOC_ALPHA_DEFAULT_BPS` / `ALLOC_ALPHA_MAX_BPS` (hard maximum until L3). */
+/** `vault_lp_v18::ALLOC_ALPHA_DEFAULT_BPS` / `ALLOC_ALPHA_MAX_BPS` (the off-band / unproven 50%). */
 export declare const ALLOC_ALPHA_DEFAULT_BPS_P2B = 5000;
 export declare const ALLOC_ALPHA_MAX_BPS_P2B = 5000;
+/**
+ * `growth_v19::ALLOC_ALPHA_MAX_BAND_BPS` (devnet build: 7000; mainnet build 6000): the record validator's hard ceiling. A pre-controller band
+ * record may still hold up to this, but it cannot ALLOCATE past {@link ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B} while {@link F3_PROVEN_P2B} is false.
+ */
+export declare const ALLOC_ALPHA_MAX_BAND_BPS_P2B = 7000;
+/**
+ * `growth_v19::F3_PROVEN` (percolator-prog `666df893`): `false` until the backing top-up draw (F3) is proven. While false, Earn alpha is capped at
+ * 50% on EVERY market (tag 99 refuses above it, tag 103 allocates with `min(stored, 50%)`). A program constant: flipping it is a code change.
+ */
+export declare const F3_PROVEN_P2B = false;
+/** `growth_v19::ALLOC_ALPHA_MAX_UNPROVEN_BPS`: the protocol alpha cap while F3 is unproven (50%). */
+export declare const ALLOC_ALPHA_MAX_UNPROVEN_BPS_P2B = 5000;
+/** `vault_lp_v18::CUSHION_TARGET_DEFAULT_BPS`: a NEW `VaultLpExtV19` starts with the G6 cushion ON, target 20% of C_eff. */
+export declare const CUSHION_TARGET_DEFAULT_BPS_P2B = 2000;
+/** `vault_lp_v18::CUSHION_SHARE_DEFAULT_BPS`: ... and 50% of the LP fee leg routed to the cushion while below target. */
+export declare const CUSHION_SHARE_DEFAULT_BPS_P2B = 5000;
+/**
+ * The tag-99 alpha ceiling: `ALLOC_ALPHA_MAX_BAND_BPS` only on a clamp-enforced (band) market AND once F3 is proven; 50% otherwise.
+ * Port of `growth_v19::alloc_alpha_max_bps_for`.
+ *
+ * @param f3Proven  `F3_PROVEN` (default {@link F3_PROVEN_P2B}).
+ * @param bandOn    The market's bound asset is clamp-enforced.
+ * @returns Max alpha bps the program accepts at tag 99.
+ * @example
+ * ```ts
+ * allocAlphaMaxBpsP2b(true); // 5000 (F3 not proven)
+ * ```
+ */
+export declare function allocAlphaMaxBpsP2b(bandOn: boolean, f3Proven?: boolean): number;
+/**
+ * The alpha tag 103 actually allocates with: the stored dial capped at 50% while F3 is unproven. Port of `growth_v19::alloc_alpha_in_force_bps_for`.
+ *
+ * @param storedAlphaBps  `VaultLpExtV19.alloc_alpha_bps`.
+ * @param f3Proven        Default {@link F3_PROVEN_P2B}.
+ * @returns Alpha in force (bps).
+ * @example
+ * ```ts
+ * allocAlphaInForceBpsP2b(7_000); // 5000
+ * ```
+ */
+export declare function allocAlphaInForceBpsP2b(storedAlphaBps: number, f3Proven?: boolean): number;
 /** `vault_lp_v18::ALLOC_BUFFER_DEFAULT_BPS` / `ALLOC_BUFFER_MIN_BPS`. */
 export declare const ALLOC_BUFFER_DEFAULT_BPS_P2B = 3000;
 export declare const ALLOC_BUFFER_MIN_BPS_P2B = 3000;
@@ -64,7 +105,7 @@ export declare const U128_MAX_P2B: bigint;
  *
  * Tag 103 accounts (9). `registry` is writable because the first allocation CREATES the ext and
  * raises the registry flag; `ext` is `["vault_lp_ext", market]` (writable; created with the
- * defaults alpha 50% / buffer 30% / cushion off if it does not exist, the cranker paying rent).
+ * defaults alpha 50% / buffer 30% / cushion ON 20% / 50% (controller round) if it does not exist, the cranker paying rent).
  */
 export declare const ACCOUNTS_VAULT_LP_ALLOCATE_P2B: readonly AccountSpec[];
 /**
@@ -74,7 +115,10 @@ export declare const ACCOUNTS_VAULT_LP_ALLOCATE_P2B: readonly AccountSpec[];
 export declare const ACCOUNTS_VAULT_LP_ALLOCATE_BOND_P2B: readonly AccountSpec[];
 /** The four allocation / cushion dials carried by tag 99's 8-byte trailer. */
 export interface VaultLpDialsP2b {
-    /** Allocation fraction of C_eff, bps. `0..=ALLOC_ALPHA_MAX_BPS_P2B` (5000 until L3). */
+    /**
+     * Allocation fraction of C_eff, bps. The program refuses above 5000 on every market while F3 is unproven ({@link allocAlphaMaxBpsP2b});
+     * {@link encodeSetVaultLpRiskV19P2b} CLAMPS a larger value to that cap.
+     */
     allocAlphaBps: number;
     /** Redemption buffer kept liquid, bps. `ALLOC_BUFFER_MIN_BPS_P2B..=10000`. */
     allocBufferBps: number;
@@ -84,7 +128,8 @@ export interface VaultLpDialsP2b {
     cushionShareBps: number;
 }
 /**
- * Validate the dials with the wrapper's own bounds (`p2b_set_vault_lp_dials`).
+ * Validate the dials with the wrapper's own bounds (`p2b_set_vault_lp_dials`; alpha <= {@link allocAlphaMaxBpsP2b} = 5000 while F3 is unproven).
+ * Strict: it does not clamp (the encoder does).
  * @param d  Dials.
  * @throws If the program would refuse them (InvalidInstruction).
  * @example
@@ -108,6 +153,8 @@ export interface SetVaultLpRiskV19ArgsP2b extends VaultLpDialsP2b {
  * `u16 alloc_alpha_bps, u16 alloc_buffer_bps, u16 cushion_target_bps, u16 cushion_share_bps`.
  * 81 bytes. The wrapper decodes ANY non-empty trailer as the dials form, so a partial trailer is
  * an error on chain; this encoder always writes all four. Upgrade-authority only.
+ * Controller round (percolator-prog `666df893`): `allocAlphaBps` is CLAMPED to {@link allocAlphaMaxBpsP2b} (5000 while F3 is unproven, which
+ * tag 99 enforces on every market); a non-integer or a value above 10000 still throws.
  *
  * @param a  Fields.
  * @returns 81 bytes.
