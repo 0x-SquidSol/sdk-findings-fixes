@@ -437,7 +437,10 @@ export declare function encodeStakeInitPool(cooldownSlots: bigint | number, depo
 export declare function encodeStakeDeposit(amount: bigint | number): Uint8Array;
 /** Tag 2: Withdraw — burn LP tokens, receive collateral (subject to cooldown). */
 export declare function encodeStakeWithdraw(lpAmount: bigint | number): Uint8Array;
-/** Tag 3: FlushToInsurance — move collateral from stake vault to wrapper insurance. */
+/**
+ * Tag 3: FlushToInsurance. @deprecated REFUSED by the deployed v5 stake program (53f5480 `processor.rs:432`:
+ * `StakeError::DeprecatedV5` = 34): insurance now moves through SyncInsuranceDeployment (tag 31). Throws.
+ */
 export declare function encodeStakeFlushToInsurance(amount: bigint | number): Uint8Array;
 /** Tag 4: UpdateConfig — update cooldown and/or deposit cap. */
 export declare function encodeStakeUpdateConfig(newCooldownSlots?: bigint | number, newDepositCap?: bigint | number): Uint8Array;

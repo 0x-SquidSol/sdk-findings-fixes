@@ -3310,7 +3310,13 @@ function encodeStakeWithdraw(lpAmount) {
   return concatBytes(new Uint8Array([STAKE_IX.Withdraw]), u64Le(lpAmount));
 }
 function encodeStakeFlushToInsurance(amount) {
-  return concatBytes(new Uint8Array([STAKE_IX.FlushToInsurance]), u64Le(amount));
+  void amount;
+  return deprecatedV5StakeInstruction("encodeStakeFlushToInsurance", STAKE_IX.FlushToInsurance, "SyncInsuranceDeployment (tag 31)");
+}
+function deprecatedV5StakeInstruction(name, tag, use) {
+  throw new Error(
+    `${name} (stake tag ${tag}) is refused by the deployed v5 stake program with DeprecatedV5 (34) and must not be sent; use ${use}.`
+  );
 }
 function encodeStakeUpdateConfig(newCooldownSlots, newDepositCap) {
   return concatBytes(
@@ -3454,10 +3460,8 @@ function burnAssetAdminAccounts(a) {
   ];
 }
 function encodeStakeRecoverFlushedInsurance(amount) {
-  return concatBytes(
-    new Uint8Array([STAKE_IX.RecoverFlushedInsurance]),
-    u64Le(amount)
-  );
+  void amount;
+  return deprecatedV5StakeInstruction("encodeStakeRecoverFlushedInsurance", STAKE_IX.RecoverFlushedInsurance, "RecoverTerminalInsurance (tag 29)");
 }
 function recoverFlushedInsuranceAccounts(a) {
   return [
@@ -14501,12 +14505,17 @@ var VAULT_LP_STATE_OFF_P3 = Object.freeze({
   seniorFeeShareBps: 228,
   version: 230,
   bump: 231,
-  /** `_padding` [232..240) must be zero (program `validate_vault_lp_state`). */
+  /**
+   * [232..240): `backstop_outstanding_atoms` (u64) on the deployed v2.2 wrapper (Phase 4 item 6 G9, was the zero
+   * `_padding`; v16_program.rs:6776). The key keeps its old name so the P3 parity fixture (rustc `offset_of!` of
+   * the former `_padding`, same offset) still compares; use {@link VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3}.
+   */
   padding: 232,
   /** P3 senior draw FINAL `d119eebd` (was `_reserved`). */
   seniorDrawnAtoms: 240,
   seniorDrawOutstandingAtoms: 256
 });
+var VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3 = VAULT_LP_STATE_OFF_P3.padding;
 var ASSET_VAULT_LP_DRAW_SLOT_OFF_P3 = 832;
 var ASSET_VAULT_LP_DRAW_LEN_P3 = 64;
 var ASSET_VAULT_LP_FIELD_OFF_P3 = Object.freeze({
@@ -14581,12 +14590,12 @@ function decodeVaultLpStateP3(data) {
     seniorFeeShareBps: v.getUint16(O.seniorFeeShareBps, true),
     version: data[O.version],
     bump: data[O.bump],
+    backstopOutstandingAtoms: v.getBigUint64(VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3, true),
     seniorDrawnAtoms: u1284(v, O.seniorDrawnAtoms),
     seniorDrawOutstandingAtoms: u1284(v, O.seniorDrawOutstandingAtoms)
   };
-  const padZero = data.subarray(O.padding, O.padding + 8).every((b) => b === 0);
-  if (st.version !== 1 || st.juniorFloorBps < 1e3 || st.juniorFloorBps > 1e4 || st.seniorFeeShareBps !== 1e4 || !padZero) {
-    throw new Error("VaultLpStateV18: invalid (version/floor/fee share/padding) \u2014 the program would reject it too");
+  if (st.version !== 1 || st.juniorFloorBps < 1e3 || st.juniorFloorBps > 1e4 || st.seniorFeeShareBps !== 1e4) {
+    throw new Error("VaultLpStateV18: invalid (version/floor/fee share) \u2014 the program would reject it too");
   }
   return st;
 }
@@ -17878,6 +17887,7 @@ export {
   VAULT_LP_MAX_LEV_BPS_P3,
   VAULT_LP_PIN_P3,
   VAULT_LP_STATE_ACCOUNT_LEN_P3,
+  VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3,
   VAULT_LP_STATE_BODY_LEN_P3,
   VAULT_LP_STATE_OFF_P3,
   VOL_EWMA_SHIFT,

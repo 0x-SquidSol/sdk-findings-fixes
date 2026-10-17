@@ -694,9 +694,19 @@ export function encodeStakeWithdraw(lpAmount: bigint | number): Uint8Array {
   return concatBytes(new Uint8Array([STAKE_IX.Withdraw]), u64Le(lpAmount));
 }
 
-/** Tag 3: FlushToInsurance — move collateral from stake vault to wrapper insurance. */
+/**
+ * Tag 3: FlushToInsurance. @deprecated REFUSED by the deployed v5 stake program (53f5480 `processor.rs:432`:
+ * `StakeError::DeprecatedV5` = 34): insurance now moves through SyncInsuranceDeployment (tag 31). Throws.
+ */
 export function encodeStakeFlushToInsurance(amount: bigint | number): Uint8Array {
-  return concatBytes(new Uint8Array([STAKE_IX.FlushToInsurance]), u64Le(amount));
+  void amount;
+  return deprecatedV5StakeInstruction('encodeStakeFlushToInsurance', STAKE_IX.FlushToInsurance, 'SyncInsuranceDeployment (tag 31)');
+}
+
+function deprecatedV5StakeInstruction(name: string, tag: number, use: string): never {
+  throw new Error(
+    `${name} (stake tag ${tag}) is refused by the deployed v5 stake program with DeprecatedV5 (34) and must not be sent; use ${use}.`,
+  );
 }
 
 /** Tag 4: UpdateConfig — update cooldown and/or deposit cap. */
@@ -1184,10 +1194,9 @@ export function burnAssetAdminAccounts(
  * ```
  */
 export function encodeStakeRecoverFlushedInsurance(amount: bigint | number): Uint8Array {
-  return concatBytes(
-    new Uint8Array([STAKE_IX.RecoverFlushedInsurance]),
-    u64Le(amount),
-  );
+  // @deprecated REFUSED by the deployed v5 stake program (53f5480 `processor.rs:464`: DeprecatedV5 = 34).
+  void amount;
+  return deprecatedV5StakeInstruction('encodeStakeRecoverFlushedInsurance', STAKE_IX.RecoverFlushedInsurance, 'RecoverTerminalInsurance (tag 29)');
 }
 
 /**

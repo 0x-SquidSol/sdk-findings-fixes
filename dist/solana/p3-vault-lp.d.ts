@@ -48,12 +48,18 @@ export declare const VAULT_LP_STATE_OFF_P3: Readonly<{
     readonly seniorFeeShareBps: 228;
     readonly version: 230;
     readonly bump: 231;
-    /** `_padding` [232..240) must be zero (program `validate_vault_lp_state`). */
+    /**
+     * [232..240): `backstop_outstanding_atoms` (u64) on the deployed v2.2 wrapper (Phase 4 item 6 G9, was the zero
+     * `_padding`; v16_program.rs:6776). The key keeps its old name so the P3 parity fixture (rustc `offset_of!` of
+     * the former `_padding`, same offset) still compares; use {@link VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3}.
+     */
     readonly padding: 232;
     /** P3 senior draw FINAL `d119eebd` (was `_reserved`). */
     readonly seniorDrawnAtoms: 240;
     readonly seniorDrawOutstandingAtoms: 256;
 }>;
+/** Account offset of `VaultLpStateV18::backstop_outstanding_atoms` (u64 LE; body 216..224 + 16-byte header). */
+export declare const VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3: 232;
 /** `ASSET_VAULT_LP_DRAW_OFF` inside each asset's wrapper slot (P3 senior draw FINAL `d119eebd`). */
 export declare const ASSET_VAULT_LP_DRAW_SLOT_OFF_P3 = 832;
 /** `ASSET_VAULT_LP_DRAW_LEN` (`size_of::<AssetVaultLpDrawV18>()`); ends at {@link ASSET_VAULT_LP_SLOT_OFF_P3}. */
@@ -144,6 +150,11 @@ export interface VaultLpStateP3 {
     seniorFeeShareBps: number;
     version: number;
     bump: number;
+    /**
+     * Insurance atoms a tag-111 backstop lent to the vault LP and not yet repaid (`backstop_outstanding_atoms`, u64).
+     * SENIOR to the Earn seniors and the junior: the program nets it off the vault value before pricing either.
+     */
+    backstopOutstandingAtoms: bigint;
     /** Cumulative senior backing moved into the vault LP's capital by booked draws (junior cover excluded). */
     seniorDrawnAtoms: bigint;
     /**
@@ -154,7 +165,7 @@ export interface VaultLpStateP3 {
 }
 /**
  * Decode a `VaultLpStateV18` account (kind 9, >= 272 bytes). Mirrors `read_vault_lp_state`'s
- * header + validation (version 1, floor 1000..=10000, senior fee share 10000, zero padding).
+ * header + validation (version 1, floor 1000..=10000, senior fee share 10000).
  *
  * @param data  Raw account bytes.
  * @returns Decoded state.

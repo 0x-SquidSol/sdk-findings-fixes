@@ -27,6 +27,7 @@ import {
 } from "../src/abi/p3.js";
 import {
   VAULT_LP_STATE_OFF_P3,
+  VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3,
   ASSET_VAULT_LP_FIELD_OFF_P3,
   VAULT_LP_STATE_ACCOUNT_LEN_P3,
   V18_KIND_VAULT_LP_STATE_P3,
@@ -173,8 +174,17 @@ describe("P3 decoders", () => {
     const drawn = Uint8Array.from(d); drawn[240] = 1; drawn[257] = 2;
     const sd = decodeVaultLpStateP3(drawn);
     expect([sd.seniorDrawnAtoms, sd.seniorDrawOutstandingAtoms]).toEqual([1n, 512n]);
-    // only _padding [232..240) must stay zero
-    const bad2 = Uint8Array.from(d); bad2[233] = 1;
+    // audit-1017 S3-C3: [232..240) is NOT padding on the deployed wrapper (aca02ba6): it is
+    // `VaultLpStateV18::backstop_outstanding_atoms` (u64, body 216..224; v16_program.rs:6776), the insurance
+    // a tag-111 backstop lent to the vault LP and not yet repaid. An outstanding loan must decode, not throw.
+    expect(st.backstopOutstandingAtoms).toBe(0n);
+    expect(VAULT_LP_STATE_BACKSTOP_OUTSTANDING_OFF_P3).toBe(232);
+    const loan = Uint8Array.from(d); new DataView(loan.buffer).setBigUint64(232, 0x0102030405060708n, true);
+    const sl = decodeVaultLpStateP3(loan);
+    expect(sl.backstopOutstandingAtoms).toBe(0x0102030405060708n);
+    expect([sl.seniorDrawnAtoms, sl.seniorDrawOutstandingAtoms, sl.bump]).toEqual([0n, 0n, 254]); // neighbours untouched
+    // negative control: the validated fields still refuse
+    const bad2 = Uint8Array.from(d); bad2[230] = 2; // version
     expect(() => decodeVaultLpStateP3(bad2)).toThrow(/invalid/);
   });
   it("decodeAssetVaultLpDrawP3 reads the 64-byte AssetVaultLpDrawV18 just before the vault-LP record", () => {

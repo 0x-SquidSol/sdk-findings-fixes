@@ -184,10 +184,8 @@ describe('Instruction encoders', () => {
     expect(readU64LE(buf, 1)).toBe(999n);
   });
 
-  it('encodeStakeFlushToInsurance — tag 3 + amount', () => {
-    const buf = encodeStakeFlushToInsurance(500n);
-    expect(buf[0]).toBe(3);
-    expect(readU64LE(buf, 1)).toBe(500n);
+  it('encodeStakeFlushToInsurance — tag 3 is DeprecatedV5 on the deployed stake: throws', () => {
+    expect(() => encodeStakeFlushToInsurance(500n)).toThrow(/tag 3.*DeprecatedV5/);
   });
 
   it('encodeStakeUpdateConfig — both set', () => {
@@ -351,11 +349,8 @@ describe('Instruction encoders', () => {
     expect(buf[0]).toBe(22);
   });
 
-  it('encodeStakeRecoverFlushedInsurance — tag 23 + amount(u64)', () => {
-    const buf = encodeStakeRecoverFlushedInsurance(555_000n);
-    expect(buf[0]).toBe(23);
-    expect(buf.length).toBe(1 + 8);
-    expect(readU64LE(buf, 1)).toBe(555_000n);
+  it('encodeStakeRecoverFlushedInsurance — tag 23 is DeprecatedV5 on the deployed stake: throws', () => {
+    expect(() => encodeStakeRecoverFlushedInsurance(555_000n)).toThrow(/tag 23.*DeprecatedV5/);
   });
 
   it('encodeStakeAdminResolveMarketCpi — tag 24, no payload (bare tag byte)', () => {

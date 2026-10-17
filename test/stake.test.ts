@@ -99,10 +99,8 @@ describe("stake encoders return Uint8Array (not Buffer)", () => {
     expect(data.length).toBe(1 + 8);
   });
 
-  it("encodeStakeFlushToInsurance", () => {
-    const data = encodeStakeFlushToInsurance(100_000n);    expect(data).toBeInstanceOf(Uint8Array);
-    expect(data[0]).toBe(STAKE_IX.FlushToInsurance);
-    expect(data.length).toBe(1 + 8);
+  it("encodeStakeFlushToInsurance throws (tag 3 is DeprecatedV5 on the deployed stake)", () => {
+    expect(() => encodeStakeFlushToInsurance(100_000n)).toThrow(/tag 3.*DeprecatedV5/);
   });
 
   it("encodeStakeUpdateConfig (both set)", () => {
@@ -138,9 +136,6 @@ describe("stake encoders return Uint8Array (not Buffer)", () => {
       /Number\.MAX_SAFE_INTEGER|safe/i,
     );
 
-    expect(() => encodeStakeFlushToInsurance(unsafe)).toThrow(
-      /Number\.MAX_SAFE_INTEGER|safe/i,
-    );
 
     expect(() => encodeStakeUpdateConfig(unsafe, undefined)).toThrow(
       /Number\.MAX_SAFE_INTEGER|safe/i,

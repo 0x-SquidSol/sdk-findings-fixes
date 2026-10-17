@@ -333,11 +333,8 @@ describe('Stake CPI Integration — Full Lifecycle', () => {
       expect(keys[7].pubkey.equals(TOKEN_PROGRAM_ID)).toBe(true);
     });
 
-    it('flushToInsurance data encodes tag 3 + u64 amount', () => {
-      const data = encodeStakeFlushToInsurance(1_000_000n);
-      expect(data[0]).toBe(STAKE_IX.FlushToInsurance);
-      expect(readU64LE(data, 1)).toBe(1_000_000n);
-      expect(data.length).toBe(9);
+    it('flushToInsurance (tag 3) is refused on the deployed v5 stake (DeprecatedV5): the encoder throws', () => {
+      expect(() => encodeStakeFlushToInsurance(1_000_000n)).toThrow(/tag 3.*DeprecatedV5/);
     });
 
     it('vault authority PDA chains correctly for CPI signing', () => {
@@ -527,7 +524,6 @@ describe('Stake Instruction Tags — No Gaps or Conflicts (ADOPTED percolator-st
       [STAKE_IX.InitPool, encodeStakeInitPool(0n, 0n)],
       [STAKE_IX.Deposit, encodeStakeDeposit(0n)],
       [STAKE_IX.Withdraw, encodeStakeWithdraw(0n)],
-      [STAKE_IX.FlushToInsurance, encodeStakeFlushToInsurance(0n)],
       [STAKE_IX.UpdateConfig, encodeStakeUpdateConfig()],
       [STAKE_IX.ReturnInsurance, encodeStakeReturnInsurance(0n)],
       [STAKE_IX.AdminWithdrawInsurance, encodeStakeAdminWithdrawInsurance(0n)],
@@ -541,7 +537,6 @@ describe('Stake Instruction Tags — No Gaps or Conflicts (ADOPTED percolator-st
       [STAKE_IX.RotateInsuranceAuthority, encodeStakeRotateInsuranceAuthority()],
       [STAKE_IX.BurnAssetAdmin, encodeStakeBurnAssetAdmin()],
       [STAKE_IX.RotateInsuranceOperator, encodeStakeRotateInsuranceOperator()],
-      [STAKE_IX.RecoverFlushedInsurance, encodeStakeRecoverFlushedInsurance(0n)],
       [STAKE_IX.AdminResolveMarketCpi, encodeStakeAdminResolveMarketCpi()],
     ];
 
@@ -560,6 +555,9 @@ describe('Stake Instruction Tags — No Gaps or Conflicts (ADOPTED percolator-st
     expect(() => encodeStakeAdminSetMaintenanceFee(0n)).toThrow(/tag 8/i);
     expect(() => encodeStakeAdminResolveMarket()).toThrow(/tag 9/i);
     expect(() => encodeStakeAdminSetInsurancePolicy(PublicKey.default, 0n, 0, 0n)).toThrow(/tag 11/i);
+    // v5-deprecated tags (stake 53f5480 processor.rs:432 / :464 refuse them with DeprecatedV5 = 34)
+    expect(() => encodeStakeFlushToInsurance(0n)).toThrow(/tag 3.*DeprecatedV5/);
+    expect(() => encodeStakeRecoverFlushedInsurance(0n)).toThrow(/tag 23.*DeprecatedV5/);
   });
 });
 
