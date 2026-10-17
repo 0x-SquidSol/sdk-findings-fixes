@@ -25,6 +25,8 @@ import {
 } from "../src/solana/stake-wind-down.js";
 import { V17_MARKET_GROUP_OFF, V17_MARKET_GROUP_LEN, V17_MARKET_ASSET_SLOT_LEN } from "../src/solana/slab.js";
 import { deriveVaultAuthority } from "../src/solana/pda.js";
+import { deriveInsuranceUnitsV22 } from "../src/abi/v22-wire.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import * as root from "../src/index.js";
 import { stampMarket, stampPortfolio } from "./helpers/stamp.js";
 
@@ -158,7 +160,7 @@ describe("decodeTerminalInsuranceCapacity", () => {
 describe("planStakeWindDown", () => {
   const args = (marketData: Uint8Array) => ({
     stakeProgram: STAKE, wrapperProgram: W, caller: pk(), admin: pk(), pool: pk(), poolVault: pk(), vaultAuth: pk(),
-    market: pk(), marketData, wrapperVault: pk(), poolDestToken: pk(), collateralMint: pk(), closePortfolioIxs: [] as TransactionInstruction[],
+    market: pk(), marketData, wrapperVault: pk(), poolDestToken: pk(), collateralMint: pk(), closePortfolioIxs: [] as TransactionInstruction[], riskMode: 0 as const,
   });
   it("orders (a) close portfolios → (b) tag 29 capacity → (c) tag 29 amount 0 → (d) tag 30 until tombstone", () => {
     const a = args(synth({ mode: 1, vault: 10_000n, insurance: 5_000n, srcReserved: 0n, bL: 2_500n, sL: 0n, bS: 2_500n, sS: 0n }));
@@ -177,6 +179,41 @@ describe("planStakeWindDown", () => {
     expect(d.ix.data[0]).toBe(30);
     expect(d.claimBetween!.data[0]).toBe(84);
     expect(d.ix.keys[4].pubkey.equals(deriveVaultAuthority(W, a.market)[0])).toBe(true);
+  });
+  it("FIRST_LOSS: tag 29 steps carry [9] units PDA and [10] creator ATA (E2E-A FCAFL: NotEnoughAccountKeys without them)", () => {
+    const a = args(synth({ mode: 1, vault: 10_000n, insurance: 5_000n, srcReserved: 0n, bL: 2_500n, sL: 0n, bS: 2_500n, sS: 0n }));
+    const steps = planStakeWindDown({ ...a, riskMode: 1 });
+    const units = deriveInsuranceUnitsV22(W, a.market)[0];
+    const creator = getAssociatedTokenAddressSync(a.collateralMint, a.admin, true);
+    for (const i of [1, 2]) {
+      const ix = (steps[i] as { ix: TransactionInstruction }).ix;
+      expect(ix.keys).toHaveLength(11);
+      expect(ix.keys[9]).toMatchObject({ isSigner: false, isWritable: true });
+      expect(ix.keys[9]!.pubkey.equals(units)).toBe(true);
+      expect(ix.keys[10]).toMatchObject({ isSigner: false, isWritable: true });
+      expect(ix.keys[10]!.pubkey.equals(creator)).toBe(true);
+    }
+    const stray = pk();
+    const withStray = planStakeWindDown({ ...a, riskMode: 1, stray });
+    expect((withStray[2] as { ix: TransactionInstruction }).ix.keys[11]!.pubkey.equals(stray)).toBe(true);
+  });
+  it("FEE_ONLY: tag 29 steps carry the creator ATA at [9] and no units (E2E-A FCAFO: CreatorAccountRequired 46 without it)", () => {
+    const a = args(synth({ mode: 1, vault: 10_000n, insurance: 5_000n, srcReserved: 0n, bL: 2_500n, sL: 0n, bS: 2_500n, sS: 0n }));
+    const steps = planStakeWindDown({ ...a, riskMode: 2 });
+    const creator = getAssociatedTokenAddressSync(a.collateralMint, a.admin, true);
+    for (const i of [1, 2]) {
+      const ix = (steps[i] as { ix: TransactionInstruction }).ix;
+      expect(ix.keys).toHaveLength(10);
+      expect(ix.keys[9]).toMatchObject({ isSigner: false, isWritable: true });
+      expect(ix.keys[9]!.pubkey.equals(creator)).toBe(true);
+    }
+  });
+  it("legacy pools keep the 9-account list; a missing riskMode is refused, not guessed", () => {
+    const a = args(synth({ mode: 1, vault: 10_000n, insurance: 5_000n, srcReserved: 0n, bL: 2_500n, sL: 0n, bS: 2_500n, sS: 0n }));
+    expect((planStakeWindDown({ ...a, riskMode: 0 })[1] as { ix: TransactionInstruction }).ix.keys).toHaveLength(9);
+    const { riskMode: _drop, ...noMode } = a;
+    void _drop;
+    expect(() => planStakeWindDown(noMode as unknown as Parameters<typeof planStakeWindDown>[0])).toThrow(/riskMode/);
   });
   it("skips (b) when capacity is 0; refuses a market that is not Resolved", () => {
     const zero = planStakeWindDown(args(synth({ mode: 1, vault: 1n, insurance: 0n, srcReserved: 0n, bL: 0n, sL: 0n, bS: 0n, sS: 0n })));

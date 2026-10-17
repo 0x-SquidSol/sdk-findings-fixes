@@ -63,6 +63,7 @@ export default defineConfig({
       "test/dist-fresh.test.ts",
       "test/stake-352-token-program.test.ts",
       "test/stake-staker-signer.test.ts",
+      "test/stake-account-lists-processor.test.ts", "test/stake-withdraw-quote.test.ts",
       "test/workflow-pinning-349.test.ts",
     ],
   },

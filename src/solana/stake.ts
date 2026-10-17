@@ -2476,6 +2476,13 @@ export interface RecoverTerminalInsuranceAccounts {
    * recorded unclaimed). See `creatorCollateralAtaV5` and `closeoutSplit`.
    */
   creatorToken?: PublicKey;
+  /**
+   * The pool's risk mode (`decodeStakePoolV5(..).riskMode`: 0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY). OPTIONAL but recommended: when set,
+   * the builder enforces the mode's account list and throws instead of building a transaction the program refuses
+   * (FIRST_LOSS without `insuranceUnits` + `creatorToken` fails `NotEnoughAccountKeys`; FEE_ONLY without `creatorToken` fails
+   * `CreatorAccountRequired` (46) whenever the settlement owes the creator; FEE_ONLY with `insuranceUnits` fails `IllegalOwner`).
+   */
+  riskMode?: 0 | 1 | 2;
   /** Token program (default SPL Token; classic only, #352: anything else throws). */
   tokenProgram?: PublicKey;
 }
@@ -2517,6 +2524,18 @@ export function recoverTerminalInsuranceAccounts(
 }
 
 function recoverTerminalTailMetas(a: RecoverTerminalInsuranceAccounts): { pubkey: PublicKey; isSigner: boolean; isWritable: boolean }[] {
+  if (a.riskMode === 1 && !a.insuranceUnits) {
+    throw new Error("recoverTerminalInsuranceAccounts: a FIRST_LOSS pool (riskMode 1) requires insuranceUnits ([9], the wrapper [\"ins_units\", market] PDA)");
+  }
+  if (a.riskMode === 2 && a.insuranceUnits) {
+    throw new Error("recoverTerminalInsuranceAccounts: a FEE_ONLY pool (riskMode 2) takes no insuranceUnits account (the program reads trailing accounts as token accounts)");
+  }
+  if (a.riskMode === 0 && (a.insuranceUnits || a.creatorToken)) {
+    throw new Error("recoverTerminalInsuranceAccounts: a legacy pool (riskMode 0) takes only the optional stray account");
+  }
+  if (a.riskMode === 2 && !a.creatorToken) {
+    throw new Error("recoverTerminalInsuranceAccounts: a FEE_ONLY pool (riskMode 2) requires creatorToken (CreatorAccountRequired 46 when the settlement owes the creator)");
+  }
   const w = (pubkey: PublicKey) => ({ pubkey, isSigner: false, isWritable: true });
   if (a.insuranceUnits) {
     if (!a.creatorToken) throw new Error("recoverTerminalInsuranceAccounts: a first-loss pool requires creatorToken ([10])");

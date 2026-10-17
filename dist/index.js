@@ -3797,6 +3797,18 @@ function recoverTerminalInsuranceAccounts(a) {
   ];
 }
 function recoverTerminalTailMetas(a) {
+  if (a.riskMode === 1 && !a.insuranceUnits) {
+    throw new Error('recoverTerminalInsuranceAccounts: a FIRST_LOSS pool (riskMode 1) requires insuranceUnits ([9], the wrapper ["ins_units", market] PDA)');
+  }
+  if (a.riskMode === 2 && a.insuranceUnits) {
+    throw new Error("recoverTerminalInsuranceAccounts: a FEE_ONLY pool (riskMode 2) takes no insuranceUnits account (the program reads trailing accounts as token accounts)");
+  }
+  if (a.riskMode === 0 && (a.insuranceUnits || a.creatorToken)) {
+    throw new Error("recoverTerminalInsuranceAccounts: a legacy pool (riskMode 0) takes only the optional stray account");
+  }
+  if (a.riskMode === 2 && !a.creatorToken) {
+    throw new Error("recoverTerminalInsuranceAccounts: a FEE_ONLY pool (riskMode 2) requires creatorToken (CreatorAccountRequired 46 when the settlement owes the creator)");
+  }
   const w2 = (pubkey) => ({ pubkey, isSigner: false, isWritable: true });
   if (a.insuranceUnits) {
     if (!a.creatorToken) throw new Error("recoverTerminalInsuranceAccounts: a first-loss pool requires creatorToken ([10])");
@@ -4120,6 +4132,20 @@ function collateralForLpV5(lpAmount, totalLpSupply, poolValue) {
   if (totalLpSupply === 0n) return null;
   const c = lpAmount * (poolValue + 1n) / (totalLpSupply + 1n);
   return c > U64_MAX_V5 ? null : c;
+}
+function quoteStakeWithdrawNowV5(pool, insUnits, exitInsurance, vaultBalance, userLp) {
+  const v = stakePoolValue(pool, insUnits, exitInsurance, vaultBalance);
+  if (!v || v.withdrawableNow === void 0) return null;
+  const redeemable = collateralForLpV5(userLp, pool.totalLpSupply, v.total);
+  if (redeemable === null) return null;
+  const liquidCap = v.withdrawableNow;
+  const maxCollateralNow = redeemable < liquidCap ? redeemable : liquidCap;
+  let maxLpNow = userLp;
+  if (redeemable > liquidCap) {
+    maxLpNow = ((liquidCap + 1n) * (pool.totalLpSupply + 1n) - 1n) / (v.total + 1n);
+    if (maxLpNow > userLp) maxLpNow = userLp;
+  }
+  return { redeemable, liquidCap, maxCollateralNow, maxLpNow, capBinds: redeemable > liquidCap, deferred: redeemable - maxCollateralNow };
 }
 function creatorCollateralAtaV5(pool) {
   return getAssociatedTokenAddressSync(pool.collateralMint, pool.admin, true, TOKEN_PROGRAM_ID3);
@@ -15000,6 +15026,7 @@ function planResolvedReceiptRevisitP3(a) {
 // src/solana/stake-wind-down.ts
 import { TransactionInstruction as TransactionInstruction8 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID8 } from "@solana/spl-token";
+import { getAssociatedTokenAddressSync as getAssociatedTokenAddressSync4 } from "@solana/spl-token";
 var MARKET_GROUP_HEADER_OFF_V18 = Object.freeze({
   vault: 285,
   insurance: 301,
@@ -15106,7 +15133,14 @@ function planStakeWindDown(a) {
   if (!cap.resolved) throw new Error(`planStakeWindDown: market mode ${cap.mode} is not Resolved (1)`);
   const tokenProgram = a.tokenProgram ?? TOKEN_PROGRAM_ID8;
   const [wrapperVaultAuthority] = deriveVaultAuthority(a.wrapperProgram, a.market);
+  const riskMode = a.riskMode;
+  if (riskMode !== 0 && riskMode !== 1 && riskMode !== 2) {
+    throw new Error("planStakeWindDown: riskMode (0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY) is required: tag 29 takes a different account list per pool mode");
+  }
+  const insuranceUnits = riskMode === 1 ? a.insuranceUnits ?? deriveInsuranceUnitsV22(a.wrapperProgram, a.market)[0] : void 0;
+  const creatorToken = riskMode === 0 ? void 0 : a.creatorToken ?? getAssociatedTokenAddressSync4(a.collateralMint, a.admin, true, tokenProgram);
   const base = {
+    riskMode,
     stakeProgram: a.stakeProgram,
     caller: a.caller,
     pool: a.pool,
@@ -15117,8 +15151,8 @@ function planStakeWindDown(a) {
     wrapperVaultAuthority,
     wrapperProgram: a.wrapperProgram,
     tokenProgram,
-    ...a.insuranceUnits ? { insuranceUnits: a.insuranceUnits } : {},
-    ...a.creatorToken ? { creatorToken: a.creatorToken } : {}
+    ...insuranceUnits ? { insuranceUnits } : {},
+    ...creatorToken ? { creatorToken } : {}
   };
   const steps = [{ step: "closePortfolios", ixs: a.closePortfolioIxs }];
   if (cap.terminalCapacity > 0n) {
@@ -15361,7 +15395,7 @@ function nonboundVaultPricingFromAccountsP2b(a) {
 
 // src/solana/v22.ts
 import { SystemProgram as SystemProgram7, TransactionInstruction as TransactionInstruction12 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID10, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync4 } from "@solana/spl-token";
+import { TOKEN_PROGRAM_ID as TOKEN_PROGRAM_ID10, createAssociatedTokenAccountIdempotentInstruction, getAssociatedTokenAddressSync as getAssociatedTokenAddressSync5 } from "@solana/spl-token";
 
 // src/runtime/tx.ts
 import {
@@ -16417,7 +16451,7 @@ function buildLaunchBundleV22(i) {
   const lpMint = deriveInsuranceLpMint(i.market.programId, i.market.market)[0];
   const seedIxs = [];
   for (const sd of i.earnSeeds ?? []) {
-    const ata = sd.depositorLpAta ?? getAssociatedTokenAddressSync4(lpMint, sd.depositor, true);
+    const ata = sd.depositorLpAta ?? getAssociatedTokenAddressSync5(lpMint, sd.depositor, true);
     seedIxs.push(createAssociatedTokenAccountIdempotentInstruction(i.payer, ata, sd.depositor, lpMint));
     seedIxs.push(buildDepositToLpVaultIxBoundV22(i.market, sd.depositor, ata, sd.sourceToken, sd.vaultToken, sd.amount, sd.domain ?? 0));
   }
@@ -18618,6 +18652,7 @@ export {
   quoteBondWithdrawV22,
   quoteMaxLeverage,
   quoteRescueV22,
+  quoteStakeWithdrawNowV5,
   rGapFloorBps,
   rankAdlPositions,
   ratchetCeilingX100,

@@ -1622,6 +1622,13 @@ export interface RecoverTerminalInsuranceAccounts {
      * recorded unclaimed). See `creatorCollateralAtaV5` and `closeoutSplit`.
      */
     creatorToken?: PublicKey;
+    /**
+     * The pool's risk mode (`decodeStakePoolV5(..).riskMode`: 0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY). OPTIONAL but recommended: when set,
+     * the builder enforces the mode's account list and throws instead of building a transaction the program refuses
+     * (FIRST_LOSS without `insuranceUnits` + `creatorToken` fails `NotEnoughAccountKeys`; FEE_ONLY without `creatorToken` fails
+     * `CreatorAccountRequired` (46) whenever the settlement owes the creator; FEE_ONLY with `insuranceUnits` fails `IllegalOwner`).
+     */
+    riskMode?: 0 | 1 | 2;
     /** Token program (default SPL Token; classic only, #352: anything else throws). */
     tokenProgram?: PublicKey;
 }
