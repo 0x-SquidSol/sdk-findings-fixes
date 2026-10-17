@@ -393,6 +393,44 @@ export declare function stakePoolValue(pool: StakePoolValueFields, insUnits: {
  * ```
  */
 export declare function collateralForLpV5(lpAmount: bigint, totalLpSupply: bigint, poolValue: bigint): bigint | null;
+/** Result of {@link quoteStakeWithdrawNowV5}. All atoms except the LP amounts. */
+export interface StakeWithdrawQuoteV5 {
+    /** Collateral a burn of the staker's whole LP balance would pay at the exit reading (what the program prices). */
+    redeemable: bigint;
+    /** The most any withdrawal can pay now: `min(liquid, vaultBalance)` (processor.rs:1626 `liquid_withdrawal_ok`). */
+    liquidCap: bigint;
+    /** `min(redeemable, liquidCap)`: the max-button amount. */
+    maxCollateralNow: bigint;
+    /** Largest LP burn whose payout fits `liquidCap` (and the balance): what to send for "max now". */
+    maxLpNow: bigint;
+    /** True when the liquid cap, not the balance, limits the withdrawal (part of the pool is deployed as insurance). */
+    capBinds: boolean;
+    /** `redeemable - maxCollateralNow`: the part that returns when the deployed insurance is recovered. */
+    deferred: bigint;
+}
+/**
+ * Quote the most a FIRST_LOSS staker can withdraw right now. After an insurance loss part of the pool is deployed as wrapper insurance, and
+ * stake `process_withdraw` refuses (`LiquidityBufferExhausted`, 36) any payout above the pool's liquid value (processor.rs:1626-1631), so the
+ * full redeem value is not payable until a sync recovers it. Use `maxLpNow` for the max button and `capBinds` to show one calm line.
+ *
+ * @param pool          Decoded v5 pool (`decodeStakePoolV5`, needs `totalLpSupply` plus the six booked fields).
+ * @param insUnits      The wrapper `InsuranceUnitsV20`: `unitsStake`, `unitsTotal`.
+ * @param exitInsurance Exit reading, atoms (`snapInsuranceFreeAtoms`).
+ * @param vaultBalance  SPL balance of `pool.vault`.
+ * @param userLp        The staker's LP balance.
+ * @returns The quote, or `null` where the program fails closed (see {@link stakePoolValue}) or the pool has no LP supply.
+ * @example
+ * ```ts
+ * const q = quoteStakeWithdrawNowV5(pool, units, units.snapInsuranceFreeAtoms, vaultBal, userLp);
+ * if (q?.capBinds) note(`up to ${q.maxCollateralNow} can be withdrawn now`);
+ * ```
+ */
+export declare function quoteStakeWithdrawNowV5(pool: StakePoolValueFields & {
+    totalLpSupply: bigint;
+}, insUnits: {
+    unitsStake: bigint;
+    unitsTotal: bigint;
+}, exitInsurance: bigint, vaultBalance: bigint, userLp: bigint): StakeWithdrawQuoteV5 | null;
 /**
  * The creator's collateral token account for `RecoverTerminalInsurance`: the classic-token ATA of `pool.admin` for the pool mint.
  * The processor accepts it whenever passed (owner must be `pool.admin`) and requires it when the settlement owes the creator, so

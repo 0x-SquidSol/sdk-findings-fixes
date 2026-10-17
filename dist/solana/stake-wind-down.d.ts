@@ -176,9 +176,15 @@ export interface StakeWindDownArgs {
     closePortfolioIxs: TransactionInstruction[];
     /** Optional stray vault_auth-owned token account to sweep in the book-only step. */
     stray?: PublicKey;
-    /** v5 first-loss pools: the wrapper `InsuranceUnitsV20` PDA (see `RecoverTerminalInsuranceAccounts.insuranceUnits`). */
+    /**
+     * The pool's risk mode (`decodeStakePoolV5(..).riskMode`: 0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY). REQUIRED: tag 29 takes a
+     * different account list per mode, and the planner derives the extra accounts from it (FIRST_LOSS: `insuranceUnits` +
+     * `creatorToken`; FEE_ONLY: `creatorToken`; legacy: none).
+     */
+    riskMode: 0 | 1 | 2;
+    /** Override for the derived wrapper `InsuranceUnitsV20` PDA (`["ins_units", market]`, FIRST_LOSS only). */
     insuranceUnits?: PublicKey;
-    /** v5 pools: the creator's collateral ATA (always pass it; see `RecoverTerminalInsuranceAccounts.creatorToken`). */
+    /** Override for the derived creator collateral ATA (ATA of `admin` for `collateralMint`; v5 pools). */
     creatorToken?: PublicKey;
     /** If set, a tag-84 WithdrawProtocolFee(amount 0 = all) claim is planned between tag-30 repeats. */
     protocolFee?: {

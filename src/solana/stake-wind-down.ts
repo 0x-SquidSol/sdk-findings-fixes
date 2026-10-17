@@ -31,6 +31,8 @@ import {
 } from "./stake.js";
 import type { AdminCloseSlabAccounts, RecoverTerminalInsuranceAccounts } from "./stake.js";
 import { deriveVaultAuthority } from "./pda.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
+import { deriveInsuranceUnitsV22 } from "../abi/v22-wire.js";
 import { resolveMarketGeometry } from "../abi/layout.js";
 
 // ============================================================================
@@ -272,9 +274,15 @@ export interface StakeWindDownArgs {
   closePortfolioIxs: TransactionInstruction[];
   /** Optional stray vault_auth-owned token account to sweep in the book-only step. */
   stray?: PublicKey;
-  /** v5 first-loss pools: the wrapper `InsuranceUnitsV20` PDA (see `RecoverTerminalInsuranceAccounts.insuranceUnits`). */
+  /**
+   * The pool's risk mode (`decodeStakePoolV5(..).riskMode`: 0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY). REQUIRED: tag 29 takes a
+   * different account list per mode, and the planner derives the extra accounts from it (FIRST_LOSS: `insuranceUnits` +
+   * `creatorToken`; FEE_ONLY: `creatorToken`; legacy: none).
+   */
+  riskMode: 0 | 1 | 2;
+  /** Override for the derived wrapper `InsuranceUnitsV20` PDA (`["ins_units", market]`, FIRST_LOSS only). */
   insuranceUnits?: PublicKey;
-  /** v5 pools: the creator's collateral ATA (always pass it; see `RecoverTerminalInsuranceAccounts.creatorToken`). */
+  /** Override for the derived creator collateral ATA (ATA of `admin` for `collateralMint`; v5 pools). */
   creatorToken?: PublicKey;
   /** If set, a tag-84 WithdrawProtocolFee(amount 0 = all) claim is planned between tag-30 repeats. */
   protocolFee?: { authority: PublicKey; destToken: PublicKey; authorityEpoch: bigint };
@@ -302,10 +310,18 @@ export function planStakeWindDown(a: StakeWindDownArgs): StakeWindDownStep[] {
   if (!cap.resolved) throw new Error(`planStakeWindDown: market mode ${cap.mode} is not Resolved (1)`);
   const tokenProgram = a.tokenProgram ?? TOKEN_PROGRAM_ID;
   const [wrapperVaultAuthority] = deriveVaultAuthority(a.wrapperProgram, a.market);
+  const riskMode = a.riskMode as number | undefined;
+  if (riskMode !== 0 && riskMode !== 1 && riskMode !== 2) {
+    throw new Error("planStakeWindDown: riskMode (0 legacy, 1 FIRST_LOSS, 2 FEE_ONLY) is required: tag 29 takes a different account list per pool mode");
+  }
+  const insuranceUnits = riskMode === 1 ? (a.insuranceUnits ?? deriveInsuranceUnitsV22(a.wrapperProgram, a.market)[0]) : undefined;
+  // pool.admin == a.admin (the tag-30 signer); the program accepts the creator account whenever passed and requires it when owed.
+  const creatorToken = riskMode === 0 ? undefined : (a.creatorToken ?? getAssociatedTokenAddressSync(a.collateralMint, a.admin, true, tokenProgram));
   const base = {
+    riskMode: riskMode as 0 | 1 | 2,
     stakeProgram: a.stakeProgram, caller: a.caller, pool: a.pool, poolVault: a.poolVault, vaultAuth: a.vaultAuth,
     market: a.market, wrapperVault: a.wrapperVault, wrapperVaultAuthority, wrapperProgram: a.wrapperProgram, tokenProgram,
-    ...(a.insuranceUnits ? { insuranceUnits: a.insuranceUnits } : {}), ...(a.creatorToken ? { creatorToken: a.creatorToken } : {}),
+    ...(insuranceUnits ? { insuranceUnits } : {}), ...(creatorToken ? { creatorToken } : {}),
   };
   const steps: StakeWindDownStep[] = [{ step: "closePortfolios", ixs: a.closePortfolioIxs }];
   if (cap.terminalCapacity > 0n) {
