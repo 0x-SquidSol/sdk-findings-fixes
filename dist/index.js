@@ -16562,6 +16562,54 @@ function refineMultiAssetTradePlanV22(plan, err) {
   return { action: "fail", plan, code, reason: code === null ? "refused" : `refused with ${code}` };
 }
 
+// src/solana/v22-catchup-liquidate.ts
+var OBSERVE_CRANK_CU_V22 = 3e4;
+var REFRESH_AND_LIQUIDATE_CU_V22 = 1164e3;
+var CATCHUP_TX_COMPUTE_UNITS_V22 = 14e5;
+var MAX_OBSERVES_PER_TX_V22 = 40;
+var MAX_OBSERVES_WITH_REFRESH_V22 = Math.floor((CATCHUP_TX_COMPUTE_UNITS_V22 - REFRESH_AND_LIQUIDATE_CU_V22 - 2e4) / OBSERVE_CRANK_CU_V22);
+function buildCatchUpAndRefreshIxsV22(input) {
+  const f = decodeMarketFundingV22(input.marketData);
+  if (f.maxAccrualDtSlots <= 0n) throw new Error("buildCatchUpAndRefreshIxsV22: market max_accrual_dt_slots is 0");
+  const assets = input.assets && input.assets.length > 0 ? [...input.assets] : [0];
+  let oldest = null;
+  for (const a of assets) {
+    const st = f.assets[a];
+    if (!st) throw new Error(`buildCatchUpAndRefreshIxsV22: asset ${a} is outside the market's ${f.assets.length} slots`);
+    if (oldest === null || st.slotLast < oldest) oldest = st.slotLast;
+  }
+  const gap = input.readSlot > oldest ? input.readSlot - oldest : 0n;
+  const dt = f.maxAccrualDtSlots;
+  const windows = (gap + dt - 1n) / dt;
+  const total = Number(windows < 1n ? 1n : windows);
+  const observe = input.observePortfolio ?? input.portfolio;
+  const observeIx = () => buildRefreshCrankIxV22(input.programId, input.market, input.cranker, observe, assets);
+  const refreshIx = () => buildRefreshCrankIxV22(input.programId, input.market, input.cranker, input.portfolio, []);
+  const finalObserves = Math.min(total, MAX_OBSERVES_WITH_REFRESH_V22);
+  let remaining = total - finalObserves;
+  const txs = [];
+  while (remaining > 0) {
+    const n = Math.min(remaining, MAX_OBSERVES_PER_TX_V22);
+    txs.push({
+      kind: "catchup",
+      instructions: [...computeBudgetPrelude(CATCHUP_TX_COMPUTE_UNITS_V22), ...Array.from({ length: n }, observeIx)],
+      computeUnitLimit: CATCHUP_TX_COMPUTE_UNITS_V22,
+      observeCranks: n,
+      refreshes: false
+    });
+    remaining -= n;
+  }
+  const cranks = [...Array.from({ length: finalObserves }, observeIx), refreshIx(), ...input.liquidationCrank ? [refreshIx()] : []];
+  txs.push({
+    kind: "final",
+    instructions: [...computeBudgetPrelude(CATCHUP_TX_COMPUTE_UNITS_V22), ...cranks],
+    computeUnitLimit: CATCHUP_TX_COMPUTE_UNITS_V22,
+    observeCranks: finalObserves,
+    refreshes: true
+  });
+  return { txs, gapSlots: gap, maxAccrualDtSlots: dt, totalObserveCranks: total };
+}
+
 // src/runtime/lighthouse.ts
 import { PublicKey as PublicKey31, Transaction as Transaction3 } from "@solana/web3.js";
 var LIGHTHOUSE_PROGRAM_ID = new PublicKey31(
@@ -17483,6 +17531,7 @@ export {
   BackingBucketStatus,
   BackstopMode,
   CANONICAL_VAULT_LP_MATCHER_PROGRAM_DEVNET_P3,
+  CATCHUP_TX_COMPUTE_UNITS_V22,
   CHAINLINK_ANSWER_OFFSET,
   CHAINLINK_DECIMALS_OFFSET,
   CHAINLINK_MIN_SIZE,
@@ -17695,6 +17744,8 @@ export {
   MAX_EXEC_BAND_BPS_P1,
   MAX_INSURANCE_WITHDRAW_COOLDOWN_SLOTS,
   MAX_LP_EXPOSURE_K_BPS_P1,
+  MAX_OBSERVES_PER_TX_V22,
+  MAX_OBSERVES_WITH_REFRESH_V22,
   MAX_OI_SIDE_Q_P1,
   MAX_ORACLE_PRICE_V22,
   MAX_PRIORITY_FEE_LAMPORTS,
@@ -17715,6 +17766,7 @@ export {
   NFT_IX_TAG,
   NFT_PROGRAM_ID,
   NFT_PROGRAM_IDS,
+  OBSERVE_CRANK_CU_V22,
   ORACLE_PHASE_GROWING,
   ORACLE_PHASE_MATURE,
   ORACLE_PHASE_NASCENT,
@@ -17751,6 +17803,7 @@ export {
   REDEMPTION_REFRESH_WEIGHT_BUDGET_V22,
   REDUCE_LEN_V22,
   REDUCE_REASON_V22,
+  REFRESH_AND_LIQUIDATE_CU_V22,
   RENOUNCE_ADMIN_CONFIRMATION,
   RENT_MAX_KINK_BPS_V22,
   RENT_MIN_E9_PER_SLOT_V22,
@@ -17970,6 +18023,7 @@ export {
   buildBondDepositIxV22,
   buildBondExecuteWithdrawIxV22,
   buildBondRequestWithdrawIxV22,
+  buildCatchUpAndRefreshIxsV22,
   buildClaimResolvedPayoutTopupIxP3,
   buildClearDepthSourceIxV22,
   buildCloseResolvedUnsignedIxP3,
