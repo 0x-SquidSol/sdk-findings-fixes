@@ -3434,7 +3434,7 @@ function encodeStakeRotateInsuranceOperator() {
 function rotateInsuranceAccounts(a) {
   return [
     { pubkey: a.admin, isSigner: true, isWritable: false },
-    { pubkey: a.poolPda, isSigner: false, isWritable: false },
+    { pubkey: a.poolPda, isSigner: false, isWritable: true },
     { pubkey: a.vaultAuth, isSigner: false, isWritable: false },
     { pubkey: a.newTarget, isSigner: true, isWritable: false },
     { pubkey: a.slab, isSigner: false, isWritable: true },

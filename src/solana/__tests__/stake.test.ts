@@ -498,7 +498,7 @@ describe('Account builders', () => {
     expect(accounts).toHaveLength(6);
     expect(accounts[0].pubkey.equals(admin)).toBe(true);
     expect(accounts[0].isSigner).toBe(true);
-    expect(accounts[1].isWritable).toBe(false); // poolPda NOT writable for rotate
+    expect(accounts[1].isWritable).toBe(true); // poolPda writable: v5 rotate-back forgets the seed (stake M-2, 21c84f7)
     expect(accounts[3].pubkey.equals(newTarget)).toBe(true);
     expect(accounts[3].isSigner).toBe(true);
     expect(accounts[4].pubkey.equals(slab)).toBe(true);

@@ -683,7 +683,8 @@ export interface RotateInsuranceAccounts {
  * (tag 22) — identical account order in both (src/processor.rs
  * process_rotate_insurance_authority / process_rotate_insurance_operator):
  *   [0] admin              signer, read-only  (== pool.admin)
- *   [1] pool_pda           read-only
+ *   [1] pool_pda           writable           (stake 53f5480 M-2: a v5 pool's rotate-back forgets the seed record,
+ *                                             so the program refuses a read-only pool with InvalidAccount (16))
  *   [2] vault_auth         read-only          (current authority/operator; signs via invoke_signed)
  *   [3] new_target         signer, read-only  (successor; co-signs the outer tx)
  *   [4] slab               writable           (wrapper market; needed for CPI)

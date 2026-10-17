@@ -105,7 +105,10 @@ describe("exact AccountMeta flags, stake 0f88ff1", () => {
       .toEqual([S_W, W, W, W, W, R, R, R, R, R, R]);
     expect(flags(accrueFeesAccounts({ caller: admin, pool, vault, slab }))).toEqual([S_R, W, R, R, R]);
     expect(flags(bindInsuranceAuthorityAccounts({ admin, poolPda: pool, vaultAuth, slab, percolatorProgram: perc }))).toEqual([S_R, W, R, W, R]);
-    expect(flags(rotateInsuranceAccounts({ admin, poolPda: pool, vaultAuth, newTarget: t, slab, percolatorProgram: perc }))).toEqual([S_R, R, R, S_R, W, R]);
+    // audit-1017 S3: the pool is WRITABLE. Deployed stake 53f5480 (7JrgAUHi; M-2, 21c84f7) refuses a read-only pool with
+    // InvalidAccount (16) on every v5 pool (FIRST_LOSS / FEE_ONLY = every v2.2 pool): `validate_account_writable(pool_pda)`
+    // when `pool.is_v5_risk_mode()` in process_rotate_insurance_operator / process_rotate_insurance_authority.
+    expect(flags(rotateInsuranceAccounts({ admin, poolPda: pool, vaultAuth, newTarget: t, slab, percolatorProgram: perc }))).toEqual([S_R, W, R, S_R, W, R]);
     expect(flags(burnAssetAdminAccounts({ admin, poolPda: pool, vaultAuth, slab, percolatorProgram: perc }))).toEqual([S_W, W, R, W, R]);
     expect(flags(adminResolveMarketCpiAccounts({ admin, poolPda: pool, slab, percolatorProgram: perc }))).toEqual([S_R, R, W, R]);
     expect(flags(stakeGroupAProxyAccounts({ admin, poolPda: pool, slab, percolatorProgram: perc }))).toEqual([S_R, R, W, R]);
