@@ -707,6 +707,8 @@ export function quoteStakeWithdrawNowV5(
     maxLpNow = ((liquidCap + 1n) * (pool.totalLpSupply + 1n) - 1n) / (v.total + 1n);
     if (maxLpNow > userLp) maxLpNow = userLp;
   }
+  // A burn that pays 0 atoms is not a withdrawal: with nothing liquid the largest "fitting" burn can be a dust LP amount worth 0.
+  if (maxCollateralNow === 0n) maxLpNow = 0n;
   return { redeemable, liquidCap, maxCollateralNow, maxLpNow, capBinds: redeemable > liquidCap, deferred: redeemable - maxCollateralNow };
 }
 
