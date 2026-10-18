@@ -36,6 +36,8 @@ import {
 } from "../src/solana/stake.js";
 import {
   parsePositionNftAccount,
+  isNftCurrentForPortfolio,
+  POSITION_NFT_LEGACY_V2_LEN,
   POSITION_NFT_STATE_LEN,
   NFT_PROGRAM_ID,
   encodeNftMint,
@@ -414,7 +416,7 @@ describe("SDK drift guards", () => {
     const view = new DataView(buf.buffer);
     const owner = PublicKey.unique();
     view.setBigUint64(0, 0x5045_5243_4e46_5400n, true);
-    buf[8] = 2;
+    buf[8] = 3;
     buf.set(owner.toBytes(), 127);
     const parsed = parsePositionNftAccount(buf);
     expect(parsed.positionOwner.equals(owner)).toBe(true);
@@ -430,7 +432,7 @@ describe("SDK drift guards", () => {
     const owner = PublicKey.unique();
     const holder = PublicKey.unique();
     view.setBigUint64(0, 0x5045_5243_4e46_5400n, true);
-    buf[8] = 2;
+    buf[8] = 3;
     buf.set(owner.toBytes(), 127);
     buf.set(holder.toBytes(), 167);
     const parsed = parsePositionNftAccount(buf);
@@ -438,6 +440,52 @@ describe("SDK drift guards", () => {
     // ...and it is a distinct field from the mint-time owner.
     expect(parsed.positionOwnerAtMint.equals(owner)).toBe(true);
     expect(parsed.lastHolder.equals(parsed.positionOwnerAtMint)).toBe(false);
+  });
+
+  it("parses the S1-2 incarnation from bytes 199..231 / 231..239 (layout v3, 239 B)", () => {
+    expect(POSITION_NFT_STATE_LEN).toBe(239);
+    const buf = new Uint8Array(POSITION_NFT_STATE_LEN);
+    const view = new DataView(buf.buffer);
+    const group = PublicKey.unique();
+    const holder = PublicKey.unique();
+    view.setBigUint64(0, 0x5045_5243_4e46_5400n, true);
+    buf[8] = 3;
+    buf.set(holder.toBytes(), 167);
+    buf.set(group.toBytes(), 199);
+    view.setBigUint64(231, 0x0102_0304_0506_0708n, true);
+    const parsed = parsePositionNftAccount(buf);
+    expect(parsed.isLegacyV2).toBe(false);
+    expect(parsed.portfolioMarketGroup?.equals(group)).toBe(true);
+    expect(parsed.portfolioIdAtMint).toBe(0x0102_0304_0506_0708n);
+    expect(parsed.lastHolder.equals(holder)).toBe(true); // 167..199 unchanged
+    expect(() => parsePositionNftAccount(buf.subarray(0, 238))).toThrow(/too small/);
+  });
+
+  it("parses a legacy v2 (199 B) account with the incarnation absent, and it is never current", () => {
+    const buf = new Uint8Array(POSITION_NFT_LEGACY_V2_LEN);
+    new DataView(buf.buffer).setBigUint64(0, 0x5045_5243_4e46_5400n, true);
+    buf[8] = 2;
+    const parsed = parsePositionNftAccount(buf);
+    expect(parsed.isLegacyV2).toBe(true);
+    expect(parsed.portfolioMarketGroup).toBeNull();
+    expect(parsed.portfolioIdAtMint).toBeNull();
+    expect(isNftCurrentForPortfolio(parsed, { marketGroupId: PublicKey.default, portfolioId: 1n })).toBe(false);
+    buf[8] = 4;
+    expect(() => parsePositionNftAccount(buf)).toThrow(/invalid version/);
+  });
+
+  it("isNftCurrentForPortfolio: true only for the same (market group, portfolio id)", () => {
+    const group = PublicKey.unique();
+    const nft = { portfolioMarketGroup: group, portfolioIdAtMint: 5n };
+    expect(isNftCurrentForPortfolio(nft, { marketGroupId: group, portfolioId: 5n })).toBe(true);
+    expect(isNftCurrentForPortfolio(nft, { marketGroupId: group, portfolioId: 6n })).toBe(false); // recreated portfolio
+    expect(isNftCurrentForPortfolio(nft, { marketGroupId: PublicKey.unique(), portfolioId: 5n })).toBe(false);
+    expect(
+      isNftCurrentForPortfolio(
+        { portfolioMarketGroup: group, portfolioIdAtMint: 0n },
+        { marketGroupId: group, portfolioId: 0n },
+      ),
+    ).toBe(false); // 0 == 0 never binds
   });
 
   it("standalone NFT helpers use v16 portfolio model (mint=asset_index, PDA=market_id)", () => {

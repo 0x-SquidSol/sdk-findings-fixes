@@ -1,0 +1,21 @@
+{
+  "source": "generated-v3-fixture (S1-2, percolator-nft 95dcece layout: 239 B, version 3)",
+  "program_id": "FqhKJT9gtScjrmfUuRMjeg7cXNpif1fqsy5Jh65tJmTS",
+  "data_base64": "AFRGTkNSRVAD/lLvo3hf7FVjxy1254KDdPT+scens1KIkhej3EzcHLtDk0YgcSm6m9h9I0TfD8VjGDva8hSiT25VSjOmuxCgvU0HAAAAAcfP//////////////////8JAwAAAAAAAAAAAAAAAAAAKgAAAAAAAAAFAAAAAAAAANx9FKo3fUoRUuZNMdkweDAxiLjpCHs4qUcgddxHNKHFAPFTZQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQETQAAAAAAAAA=",
+  "expected_decoded": {
+    "version": 3,
+    "bump": 254,
+    "portfolioAccount": "6akNPYQLyg2nGLDtGAoykB8ZtuoAEwGhxreXaDWncya2",
+    "nftMint": "AutxDYK4QARmFGCpQFQuet2kND3tzP5nZGRww9Tx8btp",
+    "assetIndex": 7,
+    "sideAtMint": 1,
+    "basisPosQAtMint": "-12345",
+    "fSnapAtMint": "777",
+    "marketIdAtMint": "42",
+    "epochSnapAtMint": "5",
+    "positionOwnerAtMint": "FqhKJT9gtScjrmfUuRMjeg7cXNpif1fqsy5Jh65tJmTS",
+    "mintedAt": "1700000000",
+    "portfolioMarketGroup": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+    "portfolioIdAtMint": "77"
+  }
+}

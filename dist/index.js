@@ -4534,7 +4534,8 @@ var NFT_ERRORS = Object.freeze({
   24: { name: "TransferBlocked", hint: "This position cannot be transferred right now (closing, resolved or stale)." },
   25: { name: "MarketIdMismatch", hint: "The position slot was closed and reused by a newer position." },
   26: { name: "RegistryNotConfigured", hint: "This market has no NFT registry for this program, so the NFT could never be transferred." },
-  27: { name: "MultiLegNotWrappable", hint: "Only a portfolio with a single open position can be wrapped as an NFT." }
+  27: { name: "MultiLegNotWrappable", hint: "Only a portfolio with a single open position can be wrapped as an NFT." },
+  28: { name: "StalePortfolioIncarnation", hint: "This NFT belongs to an earlier version of the portfolio and no longer controls it. Burn it to reclaim its rent." }
 });
 var SPL_TOKEN_ERRORS = Object.freeze({
   0: { name: "NotRentExempt", hint: "Token account is not rent-exempt." },
@@ -5472,9 +5473,11 @@ function deriveExtraAccountMetas(nftMint, programId = NFT_PROGRAM_ID) {
     programId
   );
 }
-var POSITION_NFT_STATE_LEN = 199;
+var POSITION_NFT_STATE_LEN = 239;
+var POSITION_NFT_LEGACY_V2_LEN = 199;
 var POSITION_NFT_MAGIC = 0x504552434e465400n;
-var POSITION_NFT_VERSION = 2;
+var POSITION_NFT_VERSION = 3;
+var POSITION_NFT_LEGACY_VERSION = 2;
 function readI128FromView(view2, offset) {
   const lo = view2.getBigUint64(offset, true);
   const hi = view2.getBigUint64(offset + 8, true);
@@ -5486,9 +5489,9 @@ function readI128FromView(view2, offset) {
   return unsigned;
 }
 function parsePositionNftAccount(data) {
-  if (data.length < POSITION_NFT_STATE_LEN) {
+  if (data.length < POSITION_NFT_LEGACY_V2_LEN) {
     throw new Error(
-      `PositionNft account too small: ${data.length} < ${POSITION_NFT_STATE_LEN}`
+      `PositionNft account too small: ${data.length} < ${POSITION_NFT_LEGACY_V2_LEN}`
     );
   }
   const view2 = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -5496,12 +5499,19 @@ function parsePositionNftAccount(data) {
   if (magic !== POSITION_NFT_MAGIC) {
     throw new Error("PositionNft account has invalid magic");
   }
-  if (data[8] !== POSITION_NFT_VERSION) {
-    throw new Error(`PositionNft account has invalid version: ${data[8]}`);
+  const version = data[8];
+  if (version !== POSITION_NFT_VERSION && version !== POSITION_NFT_LEGACY_VERSION) {
+    throw new Error(`PositionNft account has invalid version: ${version}`);
+  }
+  const isLegacyV2 = version === POSITION_NFT_LEGACY_VERSION;
+  if (!isLegacyV2 && data.length < POSITION_NFT_STATE_LEN) {
+    throw new Error(
+      `PositionNft v3 account too small: ${data.length} < ${POSITION_NFT_STATE_LEN}`
+    );
   }
   const positionOwnerAtMint = new PublicKey8(data.subarray(127, 159));
   return {
-    version: data[8],
+    version,
     bump: data[9],
     portfolioAccount: new PublicKey8(data.subarray(10, 42)),
     nftMint: new PublicKey8(data.subarray(42, 74)),
@@ -5514,8 +5524,15 @@ function parsePositionNftAccount(data) {
     positionOwnerAtMint,
     positionOwner: positionOwnerAtMint,
     mintedAt: view2.getBigInt64(159, true),
-    lastHolder: new PublicKey8(data.subarray(167, 199))
+    lastHolder: new PublicKey8(data.subarray(167, 199)),
+    portfolioMarketGroup: isLegacyV2 ? null : new PublicKey8(data.subarray(199, 231)),
+    portfolioIdAtMint: isLegacyV2 ? null : view2.getBigUint64(231, true),
+    isLegacyV2
   };
+}
+function isNftCurrentForPortfolio(nft, portfolio) {
+  if (nft.portfolioMarketGroup === null || nft.portfolioIdAtMint === null) return false;
+  return portfolio.portfolioId !== 0n && nft.portfolioIdAtMint === portfolio.portfolioId && nft.portfolioMarketGroup.equals(portfolio.marketGroupId);
 }
 
 // src/abi/p3.ts
@@ -17815,6 +17832,7 @@ export {
   PHASE1_VOLUME_MIN_SLOTS,
   PHASE2_MATURITY_SLOTS,
   PHASE2_VOLUME_THRESHOLD,
+  POSITION_NFT_LEGACY_V2_LEN,
   POSITION_NFT_STATE_LEN,
   POS_SCALE_P3,
   POS_SCALE_V22,
@@ -18559,6 +18577,7 @@ export {
   isLpVaultRegistryBoundP3,
   isLpVaultRegistryExtP2b,
   isMatcherCtxV2,
+  isNftCurrentForPortfolio,
   isStandardToken,
   isToken2022,
   isTxV1FormatRejection,

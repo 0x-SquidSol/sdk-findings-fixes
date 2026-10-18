@@ -373,10 +373,10 @@ export function deriveExtraAccountMetas(
 // ---------------------------------------------------------------------------
 
 /**
- * On-chain PositionNftV16 state (199 bytes, matches percolator-nft/src/state_v16.rs).
+ * On-chain PositionNftV16 state (239 bytes at layout version 3, matches percolator-nft/src/state_v16.rs).
  *
  *   [0..8]     magic             u64 ("PERCNFT\0")
- *   [8]        version           u8
+ *   [8]        version           u8   (3; the pre-S1-2 layout was 2)
  *   [9]        bump              u8
  *   [10..42]   portfolio_account [u8; 32]
  *   [42..74]   nft_mint          [u8; 32]
@@ -389,16 +389,26 @@ export function deriveExtraAccountMetas(
  *   [127..159] position_owner_at_mint [u8; 32]
  *   [159..167] minted_at         i64
  *   [167..199] last_holder       [u8; 32]
+ *   [199..231] portfolio_market_group [u8; 32]   (S1-2, v3)
+ *   [231..239] portfolio_id_at_mint   u64 LE     (S1-2, v3)
  *
  * NOTE: [167..199] is `last_holder`, not reserved space. #138 claimed those
  * bytes for the field the transfer hook rewrites on every transfer, and
  * `ReconcileBurnedNft` reads it to decide who receives the released escrow and
  * the rent — it is account 6 of that instruction and cannot be derived, only
  * read from here.
+ *
+ * S1-2: v3 appends the portfolio INCARNATION `(portfolio_market_group, portfolio_id_at_mint)`.
+ * An NFT whose pair differs from the live portfolio's `(marketGroupId, portfolioId)` was minted
+ * against an earlier incarnation of the same keypair and is rejected on-chain with
+ * Custom(28) StalePortfolioIncarnation; see {@link isNftCurrentForPortfolio}.
  */
-export const POSITION_NFT_STATE_LEN = 199;
+export const POSITION_NFT_STATE_LEN = 239;
+/** Length of the pre-S1-2 (layout version 2) PositionNft account. Parsed as legacy, always stale. */
+export const POSITION_NFT_LEGACY_V2_LEN = 199;
 const POSITION_NFT_MAGIC = 0x5045_5243_4e46_5400n;
-const POSITION_NFT_VERSION = 2;
+const POSITION_NFT_VERSION = 3;
+const POSITION_NFT_LEGACY_VERSION = 2;
 
 export interface PositionNftState {
   version: number;
@@ -424,6 +434,20 @@ export interface PositionNftState {
    * `ACCOUNTS_NFT_RECONCILE` — there is no way to derive it.
    */
   lastHolder: PublicKey;
+  /**
+   * S1-2: `market_group_id` of the portfolio at mint. `null` for a legacy v2 (199 B) account,
+   * which carries no incarnation binding.
+   */
+  portfolioMarketGroup: PublicKey | null;
+  /**
+   * S1-2: the portfolio's permanent `portfolio_id` at mint. `null` for a legacy v2 account.
+   */
+  portfolioIdAtMint: bigint | null;
+  /**
+   * True for a pre-S1-2 layout-v2 (199 B) account. It has no incarnation binding, so it can never be
+   * shown to match a live portfolio: treat it as stale ({@link isNftCurrentForPortfolio} returns false).
+   */
+  isLegacyV2: boolean;
 }
 
 /**
@@ -457,12 +481,27 @@ function readI128FromView(view: DataView, offset: number): bigint {
 
 /**
  * Parse a PositionNft account from raw bytes.
- * @throws if data is shorter than POSITION_NFT_STATE_LEN (199 bytes) or has an invalid magic/version.
+ *
+ * Accepts layout version 3 (239 B) and, as a LEGACY read, version 2 (199 B). A v2 account predates the
+ * S1-2 incarnation binding: it is returned with `isLegacyV2 = true` and `portfolioMarketGroup` /
+ * `portfolioIdAtMint` set to `null`. Legacy is parsed rather than rejected so a holder's old NFT stays
+ * visible (to offer EmergencyBurn rent reclaim) instead of silently vanishing, but it is never
+ * "current": {@link isNftCurrentForPortfolio} returns false for it, because nothing proves it belongs to
+ * the live portfolio incarnation.
+ *
+ * @param data Raw account data.
+ * @returns The decoded state.
+ * @throws if data is shorter than 199 bytes, the magic is wrong, the version is not 2 or 3, or a v3 account is shorter than 239 bytes.
+ * @example
+ * const nft = parsePositionNftAccount(info.data);
+ * if (!isNftCurrentForPortfolio(nft, portfolio)) {
+ *   // stale: hide it as a position, offer EmergencyBurn, refuse send
+ * }
  */
 export function parsePositionNftAccount(data: Uint8Array): PositionNftState {
-  if (data.length < POSITION_NFT_STATE_LEN) {
+  if (data.length < POSITION_NFT_LEGACY_V2_LEN) {
     throw new Error(
-      `PositionNft account too small: ${data.length} < ${POSITION_NFT_STATE_LEN}`,
+      `PositionNft account too small: ${data.length} < ${POSITION_NFT_LEGACY_V2_LEN}`,
     );
   }
 
@@ -471,14 +510,21 @@ export function parsePositionNftAccount(data: Uint8Array): PositionNftState {
   if (magic !== POSITION_NFT_MAGIC) {
     throw new Error("PositionNft account has invalid magic");
   }
-  if (data[8] !== POSITION_NFT_VERSION) {
-    throw new Error(`PositionNft account has invalid version: ${data[8]}`);
+  const version = data[8];
+  if (version !== POSITION_NFT_VERSION && version !== POSITION_NFT_LEGACY_VERSION) {
+    throw new Error(`PositionNft account has invalid version: ${version}`);
+  }
+  const isLegacyV2 = version === POSITION_NFT_LEGACY_VERSION;
+  if (!isLegacyV2 && data.length < POSITION_NFT_STATE_LEN) {
+    throw new Error(
+      `PositionNft v3 account too small: ${data.length} < ${POSITION_NFT_STATE_LEN}`,
+    );
   }
 
   const positionOwnerAtMint = new PublicKey(data.subarray(127, 159));
 
   return {
-    version: data[8],
+    version,
     bump: data[9],
     portfolioAccount: new PublicKey(data.subarray(10, 42)),
     nftMint: new PublicKey(data.subarray(42, 74)),
@@ -492,5 +538,38 @@ export function parsePositionNftAccount(data: Uint8Array): PositionNftState {
     positionOwner: positionOwnerAtMint,
     mintedAt: view.getBigInt64(159, true),
     lastHolder: new PublicKey(data.subarray(167, 199)),
+    portfolioMarketGroup: isLegacyV2 ? null : new PublicKey(data.subarray(199, 231)),
+    portfolioIdAtMint: isLegacyV2 ? null : view.getBigUint64(231, true),
+    isLegacyV2,
   };
+}
+
+/**
+ * S1-2: does this NFT belong to the live incarnation of its portfolio?
+ *
+ * Mirrors the program's `verify_portfolio_incarnation`: true only when the live portfolio id is
+ * non-zero and both `portfolioIdAtMint` and `portfolioMarketGroup` equal the live portfolio's
+ * `portfolioId` / `marketGroupId`. A legacy v2 account (no binding) is never current. A stale NFT
+ * confers no authority (the program answers Custom(28)); the client should not show it as a
+ * position, should refuse to send it, and should offer EmergencyBurn to reclaim its rent.
+ *
+ * This does not compare `nft.portfolioAccount` to the portfolio's address; callers look the NFT up
+ * by that key already.
+ *
+ * @param nft       A parsed PositionNft ({@link parsePositionNftAccount}).
+ * @param portfolio The live decoded portfolio (`marketGroupId` and `portfolioId` are used).
+ * @returns true if the NFT is bound to this exact portfolio incarnation.
+ * @example
+ * const current = isNftCurrentForPortfolio(parsePositionNftAccount(nftData), parsePortfolioV17(pfData));
+ */
+export function isNftCurrentForPortfolio(
+  nft: Pick<PositionNftState, "portfolioMarketGroup" | "portfolioIdAtMint">,
+  portfolio: { marketGroupId: PublicKey; portfolioId: bigint },
+): boolean {
+  if (nft.portfolioMarketGroup === null || nft.portfolioIdAtMint === null) return false;
+  return (
+    portfolio.portfolioId !== 0n &&
+    nft.portfolioIdAtMint === portfolio.portfolioId &&
+    nft.portfolioMarketGroup.equals(portfolio.marketGroupId)
+  );
 }

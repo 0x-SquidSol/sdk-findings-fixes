@@ -11,11 +11,13 @@
     "minted_at": 159,
     "nft_mint": 42,
     "portfolio_account": 10,
+    "portfolio_id_at_mint": 231,
+    "portfolio_market_group": 199,
     "position_owner_at_mint": 127,
     "side_at_mint": 78,
     "version": 8
   },
-  "position_nft_len": 199,
+  "position_nft_len": 239,
   "program": "percolator-nft",
   "seeds": {
     "mint_authority": "mint_authority",

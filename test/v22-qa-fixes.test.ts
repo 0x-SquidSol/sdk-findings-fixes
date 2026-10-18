@@ -102,6 +102,7 @@ describe("Q-2 parseErrorFromLogs attributes by failing program (real devnet stak
   it("matcher, nft and SPL token failures use their own tables", () => {
     expect(parseErrorFromLogs([`Program ${FX.programs.matcher} failed: custom program error: 0x1f42`])).toMatchObject({ program: "matcher", code: 8002, name: "ERR_STALE_MARK" });
     expect(parseErrorFromLogs([`Program ${FX.programs.nft} failed: custom program error: 0x1b`])).toMatchObject({ program: "nft", code: 27, name: NFT_ERRORS[27]!.name });
+    expect(parseErrorFromLogs([`Program ${FX.programs.nft} failed: custom program error: 0x1c`])).toMatchObject({ program: "nft", code: 28, name: "StalePortfolioIncarnation" });
     expect(parseErrorFromLogs(["Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA failed: custom program error: 0x1"])).toMatchObject({ program: "token", name: "InsufficientFunds" });
   });
 

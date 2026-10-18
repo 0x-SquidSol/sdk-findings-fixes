@@ -40,6 +40,7 @@ import {
 } from "../src/solana/stake.js";
 import {
   parsePositionNftAccount,
+  POSITION_NFT_LEGACY_V2_LEN,
   POSITION_NFT_STATE_LEN,
 } from "../src/abi/nft.js";
 
@@ -126,8 +127,8 @@ describe("account-decode: StakeDeposit (devnet)", () => {
 // describe: NFT PositionNft
 // ---------------------------------------------------------------------------
 
-describe("account-decode: NFT PositionNft (mainnet)", () => {
-  const fixture = loadFixture("mainnet-nft-position.json");
+describe("account-decode: NFT PositionNft (v3, 239 B)", () => {
+  const fixture = loadFixture("mainnet-nft-position-v3.json");
   const data = fixtureBytes(fixture);
 
   it("data length matches POSITION_NFT_STATE_LEN", () => {
@@ -151,6 +152,24 @@ describe("account-decode: NFT PositionNft (mainnet)", () => {
     expect(nft.positionOwnerAtMint.toBase58()).toBe(ex["positionOwnerAtMint"]);
     expect(nft.positionOwner.toBase58()).toBe(ex["positionOwnerAtMint"]);
     expect(nft.mintedAt).toBe(BigInt(ex["mintedAt"] as string));
+    expect(nft.isLegacyV2).toBe(false);
+    expect(nft.portfolioMarketGroup?.toBase58()).toBe(ex["portfolioMarketGroup"]);
+    expect(nft.portfolioIdAtMint).toBe(BigInt(ex["portfolioIdAtMint"] as string));
+  });
+});
+
+describe("account-decode: NFT PositionNft (legacy v2, 199 B)", () => {
+  const fixture = loadFixture("mainnet-nft-position.json");
+  const data = fixtureBytes(fixture);
+
+  it("is 199 bytes and parses as legacy with the incarnation absent", () => {
+    expect(data.length).toBe(POSITION_NFT_LEGACY_V2_LEN);
+    const nft = parsePositionNftAccount(data);
+    expect(nft.version).toBe(2);
+    expect(nft.isLegacyV2).toBe(true);
+    expect(nft.portfolioMarketGroup).toBeNull();
+    expect(nft.portfolioIdAtMint).toBeNull();
+    expect(nft.portfolioAccount.toBase58()).toBe(fixture.expected_decoded["portfolioAccount"]);
   });
 });
 

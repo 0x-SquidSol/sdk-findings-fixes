@@ -1,14 +1,14 @@
 /**
  * percolator-nft custom error codes (`NftError`, `percolator-nft/src/error.rs`), attributed to the NFT
- * program id. Verified against percolator-nft `b257417` (the v2.2 fresh devnet NFT `27LWmR72…`); the enum
- * is append-only, so 0..27 are stable.
+ * program id. Verified against percolator-nft `95dcece (fix/v22-audit-1017-s1-2-nft-incarnation)` (the v2.2 fresh devnet NFT `27LWmR72…`); the enum
+ * is append-only, so 0..28 are stable.
  *
  * Kept in its own module (no env reads at import) so `parseErrorFromLogs` can use it without
  * importing `abi/nft.ts`, whose NFT_PROGRAM_ID resolution runs at import time.
  */
 import type { ErrorInfo } from "./errors.js";
 
-/** NftError 0..27, one calm line each. */
+/** NftError 0..28, one calm line each. */
 export const NFT_ERRORS: Readonly<Record<number, ErrorInfo>> = Object.freeze({
   0: { name: "PositionNotOpen", hint: "There is no open position to wrap as an NFT." },
   1: { name: "NftAlreadyMinted", hint: "An NFT has already been minted for this position." },
@@ -38,6 +38,7 @@ export const NFT_ERRORS: Readonly<Record<number, ErrorInfo>> = Object.freeze({
   25: { name: "MarketIdMismatch", hint: "The position slot was closed and reused by a newer position." },
   26: { name: "RegistryNotConfigured", hint: "This market has no NFT registry for this program, so the NFT could never be transferred." },
   27: { name: "MultiLegNotWrappable", hint: "Only a portfolio with a single open position can be wrapped as an NFT." },
+  28: { name: "StalePortfolioIncarnation", hint: "This NFT belongs to an earlier version of the portfolio and no longer controls it. Burn it to reclaim its rent." },
 }) as Readonly<Record<number, ErrorInfo>>;
 
 /**

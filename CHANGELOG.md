@@ -1,3 +1,9 @@
+## 9.0.0-candidate: Position NFT layout v3 (S1-2 incarnation binding, percolator-nft 95dcece) - DO NOT MERGE before the S1-2 program fix is approved and merged
+
+- `POSITION_NFT_STATE_LEN` 199 -> 239, `POSITION_NFT_VERSION` 2 -> 3. `parsePositionNftAccount` adds `portfolioMarketGroup` (bytes 199..231), `portfolioIdAtMint` (231..239, u64 LE) and `isLegacyV2`. A v2 (199 B) account still parses, as legacy with both fields `null`; it is never current.
+- New `isNftCurrentForPortfolio(nft, portfolio)` mirrors `verify_portfolio_incarnation`; `POSITION_NFT_LEGACY_V2_LEN`.
+- NFT error 28 `StalePortfolioIncarnation`. No instruction, account-list or wrapper change. `specs/nft-parity.json` regenerated from 95dcece.
+
 ## 9.0.0-candidate: v2.2 wrapper controller round (R3.14, percolator-prog `feat/v22-growth-controller` @ 666df893)
 
 Mirrors `src/growth_v19.rs` / `src/vault_lp_v18.rs` / the tag 94 and 99 handlers at 666df893 (security review F-1 fix A, F-2, F-3, F-8 included). **BREAKING for the round-2 growth helpers** (never published).
