@@ -34,4 +34,16 @@ describe("quoteStakeWithdrawNowV5", () => {
     expect(quoteStakeWithdrawNowV5({ ...pool, totalFlushed: 0n }, { unitsStake: 0n, unitsTotal: 0n }, 0n, 1_000_000n, 20_000_000n)!.liquidCap).toBe(1_000_000n);
     expect(quoteStakeWithdrawNowV5({ ...pool, totalLpSupply: 0n }, units, ins, 1n, 1n)).toBeNull();
   });
+  it("liquid 0: maxLpNow is 0 and pays 0 (no dust burn); just above dust it is non-zero and pays > 0", () => {
+    const dust = quoteStakeWithdrawNowV5(pool, units, ins, 0n, 20_000_000n)!;
+    expect(dust.liquidCap).toBe(0n);
+    expect(dust.maxCollateralNow).toBe(0n);
+    expect(dust.maxLpNow).toBe(0n);
+    expect(dust.capBinds).toBe(true);
+    // cap of 1 atom: a burn paying 1 atom exists (pv 16.44M / supply 20M => ~25 LP atoms per collateral atom)
+    const one = quoteStakeWithdrawNowV5(pool, units, ins, 1n, 20_000_000n)!;
+    expect(one.maxCollateralNow).toBe(1n);
+    expect(one.maxLpNow > 0n).toBe(true);
+    expect(collateralForLpV5(one.maxLpNow, pool.totalLpSupply, 10_960_000n + 5_480_000n)! >= 1n).toBe(true);
+  });
 });

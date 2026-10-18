@@ -4145,6 +4145,7 @@ function quoteStakeWithdrawNowV5(pool, insUnits, exitInsurance, vaultBalance, us
     maxLpNow = ((liquidCap + 1n) * (pool.totalLpSupply + 1n) - 1n) / (v.total + 1n);
     if (maxLpNow > userLp) maxLpNow = userLp;
   }
+  if (maxCollateralNow === 0n) maxLpNow = 0n;
   return { redeemable, liquidCap, maxCollateralNow, maxLpNow, capBinds: redeemable > liquidCap, deferred: redeemable - maxCollateralNow };
 }
 function creatorCollateralAtaV5(pool) {
