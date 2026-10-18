@@ -1,5 +1,7 @@
-// VERBATIM excerpt of dcccrypto/percolator-stake src/instruction.rs @ de7be9a
-// (main after #298 "book only wrapper-attributable surplus as mode-0 fees" #290).
+// VERBATIM excerpt of dcccrypto/percolator-stake src/instruction.rs @ 53f5480
+// (fix/v22-stake-310-313-combined; the deployed v2.2 devnet stake 5c6cc785; same file at
+// devnet/v22-fresh-ids-stake-closeout ca86f10). Adds the v5 FIRST_LOSS account docs
+// (Deposit [12..13], Withdraw [11..13]) on top of the #290 de7be9a text.
 // Consumed by test/stake-290-slab-accounts.test.ts. Regenerate from the stake source;
 // never hand-edit. Set PERCOLATOR_STAKE_SRC=<path to percolator-stake> to re-verify.
 
@@ -20,7 +22,17 @@
     ///  11. `[]` Wrapper market (`pool.slab`). #290: REQUIRED when the pool is
     ///      mode 0 (every `InitPool` pool), because it supplies the tag-87 fee-payout
     ///      counter that pending fees are attributed against before pricing. Ignored
-    ///      for mode 1.
+    ///      for mode 1. v5 FIRST_LOSS: REQUIRED and `[writable]` (the units refresh CPI).
+    ///  12. `[writable]` v5 FIRST_LOSS only: the wrapper's `InsuranceUnitsV20`
+    ///      (`["ins_units", slab]` under `pool.percolator_program`).
+    ///  13. `[]` v5 FIRST_LOSS only: the wrapper program (`pool.percolator_program`).
+    ///
+    /// Data: `[1][amount u64]` (8 B), or v5 `[1][amount u64][accept_first_loss_version u8]
+    /// [target_bps u16][buffer_bps u16][hysteresis_bps u16]` (15 B, decoded as
+    /// `DepositWithConsent`). A FIRST_LOSS pool REQUIRES the 15-byte form with the version ==
+    /// `pool.consent_version` AND the deployment parameters the staker accepts equal to the
+    /// pool's (S-5: `target_bps` == the larger of the committed and a pending target), else
+    /// `ConsentRequired`. The deployed units are priced at the wrapper's ENTRY (mint) reading.
     Deposit { amount: u64 },
 
     /// 2: Withdraw collateral by burning LP tokens. Subject to cooldown.
@@ -40,6 +52,20 @@
     ///      pool, pending wrapper-paid fees are accrued before pricing the redemption.
     ///      When absent, that accrual is skipped, so the withdrawer redeems at the
     ///      not-yet-accrued (lower or equal) price. Clients should always pass it.
+    ///      v5 FIRST_LOSS: REQUIRED and `[writable]` (the units refresh CPI).
+    ///  11. `[writable]` v5 FIRST_LOSS only: the wrapper's `InsuranceUnitsV20`.
+    ///  12. `[]` v5 FIRST_LOSS only: the wrapper program.
+    ///  13. `[]` v5 FIRST_LOSS only: System program (the refresh CPI's account list).
+    ///
+    /// v5 FIRST_LOSS: the deployed units are priced at the wrapper's EXIT (free) reading and
+    /// the payout must fit the pool's LIQUID value (`LiquidityBufferExhausted` otherwise).
+    ///
+    /// GH#311: when account 10 is passed and the wrapper market is RESOLVED, the vault surplus
+    /// (e.g. paid in by a permissionless direct wrapper tag 41) is booked BEFORE pricing, exactly
+    /// as `RecoverTerminalInsurance` would book it, except the creator's close-out share
+    /// (`StakePool::closeout_creator_share`; FIRST_LOSS: capped by the creator class released,
+    /// read from account 11), which stays unbooked for `RecoverTerminalInsurance` to forward.
+    /// A Live market books nothing (#290). No account changes.
     Withdraw { lp_amount: u64 },
 
     /// 12: Accrue trading fees from percolator engine to LP vault.
@@ -54,6 +80,10 @@
     ///      for mode 1. A mode-0 pool books vault surplus only up to the wrapper's
     ///      not-yet-booked `insurance_reserve_withdrawn_atoms` (tag-87 payouts). Any
     ///      other surplus (a raw donation) stays unpriced in the vault.
+    ///
+    /// F3: refused with `NoRealLpHolders` (29) when `total_lp_supply <=
+    /// MINIMUM_LIQUIDITY` (only the N7 dead shares exist). Nothing is written; the
+    /// pushed fees stay in the vault and are booked once a real staker deposits.
     AccrueFees,
 
     /// 16: Deposit into the junior (first-loss) tranche.

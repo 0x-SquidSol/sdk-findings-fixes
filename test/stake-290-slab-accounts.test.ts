@@ -121,8 +121,12 @@ function assertMatchesDoc(metas: Meta[], doc: DocAccount[]): void {
   expect(metas.map((m) => m.isWritable)).toEqual(doc.map((d) => d.writable));
 }
 
-const DEPOSIT_DOC = parseAccounts(docBlock(FIXTURE, 1, "Deposit"));
-const WITHDRAW_DOC = parseAccounts(docBlock(FIXTURE, 2, "Withdraw"));
+/** v5 (stake 53f5480) appends FIRST_LOSS-only accounts after the #290 slab. The mode-0 builders cover the rest. */
+const FIRST_LOSS_ONLY = /^v5 FIRST_LOSS only:/;
+const DEPOSIT_DOC_ALL = parseAccounts(docBlock(FIXTURE, 1, "Deposit"));
+const WITHDRAW_DOC_ALL = parseAccounts(docBlock(FIXTURE, 2, "Withdraw"));
+const DEPOSIT_DOC = DEPOSIT_DOC_ALL.filter((d) => !FIRST_LOSS_ONLY.test(d.name));
+const WITHDRAW_DOC = WITHDRAW_DOC_ALL.filter((d) => !FIRST_LOSS_ONLY.test(d.name));
 const ACCRUE_DOC = parseAccounts(docBlock(FIXTURE, 12, "AccrueFees"));
 const JUNIOR_BLOCK = docBlock(FIXTURE, 16, "DepositJunior");
 /**
@@ -156,6 +160,19 @@ describe("stake #290: pool.slab trailing account (v18.2)", () => {
     expect(ACCRUE_DOC).toHaveLength(5);
     expect(slabIdx(ACCRUE_DOC)).toBe(4);
     expect(JUNIOR_BLOCK).toMatch(/same as Deposit, including the #290 wrapper market at index 11/);
+  });
+
+  it("fixture (stake 53f5480) documents the v5 FIRST_LOSS accounts strictly after the mode-0 list", () => {
+    // The FIRST_LOSS-only accounts trail the mode-0 prefix, so the mode-0 builders stay a strict prefix of it.
+    expect(DEPOSIT_DOC_ALL).toHaveLength(14);
+    expect(DEPOSIT_DOC_ALL.slice(12).every((d) => FIRST_LOSS_ONLY.test(d.name))).toBe(true);
+    expect(DEPOSIT_DOC_ALL[12]).toMatchObject({ writable: true }); // InsuranceUnitsV20
+    expect(WITHDRAW_DOC_ALL).toHaveLength(14);
+    expect(WITHDRAW_DOC_ALL.slice(11).every((d) => FIRST_LOSS_ONLY.test(d.name))).toBe(true);
+    expect(WITHDRAW_DOC_ALL[11]).toMatchObject({ writable: true }); // InsuranceUnitsV20
+    // The #290 slab line now says FIRST_LOSS needs it writable; the mode-0 builders keep it read-only.
+    expect(docBlock(FIXTURE, 1, "Deposit")).toMatch(/for mode 1\. v5 FIRST_LOSS: REQUIRED and `\[writable\]`/);
+    expect(WITHDRAW_DOC[10].name).toMatch(/^OPTIONAL wrapper market/);
   });
 
   it("depositAccounts matches instruction.rs Deposit, index by index (user [0] writable per the processor)", () => {

@@ -465,11 +465,11 @@ describe("devnet — fetchAdlRankedPositions() [PERC-8410]", () => {
 
 describe("devnet — error codes 61-65 [PERC-8410]", () => {
   const ADL_ERROR_CODES: Record<number, string> = {
-    61: "EngineSideBlocked",
-    62: "EngineCorruptState",
-    63: "InsuranceFundNotDepleted",
-    64: "NoAdlCandidates",
-    65: "BankruptPositionAlreadyClosed",
+    61: "AssetSlotAlreadyConfigured",
+    62: "CreatorFeeOverClaim",
+    63: "LpVaultBackingBucketNotEmpty",
+    64: "RentExemptRequired",
+    65: "AssetGenerationMismatch",
   };
 
   it("all ADL error codes 61-65 are defined in PERCOLATOR_ERRORS", () => {

@@ -364,13 +364,13 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     ];
   }
 
-  // ---- Code 61: EngineSideBlocked ----
-  it("code 61 (0x3D) — EngineSideBlocked — direct devnet log format", () => {
+  // ---- Code 61: AssetSlotAlreadyConfigured ----
+  it("code 61 (0x3D) — AssetSlotAlreadyConfigured — direct devnet log format", () => {
     const logs = makeDevnetErrorLogs("3D");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(61);
-    expect(result!.name).toBe("EngineSideBlocked");
+    expect(result!.name).toBe("AssetSlotAlreadyConfigured");
     expect(result!.hint).toBeTruthy();
   });
 
@@ -379,16 +379,16 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(61);
-    expect(result!.name).toBe("EngineSideBlocked");
+    expect(result!.name).toBe("AssetSlotAlreadyConfigured");
   });
 
-  // ---- Code 62: EngineCorruptState ----
-  it("code 62 (0x3E) — EngineCorruptState — devnet log format", () => {
+  // ---- Code 62: CreatorFeeOverClaim ----
+  it("code 62 (0x3E) — CreatorFeeOverClaim — devnet log format", () => {
     const logs = makeDevnetErrorLogs("3E");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(62);
-    expect(result!.name).toBe("EngineCorruptState");
+    expect(result!.name).toBe("CreatorFeeOverClaim");
     expect(result!.hint).toBeTruthy();
   });
 
@@ -401,14 +401,14 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     expect(upper!.name).toBe(lower!.name);
   });
 
-  // ---- Code 63: InsuranceFundNotDepleted ----
-  it("code 63 (0x3F) — InsuranceFundNotDepleted — devnet log format", () => {
+  // ---- Code 63: LpVaultBackingBucketNotEmpty ----
+  it("code 63 (0x3F) — LpVaultBackingBucketNotEmpty — devnet log format", () => {
     const logs = makeDevnetErrorLogs("3F");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(63);
-    expect(result!.name).toBe("InsuranceFundNotDepleted");
-    expect(result!.hint).toMatch(/insurance|depleted/i);
+    expect(result!.name).toBe("LpVaultBackingBucketNotEmpty");
+    expect(result!.hint).toMatch(/backing bucket/i);
   });
 
   it("code 63 — realistic devnet log with balance info in log body", () => {
@@ -420,17 +420,17 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     ];
     const result = parseErrorFromLogs(logs);
     expect(result!.code).toBe(63);
-    expect(result!.name).toBe("InsuranceFundNotDepleted");
+    expect(result!.name).toBe("LpVaultBackingBucketNotEmpty");
   });
 
-  // ---- Code 64: NoAdlCandidates ----
-  it("code 64 (0x40) — NoAdlCandidates — devnet log format", () => {
+  // ---- Code 64: RentExemptRequired ----
+  it("code 64 (0x40) — RentExemptRequired — devnet log format", () => {
     const logs = makeDevnetErrorLogs("40");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(64);
-    expect(result!.name).toBe("NoAdlCandidates");
-    expect(result!.hint).toMatch(/candidate|eligible/i);
+    expect(result!.name).toBe("RentExemptRequired");
+    expect(result!.hint).toMatch(/tombstone|rent-exempt/i);
   });
 
   it("code 64 — realistic devnet keeper log (no eligible positions on dominant side)", () => {
@@ -442,17 +442,17 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     ];
     const result = parseErrorFromLogs(logs);
     expect(result!.code).toBe(64);
-    expect(result!.name).toBe("NoAdlCandidates");
+    expect(result!.name).toBe("RentExemptRequired");
   });
 
-  // ---- Code 65: BankruptPositionAlreadyClosed ----
-  it("code 65 (0x41) — BankruptPositionAlreadyClosed — devnet log format", () => {
+  // ---- Code 65: AssetGenerationMismatch ----
+  it("code 65 (0x41) — AssetGenerationMismatch — devnet log format", () => {
     const logs = makeDevnetErrorLogs("41");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(65);
-    expect(result!.name).toBe("BankruptPositionAlreadyClosed");
-    expect(result!.hint).toMatch(/closed|size.*0|re-rank/i);
+    expect(result!.name).toBe("AssetGenerationMismatch");
+    expect(result!.hint).toMatch(/generation/i);
   });
 
   it("code 65 — realistic devnet keeper retry log (stale target_idx, already closed)", () => {
@@ -464,16 +464,16 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
     ];
     const result = parseErrorFromLogs(logs);
     expect(result!.code).toBe(65);
-    expect(result!.name).toBe("BankruptPositionAlreadyClosed");
+    expect(result!.name).toBe("AssetGenerationMismatch");
   });
 
   // ---- Regression guards ----
-  it("adjacent code 60 (0x3C) — EngineInvalidEntryPrice — not confused with ADL codes", () => {
+  it("adjacent code 60 (0x3C) — StakeProgramNotPinned — not confused with ADL codes", () => {
     const logs = makeDevnetErrorLogs("3C");
     const result = parseErrorFromLogs(logs);
     expect(result).not.toBeNull();
     expect(result!.code).toBe(60);
-    expect(result!.name).toBe("EngineInvalidEntryPrice");
+    expect(result!.name).toBe("StakeProgramNotPinned");
   });
 
   it("adjacent code 66 (0x42) — if defined — has code=66 exactly (no off-by-one from ADL range)", () => {
@@ -497,11 +497,11 @@ describe("devnet — error code parsing end-to-end [PERC-8365]", () => {
 
   it("decodeError() returns correct entry for all ADL codes 61-65", () => {
     const expected: Record<number, string> = {
-      61: "EngineSideBlocked",
-      62: "EngineCorruptState",
-      63: "InsuranceFundNotDepleted",
-      64: "NoAdlCandidates",
-      65: "BankruptPositionAlreadyClosed",
+      61: "AssetSlotAlreadyConfigured",
+      62: "CreatorFeeOverClaim",
+      63: "LpVaultBackingBucketNotEmpty",
+      64: "RentExemptRequired",
+      65: "AssetGenerationMismatch",
     };
     for (const [codeStr, name] of Object.entries(expected)) {
       const code = Number(codeStr);

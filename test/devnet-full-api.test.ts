@@ -49,7 +49,6 @@ import {
   PERCOLATOR_ERRORS,
   getErrorName,
   getErrorHint,
-  isAnchorErrorCode,
   // RPC
   RpcPool,
   checkRpcHealth,
@@ -317,47 +316,11 @@ describe("PERC-8468: buildAdlTransaction() devnet integration", () => {
     RPC_TIMEOUT_MS
   );
 
-  it("buildAdlInstruction() produces valid instruction (offline test)", () => {
-    const caller = Keypair.generate().publicKey;
-    const slab = Keypair.generate().publicKey;
-    const oracle = Keypair.generate().publicKey;
-    const programId = DEVNET_PROGRAM_ID;
-    const targetIdx = 5;
-
-    const ix = buildAdlInstruction(caller, slab, oracle, programId, targetIdx);
-    expect(ix).toHaveProperty("programId");
-    expect(ix.programId).toEqual(programId);
-    expect(ix).toHaveProperty("keys");
-    expect(Array.isArray(ix.keys)).toBe(true);
-    expect(ix.keys.length).toBeGreaterThan(0);
-    expect(ix).toHaveProperty("data");
-    expect(ix.data).toBeInstanceOf(Buffer);
-    // Data should encode instruction tag + target index
-    expect(ix.data.length).toBeGreaterThan(0);
-  });
-
-  it("buildAdlInstruction() with backup oracles includes them in keys", () => {
-    const caller = Keypair.generate().publicKey;
-    const slab = Keypair.generate().publicKey;
-    const oracle = Keypair.generate().publicKey;
-    const backup1 = Keypair.generate().publicKey;
-    const backup2 = Keypair.generate().publicKey;
-    const programId = DEVNET_PROGRAM_ID;
-
-    const ix = buildAdlInstruction(caller, slab, oracle, programId, 0, [
-      backup1,
-      backup2,
-    ]);
-
-    // Should have more keys with backups than without
-    const ixNoBackup = buildAdlInstruction(
-      caller,
-      slab,
-      oracle,
-      programId,
-      0
-    );
-    expect(ix.keys.length).toBeGreaterThan(ixNoBackup.keys.length);
+  it("buildAdlInstruction() refuses to build ExecuteAdl on the v17+ wrapper (offline test)", () => {
+    // AUD-T3-2: ExecuteAdl has no decode arm in the v17+ wrapper; the builder fails fast (with or without backups).
+    const k = () => Keypair.generate().publicKey;
+    expect(() => buildAdlInstruction(k(), k(), k(), DEVNET_PROGRAM_ID, 5)).toThrow(/not supported by the v17 SDK/);
+    expect(() => buildAdlInstruction(k(), k(), k(), DEVNET_PROGRAM_ID, 0, [k(), k()])).toThrow(/not supported by the v17 SDK/);
   });
 });
 
@@ -368,11 +331,11 @@ describe("PERC-8468: buildAdlTransaction() devnet integration", () => {
 describe("PERC-8468: error codes 61-65 correctly exported and parsed", () => {
   const ADL_ERROR_CODES = [61, 62, 63, 64, 65] as const;
   const EXPECTED_NAMES: Record<number, string> = {
-    61: "EngineSideBlocked",
-    62: "EngineCorruptState",
-    63: "InsuranceFundNotDepleted",
-    64: "NoAdlCandidates",
-    65: "BankruptPositionAlreadyClosed",
+    61: "AssetSlotAlreadyConfigured",
+    62: "CreatorFeeOverClaim",
+    63: "LpVaultBackingBucketNotEmpty",
+    64: "RentExemptRequired",
+    65: "AssetGenerationMismatch",
   };
 
   it("PERCOLATOR_ERRORS contains all ADL error codes 61-65", () => {
@@ -416,22 +379,12 @@ describe("PERC-8468: error codes 61-65 correctly exported and parsed", () => {
     expect(getErrorName(9999)).toBe("Unknown(9999)");
   });
 
-  it("isAnchorErrorCode() correctly identifies Anchor vs Percolator codes", () => {
-    // ADL codes 61-65 are Percolator codes, not Anchor
-    for (const code of ADL_ERROR_CODES) {
-      expect(isAnchorErrorCode(code)).toBe(false);
-    }
-    // Anchor codes start at 6000+
-    expect(isAnchorErrorCode(6000)).toBe(true);
-    expect(isAnchorErrorCode(6400)).toBe(true);
-  });
-
   describe("parseErrorFromLogs() extracts ADL errors from realistic log lines", () => {
-    it("parses error code 63 (InsuranceFundNotDepleted) from Anchor-style logs", () => {
+    it("parses error code 63 (LpVaultBackingBucketNotEmpty) from Anchor-style logs", () => {
       const logs = [
         "Program ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv invoke [1]",
         "Program log: Instruction: ExecuteAdl",
-        "Program log: AnchorError occurred. Error Code: InsuranceFundNotDepleted. Error Number: 6063. Error Message: InsuranceFundNotDepleted.",
+        "Program log: AnchorError occurred. Error Code: LpVaultBackingBucketNotEmpty. Error Number: 6063. Error Message: LpVaultBackingBucketNotEmpty.",
         "Program ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv consumed 15000 of 200000 compute units",
         "Program ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv failed: custom program error: 0x17AF",
       ];
@@ -442,7 +395,7 @@ describe("PERC-8468: error codes 61-65 correctly exported and parsed", () => {
       expect(parsed!.code).toBeDefined();
     });
 
-    it("parses error code 64 (NoAdlCandidates) from hex error", () => {
+    it("parses error code 64 (RentExemptRequired) from hex error", () => {
       const logs = [
         "Program ESa89R5Es3rJ5mnwGybVRG1GrNt9etP11Z5V2QWD4edv invoke [1]",
         "Program log: Instruction: ExecuteAdl",
