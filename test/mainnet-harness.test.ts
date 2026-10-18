@@ -8,12 +8,12 @@
  * This harness does NOT submit transactions — it validates that the SDK correctly:
  *   1. Discovers markets (via getMarketsByAddress and discoverMarkets)
  *   2. Parses slab data (header, config, engine, accounts, risk params)
- *   3. Builds position open/close instruction data + account metas
- *   4. Builds LP deposit/withdraw instructions
- *   5. Builds ADL ranking and transaction instructions
- *   6. Parses error codes 61-65
- *   7. Derives all PDAs correctly
- *   8. Builds queued withdrawal lifecycle instructions
+ *   3. Refuses the v12 position / LP / ADL instruction surface (removed from the v17+ wrapper;
+ *      the v18 wire is pinned in the default suite)
+ *   5. Runs ADL ranking on live data (building ExecuteAdl is refused on v17+)
+ *   6. Encodes the v18 TopUpInsurance wire
+ *   7. Derives the PDAs correctly
+ *   8. Parses error codes 61-65 (v17+ wrapper names)
  *
  * Run against devnet:
  *   npx vitest run --config vitest.devnet.config.ts test/mainnet-harness.test.ts
@@ -42,15 +42,12 @@ import {
   discoverMarkets,
   getMarketsByAddress,
   // Slab parsing
-  fetchSlab,
   parseHeader,
   parseConfig,
   parseEngine,
   parseParams,
   parseAllAccounts,
   detectSlabLayout,
-  parseAccount,
-  isAccountUsed,
   parseUsedIndices,
   maxAccountIndex,
   readNonce,
@@ -64,12 +61,6 @@ import {
   buildAdlTransaction,
   // Instructions (position open/close cycle)
   encodeInitUser,
-  encodeDepositCollateral,
-  encodeWithdrawCollateral,
-  encodeTradeNoCpi,
-  encodeTradeCpi,
-  encodeTradeCpiV2,
-  encodeCloseAccount,
   encodeKeeperCrank,
   encodeLiquidateAtOracle,
   // Instructions (LP deposit/withdraw)
@@ -85,22 +76,10 @@ import {
   // Account metas
   buildAccountMetas,
   ACCOUNTS_INIT_USER,
-  ACCOUNTS_DEPOSIT_COLLATERAL,
-  ACCOUNTS_WITHDRAW_COLLATERAL,
-  ACCOUNTS_TRADE_NOCPI,
-  ACCOUNTS_CLOSE_ACCOUNT,
-  ACCOUNTS_LP_VAULT_WITHDRAW,
-  ACCOUNTS_QUEUE_WITHDRAWAL,
-  ACCOUNTS_CLAIM_QUEUED_WITHDRAWAL,
-  ACCOUNTS_CANCEL_QUEUED_WITHDRAWAL,
   ACCOUNTS_EXECUTE_ADL,
-  ACCOUNTS_KEEPER_CRANK,
-  ACCOUNTS_LIQUIDATE_AT_ORACLE,
-  ACCOUNTS_TOPUP_INSURANCE,
   // PDA derivation
   deriveVaultAuthority,
   deriveLpPda,
-  deriveKeeperFund,
   deriveCreatorLockPda,
   // Error codes
   decodeError,
@@ -350,268 +329,34 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
   });
 
   // ========================================================================
-  // 3. Position Open/Close Cycle — Instruction Building
+  // 3. v12 instruction surface (refused on v17+)
   // ========================================================================
 
-  describe("3. Position Open/Close Cycle — Instruction Building", () => {
-    const user = randomKeypair();
-    const slab = randomKeypair().publicKey;
-    const oracle = randomKeypair().publicKey;
-    const vault = randomKeypair().publicKey;
-    const userAta = randomKeypair().publicKey;
-    const vaultPda = randomKeypair().publicKey;
-
-    it("encodeInitUser() produces valid instruction data (tag + feePayment)", () => {
-      const data = encodeInitUser({ feePayment: 100_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(9); // tag(1) + u64(8)
-      expect(data[0]).toBe(1); // IX_TAG.InitUser = 1
-    });
-
-    it("ACCOUNTS_INIT_USER + buildAccountMetas() produces correct metas", () => {
-      const keys = buildAccountMetas(ACCOUNTS_INIT_USER, {
-        user: user.publicKey,
-        slab,
-        userAta,
-        vault,
-        tokenProgram: TOKEN_PROGRAM_ID,
+  describe("3. v12 position / LP / ADL instruction surface is refused by the v17+ wrapper", () => {
+    // AUD-T3-2 (2026-10-18): sections 3-4 used to build the v12 wire (InitUser+fee, userIdx-keyed Deposit/Withdraw/
+    // Trade/Close, KeeperCrank, LiquidateAtOracle, InitLP, LpVaultWithdraw, the queued-withdrawal trio). The v17+ wrapper
+    // has no decode arm for those, and the SDK encoders now fail fast. The CURRENT v18 wire for InitPortfolio / Deposit /
+    // Withdraw / TradeNoCpi / ClosePortfolio / TopUpInsurance and their account specs is pinned in the default suite
+    // (test/abi.test.ts, test/instructions.test.ts, test/drift-check.test.ts, test/accounts.test.ts).
+    const removed: Array<[string, () => unknown]> = [
+      ["encodeInitLP", () => encodeInitLP({ matcherProgram: PublicKey.default, matcherContext: PublicKey.default, feePayment: 0n } as never)],
+      ["encodeLpVaultWithdraw", () => encodeLpVaultWithdraw({ lpAmount: 1n } as never)],
+      ["encodeQueueWithdrawal", () => encodeQueueWithdrawal({ lpAmount: 1n } as never)],
+      ["encodeClaimQueuedWithdrawal", () => encodeClaimQueuedWithdrawal()],
+      ["encodeCancelQueuedWithdrawal", () => encodeCancelQueuedWithdrawal()],
+      ["encodeLiquidateAtOracle", () => encodeLiquidateAtOracle({ targetIdx: 7 } as never)],
+      ["encodeKeeperCrank", () => encodeKeeperCrank({ callerIdx: 0 } as never)],
+      ["encodeExecuteAdl", () => encodeExecuteAdl({ targetIdx: 42 } as never)],
+    ];
+    for (const [name, call] of removed) {
+      it(`${name}() fails fast instead of serializing a dead tag`, () => {
+        expect(call).toThrow(/not accepted|v17 wrapper/);
       });
-      expect(keys).toHaveLength(5);
-      expect(keys[0].pubkey.equals(user.publicKey)).toBe(true);
-      expect(keys[0].isSigner).toBe(true);
-      expect(keys[1].pubkey.equals(slab)).toBe(true);
-      expect(keys[1].isWritable).toBe(true);
-    });
+    }
 
-    it("encodeDepositCollateral() produces valid data (tag + userIdx + amount)", () => {
-      const data = encodeDepositCollateral({ userIdx: 5, amount: 1_000_000_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(11); // tag(1) + u16(2) + u64(8)
-    });
-
-    it("ACCOUNTS_DEPOSIT_COLLATERAL builds 6-account meta", () => {
-      const keys = buildAccountMetas(ACCOUNTS_DEPOSIT_COLLATERAL, {
-        user: user.publicKey,
-        slab,
-        userAta,
-        vault,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        clock: SYSVAR_CLOCK_PUBKEY,
-      });
-      expect(keys).toHaveLength(6);
-    });
-
-    it("encodeWithdrawCollateral() produces valid data", () => {
-      const data = encodeWithdrawCollateral({ userIdx: 5, amount: 500_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(11);
-    });
-
-    it("ACCOUNTS_WITHDRAW_COLLATERAL builds 8-account meta", () => {
-      const keys = buildAccountMetas(ACCOUNTS_WITHDRAW_COLLATERAL, {
-        user: user.publicKey,
-        slab,
-        vault,
-        userAta,
-        vaultPda,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        clock: SYSVAR_CLOCK_PUBKEY,
-        oracleIdx: oracle,
-      });
-      expect(keys).toHaveLength(8);
-    });
-
-    it("encodeTradeNoCpi() produces 21-byte instruction data", () => {
-      const data = encodeTradeNoCpi({ lpIdx: 0, userIdx: 5, size: 1_000_000_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(21); // tag(1) + u16(2) + u16(2) + i128(16)
-    });
-
-    it("ACCOUNTS_TRADE_NOCPI builds 4-account meta", () => {
-      const lp = randomKeypair();
-      const keys = buildAccountMetas(ACCOUNTS_TRADE_NOCPI, {
-        user: user.publicKey,
-        lp: lp.publicKey,
-        slab,
-        oracle,
-      });
-      expect(keys).toHaveLength(4);
-      expect(keys[0].isSigner).toBe(true);
-      expect(keys[1].isSigner).toBe(true);
-    });
-
-    it("encodeTradeNoCpi() handles negative size (short position)", () => {
-      const data = encodeTradeNoCpi({ lpIdx: 0, userIdx: 3, size: -500_000_000n });
-      expect(data.length).toBe(21);
-      // Verify i128 negative: the MSB byte should have high bit set
-      const view = new DataView(data.buffer, data.byteOffset);
-      const hi = view.getBigInt64(13, true); // i128 high 8 bytes (offset 5..12 = lo, 13..20 = hi)
-      expect(hi).toBeLessThan(0n);
-    });
-
-    it("encodeCloseAccount() produces valid data", () => {
-      const data = encodeCloseAccount({ userIdx: 5 });
-      expect(data.length).toBe(3); // tag(1) + u16(2)
-    });
-
-    it("ACCOUNTS_CLOSE_ACCOUNT builds 8-account meta", () => {
-      const keys = buildAccountMetas(ACCOUNTS_CLOSE_ACCOUNT, {
-        user: user.publicKey,
-        slab,
-        vault,
-        userAta,
-        vaultPda,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        clock: SYSVAR_CLOCK_PUBKEY,
-        oracle,
-      });
-      expect(keys).toHaveLength(8);
-    });
-
-    it("encodeKeeperCrank() produces valid data", () => {
-      const data = encodeKeeperCrank({ callerIdx: 0 });
-      expect(data.length).toBe(4); // tag(1) + u16(2) + format_version(1)
-    });
-
-    it("encodeLiquidateAtOracle() produces valid data", () => {
-      const data = encodeLiquidateAtOracle({ targetIdx: 7 });
-      expect(data.length).toBe(3); // tag(1) + u16(2)
-    });
-
-    it("full position lifecycle: init → deposit → trade → close — all encode without error", () => {
-      // This validates the complete happy path instruction encoding
-      const initData = encodeInitUser({ feePayment: 0n });
-      const depositData = encodeDepositCollateral({ userIdx: 0, amount: 10_000_000n });
-      const tradeData = encodeTradeNoCpi({ lpIdx: 0, userIdx: 0, size: 1_000_000n });
-      const closeData = encodeCloseAccount({ userIdx: 0 });
-
-      expect(initData[0]).toBe(1);   // InitUser tag
-      expect(depositData[0]).toBe(3); // DepositCollateral tag
-      expect(tradeData[0]).toBe(6);   // TradeNoCpi tag
-      expect(closeData[0]).toBe(8);   // CloseAccount tag
-
-      // All should be valid Uint8Arrays
-      for (const d of [initData, depositData, tradeData, closeData]) {
-        expect(d).toBeInstanceOf(Uint8Array);
-        expect(d.length).toBeGreaterThan(0);
-      }
-    });
-  });
-
-  // ========================================================================
-  // 4. LP Deposit/Withdraw — Instruction Building
-  // ========================================================================
-
-  describe("4. LP Deposit/Withdraw — Instruction Building", () => {
-    const user = randomKeypair();
-    const slab = randomKeypair().publicKey;
-
-    it("encodeInitLP() produces valid instruction data", () => {
-      const matcherProgram = randomKeypair().publicKey;
-      const matcherContext = randomKeypair().publicKey;
-      const data = encodeInitLP({
-        matcherProgram,
-        matcherContext,
-        feePayment: 50_000n,
-      });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(73); // tag(1) + pubkey(32) + pubkey(32) + u64(8)
-    });
-
-    it("encodeLpVaultWithdraw() produces valid instruction data", () => {
-      const data = encodeLpVaultWithdraw({ lpAmount: 1_000_000_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(9); // tag(1) + u64(8)
-    });
-
-    it("ACCOUNTS_LP_VAULT_WITHDRAW builds 10-account meta including creatorLockPda", () => {
-      const [vaultAuthority] = deriveVaultAuthority(PROGRAM_ID, slab);
-      const [creatorLockPda] = deriveCreatorLockPda(PROGRAM_ID, slab);
-      const keys = buildAccountMetas(ACCOUNTS_LP_VAULT_WITHDRAW, {
-        withdrawer: user.publicKey,
-        slab,
-        withdrawerAta: randomKeypair().publicKey,
-        vault: randomKeypair().publicKey,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        lpVaultMint: randomKeypair().publicKey,
-        withdrawerLpAta: randomKeypair().publicKey,
-        vaultAuthority,
-        lpVaultState: randomKeypair().publicKey,
-        creatorLockPda,
-      });
-      expect(keys).toHaveLength(10);
-      // Verify creatorLockPda is at position 9
-      expect(keys[9].pubkey.equals(creatorLockPda)).toBe(true);
-      expect(keys[9].isWritable).toBe(true);
-    });
-
-    it("encodeQueueWithdrawal() produces valid data", () => {
-      const data = encodeQueueWithdrawal({ lpAmount: 500_000_000n });
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(9); // tag(1) + u64(8)
-    });
-
-    it("ACCOUNTS_QUEUE_WITHDRAWAL builds 5-account meta", () => {
-      const keys = buildAccountMetas(ACCOUNTS_QUEUE_WITHDRAWAL, {
-        user: user.publicKey,
-        slab,
-        lpVaultState: randomKeypair().publicKey,
-        withdrawQueue: randomKeypair().publicKey,
-        systemProgram: SystemProgram.programId,
-      });
-      expect(keys).toHaveLength(5);
-    });
-
-    it("encodeClaimQueuedWithdrawal() produces 1-byte tag-only data", () => {
-      const data = encodeClaimQueuedWithdrawal();
-      expect(data).toBeInstanceOf(Uint8Array);
-      expect(data.length).toBe(1);
-    });
-
-    it("ACCOUNTS_CLAIM_QUEUED_WITHDRAWAL builds 10-account meta", () => {
-      const [vaultAuthority] = deriveVaultAuthority(PROGRAM_ID, slab);
-      const keys = buildAccountMetas(ACCOUNTS_CLAIM_QUEUED_WITHDRAWAL, {
-        user: user.publicKey,
-        slab,
-        withdrawQueue: randomKeypair().publicKey,
-        lpVaultMint: randomKeypair().publicKey,
-        userLpAta: randomKeypair().publicKey,
-        vault: randomKeypair().publicKey,
-        userAta: randomKeypair().publicKey,
-        vaultAuthority,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        lpVaultState: randomKeypair().publicKey,
-      });
-      expect(keys).toHaveLength(10);
-    });
-
-    it("encodeCancelQueuedWithdrawal() produces 1-byte data", () => {
-      const data = encodeCancelQueuedWithdrawal();
-      expect(data.length).toBe(1);
-    });
-
-    it("ACCOUNTS_CANCEL_QUEUED_WITHDRAWAL builds 3-account meta", () => {
-      const keys = buildAccountMetas(ACCOUNTS_CANCEL_QUEUED_WITHDRAWAL, {
-        user: user.publicKey,
-        slab,
-        withdrawQueue: randomKeypair().publicKey,
-      });
-      expect(keys).toHaveLength(3);
-    });
-
-    it("full LP lifecycle: initLP → queueWithdraw → cancel — all encode without error", () => {
-      const initLpData = encodeInitLP({
-        matcherProgram: randomKeypair().publicKey,
-        matcherContext: randomKeypair().publicKey,
-        feePayment: 0n,
-      });
-      const queueData = encodeQueueWithdrawal({ lpAmount: 1_000n });
-      const cancelData = encodeCancelQueuedWithdrawal();
-
-      for (const d of [initLpData, queueData, cancelData]) {
-        expect(d).toBeInstanceOf(Uint8Array);
-        expect(d.length).toBeGreaterThan(0);
-      }
+    it("encodeInitUser() emits the 1-byte v17+ InitPortfolio tag (the v12 fee payment is gone)", () => {
+      const data = encodeInitUser();
+      expect(Array.from(data)).toEqual([1]);
     });
   });
 
@@ -648,33 +393,10 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
       expect(Array.isArray(ranking.ranked)).toBe(true);
     });
 
-    it("buildAdlInstruction() produces valid TransactionInstruction", () => {
-      const caller = randomKeypair().publicKey;
-      const slab = randomKeypair().publicKey;
-      const oracle = randomKeypair().publicKey;
-      const ix = buildAdlInstruction(caller, slab, oracle, PROGRAM_ID, 3);
-
-      expect(ix.programId.equals(PROGRAM_ID)).toBe(true);
-      expect(ix.keys.length).toBeGreaterThanOrEqual(4); // caller, slab, clock, oracle
-      expect(ix.keys[0].pubkey.equals(caller)).toBe(true);
-      expect(ix.keys[0].isSigner).toBe(true);
-      expect(ix.keys[1].pubkey.equals(slab)).toBe(true);
-      expect(ix.keys[1].isWritable).toBe(true);
-      expect(ix.keys[2].pubkey.equals(SYSVAR_CLOCK_PUBKEY)).toBe(true);
-      expect(ix.keys[3].pubkey.equals(oracle)).toBe(true);
-    });
-
-    it("buildAdlInstruction() includes backup oracles when provided", () => {
-      const caller = randomKeypair().publicKey;
-      const slab = randomKeypair().publicKey;
-      const oracle = randomKeypair().publicKey;
-      const backup1 = randomKeypair().publicKey;
-      const backup2 = randomKeypair().publicKey;
-      const ix = buildAdlInstruction(caller, slab, oracle, PROGRAM_ID, 0, [backup1, backup2]);
-
-      expect(ix.keys.length).toBe(6); // caller + slab + clock + oracle + 2 backups
-      expect(ix.keys[4].pubkey.equals(backup1)).toBe(true);
-      expect(ix.keys[5].pubkey.equals(backup2)).toBe(true);
+    it("buildAdlInstruction() refuses to build ExecuteAdl (not accepted by the v17+ wrapper)", () => {
+      const k = () => randomKeypair().publicKey;
+      expect(() => buildAdlInstruction(k(), k(), k(), PROGRAM_ID, 3)).toThrow(/not supported by the v17 SDK/);
+      expect(() => buildAdlInstruction(k(), k(), k(), PROGRAM_ID, 0, [k(), k()])).toThrow(/not supported by the v17 SDK/);
     });
 
     it("buildAdlInstruction() rejects negative targetIdx", () => {
@@ -687,11 +409,6 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
           -1,
         ),
       ).toThrow(/targetIdx/);
-    });
-
-    it("encodeExecuteAdl() produces valid data (tag + u16)", () => {
-      const data = encodeExecuteAdl({ targetIdx: 42 });
-      expect(data.length).toBe(3); // tag(1) + u16(2)
     });
 
     it("ACCOUNTS_EXECUTE_ADL builds correct account meta layout", () => {
@@ -740,8 +457,9 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
 
   describe("6. Insurance Instructions", () => {
     it("encodeTopUpInsurance() produces valid data", () => {
-      const data = encodeTopUpInsurance({ amount: 10_000_000n });
-      expect(data.length).toBe(9);
+      // v18 wire: tag(1) + market_id(u64) + intent_id(u64) + authority_epoch(u64) + amount(u128).
+      const data = encodeTopUpInsurance({ marketId: 1n, intentId: 2n, authorityEpoch: 3n, amount: 10_000_000n });
+      expect(data.length).toBe(41);
     });
   });
 
@@ -776,12 +494,6 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
       expect(() => deriveLpPda(PROGRAM_ID, slab, 0x10000)).toThrow();
     });
 
-    it("deriveKeeperFund() returns deterministic PDA", () => {
-      const [pda, bump] = deriveKeeperFund(PROGRAM_ID, slab);
-      expect(pda).toBeInstanceOf(PublicKey);
-      expect(bump).toBeLessThanOrEqual(255);
-    });
-
     it("deriveCreatorLockPda() returns deterministic PDA", () => {
       const [pda, bump] = deriveCreatorLockPda(PROGRAM_ID, slab);
       expect(pda).toBeInstanceOf(PublicKey);
@@ -791,10 +503,9 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
     it("all PDAs for same slab are distinct", () => {
       const [vault] = deriveVaultAuthority(PROGRAM_ID, slab);
       const [lp0] = deriveLpPda(PROGRAM_ID, slab, 0);
-      const [keeper] = deriveKeeperFund(PROGRAM_ID, slab);
       const [creator] = deriveCreatorLockPda(PROGRAM_ID, slab);
 
-      const pdas = [vault, lp0, keeper, creator];
+      const pdas = [vault, lp0, creator];
       const unique = new Set(pdas.map((p) => p.toBase58()));
       expect(unique.size).toBe(pdas.length);
     });
@@ -813,13 +524,15 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
   // 8. Error Code Parsing
   // ========================================================================
 
-  describe("8. Error Code Parsing (ADL codes 61-65)", () => {
+  describe("8. Error Code Parsing (codes 61-65, v17+ wrapper names)", () => {
+    // AUD-T3-2: the v12 ADL names (EngineSideBlocked .. BankruptPositionAlreadyClosed) are gone. The v17+ wrapper
+    // appended its own variants at these ordinals (src/abi/errors.ts).
     const ADL_ERRORS: Record<number, string> = {
-      61: "EngineSideBlocked",
-      62: "EngineCorruptState",
-      63: "InsuranceFundNotDepleted",
-      64: "NoAdlCandidates",
-      65: "BankruptPositionAlreadyClosed",
+      61: "AssetSlotAlreadyConfigured",
+      62: "CreatorFeeOverClaim",
+      63: "LpVaultBackingBucketNotEmpty",
+      64: "RentExemptRequired",
+      65: "AssetGenerationMismatch",
     };
 
     it("all ADL error codes 61-65 exist in PERCOLATOR_ERRORS", () => {
@@ -844,13 +557,13 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
       // Error 61 = 0x3D
       const logs = [
         `Program ${programStr} invoke [1]`,
-        "Program log: Instruction: ExecuteAdl",
+        "Program log: Instruction: UpdateAssetLifecycle",
         `Program ${programStr} failed: custom program error: 0x3D`,
       ];
       const result = parseErrorFromLogs(logs);
       expect(result).not.toBeNull();
       expect(result!.code).toBe(61);
-      expect(result!.name).toBe("EngineSideBlocked");
+      expect(result!.name).toBe("AssetSlotAlreadyConfigured");
     });
 
     it("parseErrorFromLogs() handles all hex codes 0x3D-0x41", () => {
@@ -904,40 +617,9 @@ describe(`PERC-8417: Mainnet Readiness Harness (${NETWORK_LABEL})`, () => {
       // Verify config.vaultPubkey is a real pubkey (not zeroed)
       expect(config.vaultPubkey.toBase58()).not.toBe(PublicKey.default.toBase58());
 
-      // Build a trade instruction using parsed data
-      const user = randomKeypair();
-      const lp = randomKeypair();
-      const tradeData = encodeTradeNoCpi({ lpIdx: 0, userIdx: 0, size: 100_000n });
-      const tradeMetas = buildAccountMetas(ACCOUNTS_TRADE_NOCPI, {
-        user: user.publicKey,
-        lp: lp.publicKey,
-        slab: discoveredAddresses[0],
-        oracle: config.collateralMint, // placeholder — real oracle would come from config
-      });
-
-      expect(tradeData.length).toBe(21);
-      expect(tradeMetas).toHaveLength(4);
-    });
-
-    it("parse all accounts + build ADL instruction targeting highest-idx used account", () => {
-      if (!rpcReachable || SKIP || !slabData || !discoveredAddresses[0]) return;
-
-      const accounts = parseAllAccounts(slabData);
-      if (accounts.length === 0) return; // no active accounts — skip
-
-      const topAccount = accounts[accounts.length - 1];
-      const caller = randomKeypair().publicKey;
-      const oracle = randomKeypair().publicKey;
-      const ix = buildAdlInstruction(
-        caller,
-        discoveredAddresses[0],
-        oracle,
-        PROGRAM_ID,
-        topAccount.idx,
-      );
-
-      expect(ix.programId.equals(PROGRAM_ID)).toBe(true);
-      expect(ix.data.length).toBe(3); // tag + u16
+      // AUD-T3-2: the v12 TradeNoCpi build that used to follow is gone (the v18 wire is pinned in the default suite).
+      expect(header.magic).toBeDefined();
+      expect(engine).toBeDefined();
     });
 
     it("parse live slab + derive vault authority PDA matches config.vault expectation", () => {
