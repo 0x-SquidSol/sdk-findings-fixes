@@ -4535,7 +4535,7 @@ var NFT_ERRORS = Object.freeze({
   25: { name: "MarketIdMismatch", hint: "The position slot was closed and reused by a newer position." },
   26: { name: "RegistryNotConfigured", hint: "This market has no NFT registry for this program, so the NFT could never be transferred." },
   27: { name: "MultiLegNotWrappable", hint: "Only a portfolio with a single open position can be wrapped as an NFT." },
-  28: { name: "StalePortfolioIncarnation", hint: "This NFT belongs to an earlier version of the portfolio and no longer controls it. Burn it to reclaim its rent." }
+  28: { name: "StalePortfolioIncarnation", hint: "This NFT belongs to an earlier version of the portfolio and no longer controls it. If it is a current-layout NFT, burn it to reclaim its rent; a legacy-layout NFT cannot be recovered after the program upgrade." }
 });
 var SPL_TOKEN_ERRORS = Object.freeze({
   0: { name: "NotRentExempt", hint: "Token account is not rent-exempt." },

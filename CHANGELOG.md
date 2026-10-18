@@ -1,6 +1,6 @@
 ## 9.0.0-candidate: Position NFT layout v3 (S1-2 incarnation binding, percolator-nft 95dcece) - DO NOT MERGE before the S1-2 program fix is approved and merged
 
-- `POSITION_NFT_STATE_LEN` 199 -> 239, `POSITION_NFT_VERSION` 2 -> 3. `parsePositionNftAccount` adds `portfolioMarketGroup` (bytes 199..231), `portfolioIdAtMint` (231..239, u64 LE) and `isLegacyV2`. A v2 (199 B) account still parses, as legacy with both fields `null`; it is never current.
+- `POSITION_NFT_STATE_LEN` 199 -> 239, `POSITION_NFT_VERSION` 2 -> 3. `parsePositionNftAccount` adds `portfolioMarketGroup` (bytes 199..231), `portfolioIdAtMint` (231..239, u64 LE) and `isLegacyV2`. A v2 (199 B) account still parses, as legacy with both fields `null`; it is never current. **Consumers must check `isLegacyV2` / `isNftCurrentForPortfolio`**: the parser now returns v2 successfully. After the S1-2 upgrade a legacy NFT cannot be burned or reconciled (the program rejects accounts under 239 B), so burn legacy NFTs with the OLD program before upgrading.
 - New `isNftCurrentForPortfolio(nft, portfolio)` mirrors `verify_portfolio_incarnation`; `POSITION_NFT_LEGACY_V2_LEN`.
 - NFT error 28 `StalePortfolioIncarnation`. No instruction, account-list or wrapper change. `specs/nft-parity.json` regenerated from 95dcece.
 

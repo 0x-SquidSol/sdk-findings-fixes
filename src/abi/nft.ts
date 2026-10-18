@@ -489,6 +489,11 @@ function readI128FromView(view: DataView, offset: number): bigint {
  * "current": {@link isNftCurrentForPortfolio} returns false for it, because nothing proves it belongs to
  * the live portfolio incarnation.
  *
+ * CONSUMERS MUST CHECK: this parser now SUCCEEDS on a legacy v2 account (it used to be the only accepted layout),
+ * so a caller that does not test `isLegacyV2` / {@link isNftCurrentForPortfolio} would treat a dead NFT as usable.
+ * After the S1-2 program upgrade a legacy NFT is unrecoverable: the NFT program rejects accounts shorter than
+ * 239 B in Burn, EmergencyBurn and Reconcile (InvalidAccountData, not error 28), and the wrapper refuses it.
+ *
  * @param data Raw account data.
  * @returns The decoded state.
  * @throws if data is shorter than 199 bytes, the magic is wrong, the version is not 2 or 3, or a v3 account is shorter than 239 bytes.
