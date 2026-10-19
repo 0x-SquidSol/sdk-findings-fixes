@@ -6826,9 +6826,119 @@ function growthMatcherCapsG8(i) {
   const liqDepth = ld > U128_MAX2 ? U128_MAX2 : ld;
   return { inventoryCapQ: cap, liquidityNotionalE6: liqCapital < liqDepth ? liqCapital : liqDepth };
 }
-var TIER_RAMP_DIV = 4n;
 var KAPPA_TABLE_BPS = Object.freeze([5000n, 10000n, 10000n, 20000n]);
 var LAMBDA_DEPTH_TABLE_BPS = Object.freeze([10000n, 10000n, 20000n, 30000n]);
+var LOG2_FRAC_BITS = 16;
+var CURVE_ANCHOR0_DIV = 4n;
+var TWO_32 = 1n << 32n;
+function log2Q16(x) {
+  if (x <= 0n || x > U64_MAX2) return null;
+  const k = x.toString(2).length - 1;
+  let m = k >= 31 ? x >> BigInt(k - 31) : x << BigInt(31 - k);
+  let frac = 0;
+  for (let i = 0; i < LOG2_FRAC_BITS; i++) {
+    m = m * m >> 31n;
+    frac <<= 1;
+    if (m >= TWO_32) {
+      frac |= 1;
+      m >>= 1n;
+    }
+  }
+  return k * 65536 + frac;
+}
+function curveAnchors(thresholdsE6) {
+  return [thresholdsE6[0] / CURVE_ANCHOR0_DIV, thresholdsE6[0], thresholdsE6[1], thresholdsE6[2]];
+}
+var CURVE_POS_FAIL = Object.freeze({ seg: 255, num: 0, den: 0 });
+function curvePos(d, thresholdsE6) {
+  if (d < 0n || d > U64_MAX2) return { ...CURVE_POS_FAIL };
+  if (d === 0n) return { seg: 0, num: 0, den: 0 };
+  const a = curveAnchors(thresholdsE6);
+  const met = (x) => x !== U64_MAX2 && x !== 0n && d >= x;
+  const seg = met(a[3]) ? 4 : met(a[2]) ? 3 : met(a[1]) ? 2 : met(a[0]) ? 1 : 0;
+  if (seg === 0 || seg === 4) return { seg, num: 0, den: 0 };
+  const lo = a[seg - 1];
+  const hi = a[seg];
+  if (hi === U64_MAX2 || hi <= lo) return { seg, num: 0, den: 0 };
+  const ld = log2Q16(d);
+  const llo = log2Q16(lo);
+  const lhi = log2Q16(hi);
+  if (ld === null || llo === null || lhi === null) return { ...CURVE_POS_FAIL };
+  const num = ld - llo;
+  const den = lhi - llo;
+  if (num < 0 || den < 0) return { ...CURVE_POS_FAIL };
+  return { seg, num: num < den ? num : den, den };
+}
+function curveValue(p, t) {
+  switch (p.seg) {
+    case 0:
+      return t[0];
+    case 4:
+      return t[3];
+    case 1:
+    case 2:
+    case 3: {
+      const lo = t[p.seg - 1];
+      const hi = t[p.seg];
+      if (hi < lo) return hi;
+      if (p.den === 0 || hi === lo) return lo;
+      return lo + (hi - lo) * BigInt(p.num) / BigInt(p.den);
+    }
+    default:
+      return t[0];
+  }
+}
+function curveU64(d, thresholdsE6, t) {
+  return curveValue(curvePos(d, thresholdsE6), t);
+}
+function venueDepthCapped(effectiveDepthE62, depthSourceByte, thresholdsE6, attestedMaxTierStored) {
+  const src = depthSourceOf(depthSourceByte);
+  if (src === DEPTH_SOURCE.OnChainPool) return effectiveDepthE62;
+  if (src === DEPTH_SOURCE.Attested) {
+    const m = attestedMaxTierEff(attestedMaxTierStored);
+    if (m >= GROWTH_MAX_TIER) return effectiveDepthE62;
+    const cap = thresholdsE6[m - 1];
+    return effectiveDepthE62 < cap ? effectiveDepthE62 : cap;
+  }
+  return 0n;
+}
+function smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
+  const pv = curvePos(venueDepthE6, thresholdsE6);
+  const pb = curvePos(bookDepthE62, thresholdsE6);
+  const m2 = (t) => {
+    const a = curveValue(pv, t);
+    const b = curveValue(pb, t);
+    return a < b ? a : b;
+  };
+  const lt = [BigInt(lTableX1002[0]), BigInt(lTableX1002[1]), BigInt(lTableX1002[2]), BigInt(lTableX1002[3])];
+  return {
+    dials: { lSignalX100: Number(m2(lt)), kappaBps: Number(m2(KAPPA_TABLE_BPS)), lambdaDepthBps: Number(m2(LAMBDA_DEPTH_TABLE_BPS)) },
+    venueLX100: Number(curveValue(pv, lt))
+  };
+}
+function smoothDialsVenueLAndPos(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
+  const { dials, venueLX100 } = smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002);
+  const pv = curvePos(venueDepthE6, thresholdsE6);
+  const pb = curvePos(bookDepthE62, thresholdsE6);
+  return { dials, venueLX100, pos: venueDepthE6 <= bookDepthE62 ? pv : pb, venuePos: pv };
+}
+function smoothDials(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
+  return smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002).dials;
+}
+function curveDepthForLeverageX100(targetX100, thresholdsE6, lTableX1002) {
+  const t = [BigInt(lTableX1002[0]), BigInt(lTableX1002[1]), BigInt(lTableX1002[2]), BigInt(lTableX1002[3])];
+  const want = BigInt(targetX100);
+  if (t[0] >= want) return 0n;
+  if (curveU64(U64_MAX2, thresholdsE6, t) < want) return null;
+  let lo = 0n;
+  let hi = U64_MAX2;
+  while (hi - lo > 1n) {
+    const mid = lo + (hi - lo) / 2n;
+    if (curveU64(mid, thresholdsE6, t) >= want) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
 function tierRampU64(d, th, table) {
   const i = depthTierFor(d, th);
   if (i === 0) return table[0];
@@ -6841,27 +6951,7 @@ function tierRampU64(d, th, table) {
   if (d >= rampEnd || rampEnd <= loX || hi <= lo) return hi;
   return lo + (hi - lo) * (d - loX) / (rampEnd - loX);
 }
-function venueDepthCapped(effectiveDepthE62, depthSourceByte, thresholdsE6, attestedMaxTierStored) {
-  const src = depthSourceOf(depthSourceByte);
-  if (src === DEPTH_SOURCE.OnChainPool) return effectiveDepthE62;
-  if (src === DEPTH_SOURCE.Attested) {
-    const m = attestedMaxTierEff(attestedMaxTierStored);
-    if (m >= GROWTH_MAX_TIER) return effectiveDepthE62;
-    const t = thresholdsE6[m];
-    const cap = t > 0n ? t - 1n : 0n;
-    return effectiveDepthE62 < cap ? effectiveDepthE62 : cap;
-  }
-  return 0n;
-}
-function smoothDials(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
-  const m2 = (t) => {
-    const a = tierRampU64(venueDepthE6, thresholdsE6, t);
-    const b = tierRampU64(bookDepthE62, thresholdsE6, t);
-    return a < b ? a : b;
-  };
-  const lt = [BigInt(lTableX1002[0]), BigInt(lTableX1002[1]), BigInt(lTableX1002[2]), BigInt(lTableX1002[3])];
-  return { lSignalX100: Number(m2(lt)), kappaBps: Number(m2(KAPPA_TABLE_BPS)), lambdaDepthBps: Number(m2(LAMBDA_DEPTH_TABLE_BPS)) };
-}
+var TIER_RAMP_DIV = 4n;
 var VOL_EWMA_SHIFT = 4;
 var VOL_Z = 3n;
 var VOL_MOVE_CAP_BPS = 10000n;
@@ -6935,6 +7025,13 @@ function stressCapX100(stress, tier, table) {
   if (stress >= STRESS_HLOCK) return table[0];
   const t = tier > GROWTH_MAX_TIER ? GROWTH_MAX_TIER : tier;
   return table[Math.max(t - stress, 0)];
+}
+function stressCapCurveX100(stress, p, table) {
+  if (stress === STRESS_NONE) return 65535;
+  if (stress >= STRESS_HLOCK) return table[0];
+  const t = [BigInt(table[0]), BigInt(table[1]), BigInt(table[2]), BigInt(table[3])];
+  const shifted = p.seg === 4 ? { seg: 4 - stress, num: 0, den: 0 } : p.seg >= 1 && p.seg <= 3 && p.seg > stress ? { seg: p.seg - stress, num: p.num, den: p.den } : { seg: 0, num: 0, den: 0 };
+  return Number(curveValue(shifted, t));
 }
 function stressOf(stress) {
   return typeof stress === "boolean" ? stress ? STRESS_HLOCK : STRESS_NONE : stress;
@@ -7059,11 +7156,13 @@ function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
   const tier = clamp ? combinedTier(venue, book) : 0;
   const grad = graduationOn(clamp, bandBps, tier);
   const venueD = clamp ? venueDepthCapped(eff, dsByte, thresholds, g.attestedMaxTier) : 0n;
-  const dials = clamp ? smoothDials(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
+  const dv8 = clamp ? smoothDialsVenueLAndPos(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
+  const dials = dv8 !== null ? dv8.dials : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
+  const venueLX100 = dv8 !== null ? dv8.venueLX100 : 0;
   const volInputsMissing = clamp && g.volHasData === true && vol === void 0;
   const lVol = clamp && vol !== void 0 ? growthLVolX100(g, vol) : null;
   const lSignal = clamp ? lSignalWithVol(dials.lSignalX100, lVol, table[0]) : 0;
-  const sCap = clamp ? stressCapX100(st, tier, table) : 65535;
+  const sCap = dv8 !== null ? stressCapCurveX100(st, dv8.pos, table) : 65535;
   const target = targetCeilingX100(grad, st, g.lLaunchX100, g.lTierX100, lSignal, sCap);
   const launch = Math.min(g.lLaunchX100, g.lTierX100);
   const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
@@ -7081,9 +7180,7 @@ function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
       const out = { kind: needDepth && needBacking ? "both" : needDepth ? "depth" : "backing", tier: t, thresholdUsd: Number(depthAtoms / unit), leverageX100: lev2 };
       if (needDepth) {
         out.depthUsd = Number(depthAtoms / unit);
-        const ext = depthAtoms + depthAtoms / TIER_RAMP_DIV;
-        const nextTh = t < 3 ? thresholds[t] : U64_MAX2;
-        out.fullDepthUsd = Number(divCeil(ext < nextTh ? ext : nextTh, unit));
+        out.fullDepthUsd = Number(divCeil(depthAtoms, unit));
       }
       if (needBacking && lam > 0n) out.backingUsd = Number(divCeil(divCeil(depthAtoms * GROWTH_BPS, lam), unit));
       if (needDepth && t > attestedMaxTierEff(g.attestedMaxTier) && g.depthSource !== DEPTH_SOURCE.OnChainPool) out.needsOnChainDepth = true;
@@ -7127,6 +7224,7 @@ function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
     stress: st,
     stressCapX100: sCap,
     dials,
+    venueLX100,
     lVolX100: lVol,
     lSignalX100: lSignal,
     volInputsMissing,
@@ -17595,6 +17693,8 @@ export {
   CTX_RETURN_OFFSET,
   CTX_VAMM_LEN,
   CTX_VAMM_OFFSET,
+  CURVE_ANCHOR0_DIV,
+  CURVE_POS_FAIL,
   CUSHION_SHARE_DEFAULT_BPS_P2B,
   CUSHION_TARGET_DEFAULT_BPS_P2B,
   CrankAction,
@@ -17720,6 +17820,7 @@ export {
   LIGHTHOUSE_PROGRAM_ID_STR,
   LIGHTHOUSE_USER_MESSAGE,
   LIQUID_BUFFER_DEFAULT_BPS_V5,
+  LOG2_FRAC_BITS,
   LOG_TRUNCATED_V22,
   LOT_EXP_MAX_V22,
   LOT_PRICE_FLOOR_E6_V22,
@@ -18176,6 +18277,11 @@ export {
   couponGateOpenV22,
   creatorCollateralAtaV5,
   creatorFeeVestedP2b,
+  curveAnchors,
+  curveDepthForLeverageX100,
+  curvePos,
+  curveU64,
+  curveValue,
   cushionLockedP2b,
   cushionSplitP2b,
   decodeAdlEpisode,
@@ -18600,6 +18706,7 @@ export {
   listOpenResolvedReceiptsP3,
   liveBoundPrincipalPortionP2b,
   liveExitSeniorValueP3,
+  log2Q16,
   lotExpForTokenPriceV22,
   lotExpOfMarketV22,
   lotPriceToTokenE6V22,
@@ -18726,6 +18833,8 @@ export {
   slabDataSize,
   slabDataSizeV1,
   smoothDials,
+  smoothDialsAndVenueL,
+  smoothDialsVenueLAndPos,
   stakeDeadLp,
   stakeGroupAProxyAccounts,
   stakeGroupBProxyAccounts,
@@ -18739,6 +18848,7 @@ export {
   staleResolveErrorContextV22,
   staleResolveStatusV22,
   stickyDepthE6,
+  stressCapCurveX100,
   stressCapX100,
   stressLevel,
   stripLighthouseFromTransaction,

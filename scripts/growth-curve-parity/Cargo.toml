@@ -1,0 +1,16 @@
+# Growth curve SDK parity oracle: calls the wrapper's OWN growth_v19 functions (no re-implementation).
+# Expects a percolator-prog checkout (with its ../percolator engine sibling) next to this SDK checkout,
+# i.e. <parent>/percolator-prog and <parent>/percolator-sdk (the same convention as update-parity-fixtures.mjs).
+#   cd scripts/growth-curve-parity
+#   CARGO_BUILD_JOBS=3 WRAPPER_COMMIT=<short sha> cargo run --release > ../../test/fixtures/growth-curve-parity.json
+# Fixture at 3198539a: generated from a detached percolator-prog worktree at 3198539a (engine 23f609b3).
+[package]
+name = "sdk-growth-curve-parity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+percolator-prog = { path = "../../../percolator-prog", default-features = false, features = ["devnet"] }
+
+[workspace]

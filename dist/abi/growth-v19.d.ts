@@ -1012,54 +1012,162 @@ export declare function growthMatcherCapsG8(i: NCapG8Input & {
     hlockActive: boolean;
     maxPositionAbsQ?: bigint;
 }): MatcherCallExtCapsV3;
-/** `TIER_RAMP_DIV`: the ramp above each threshold `T_i` spans `T_i / 4` (25%), capped at the next threshold. */
-export declare const TIER_RAMP_DIV = 4n;
-/** `KAPPA_TABLE_BPS`: κ by tier, 0.5 / 1 / 1 / 2 (the step values of {@link kappaDepthBps}). */
+/** `KAPPA_TABLE_BPS`: κ by tier, 0.5 / 1 / 1 / 2 (the step values of {@link kappaDepthBps}; the curve's anchor values). */
 export declare const KAPPA_TABLE_BPS: readonly [bigint, bigint, bigint, bigint];
-/** `LAMBDA_DEPTH_TABLE_BPS`: λ_depth by tier, 1x / 1x / 2x / 3x (the step values of {@link lambdaDepthBps}). */
+/** `LAMBDA_DEPTH_TABLE_BPS`: λ_depth by tier, 1x / 1x / 2x / 3x (the step values of {@link lambdaDepthBps}; the curve's anchor values). */
 export declare const LAMBDA_DEPTH_TABLE_BPS: readonly [bigint, bigint, bigint, bigint];
+/** `LOG2_FRAC_BITS`: fractional bits of the fixed-point log2 ({@link log2Q16}). */
+export declare const LOG2_FRAC_BITS = 16;
+/** `CURVE_ANCHOR0_DIV`: the implicit anchor 0 sits at `T1 / 4` and carries the tier-0 value of each table (launch, κ 0.5, λ 1x). */
+export declare const CURVE_ANCHOR0_DIV = 4n;
 /**
- * Piecewise-linear tier ramp of a monotone 4-entry table at depth `d`: `i = depthTierFor(d, th)`; `i == 0` -> `table[0]`; on the ramp
- * `[T_i, E_i)` with `E_i = min(T_i + T_i / 4, T_{i+1})` linear (floor) from `table[i-1]` to `table[i]`; past it `table[i]`. Never looser than the
- * step table, continuous, monotone. A non-monotone table returns the step value. Applies to L, κ and λ_depth. Port of `growth_v19::tier_ramp_u64`.
+ * Fixed-point `log2(x)` in Q.16: `(floor(log2 x) << 16) | 16 fractional bits`, `null` for 0 (and, fail closed, for anything outside u64).
+ * The integer part is exact (bit length); the fraction is the first 16 binary digits of `log2(m)` for the 32-bit normalised mantissa
+ * `m in [2^31, 2^32)`, by 16 squarings with a floor at every step. Monotone non-decreasing, exact at powers of two. Port of
+ * `growth_v19::log2_q16` (bit-exact).
  *
- * @param d      Depth (collateral atoms).
- * @param th     Thresholds (atoms, {@link tierThresholdsE6}).
- * @param table  4-entry table, index = tier.
- * @returns The ramped value.
+ * @param x  A u64 value.
+ * @returns The Q.16 log2 (a u32), or `null` for 0 / out of range.
  * @example
  * ```ts
- * tierRampU64(110_000n, [25_000n, 100_000n, 500_000n], [500n, 500n, 1_000n, 2_000n]); // 700n (T2 + 10%: 5x + 5x * 0.4)
+ * log2Q16(3n);     // 103_872 (floor(log2(3) * 2^16))
+ * log2Q16(1_024n); // 655_360 (10 << 16)
  * ```
  */
-export declare function tierRampU64(d: bigint, th: Triple<bigint>, table: readonly [bigint, bigint, bigint, bigint]): bigint;
+export declare function log2Q16(x: bigint): number | null;
 /**
- * The venue depth the ramps read: a DEX reading as is; a keeper-attested one clamped to `T_{m+1} - 1` with `m = attestedMaxTierEff` (so its ramp
- * never exceeds `L_m`); no source: 0. Port of `growth_v19::venue_depth_capped`.
+ * The four curve anchors (atoms) of a market's thresholds: `[T1 / 4, T1, T2, T3]`. Port of `growth_v19::curve_anchors`.
+ *
+ * @param thresholdsE6  {@link tierThresholdsE6}.
+ * @returns `[a0, a1, a2, a3]`.
+ * @example
+ * ```ts
+ * curveAnchors([25_000n, 100_000n, 500_000n]); // [6_250n, 25_000n, 100_000n, 500_000n]
+ * ```
+ */
+export declare function curveAnchors(thresholdsE6: Triple<bigint>): [bigint, bigint, bigint, bigint];
+/**
+ * Where a depth sits on the curve (`growth_v19::CurvePos`): `seg` = anchors met (0 = below anchor 0, 4 = at or past T3); for `seg` 1..3 the
+ * value is `t[seg-1] + floor((t[seg] - t[seg-1]) * num / den)` with `num <= den`; `den == 0` = flat at `t[seg-1]`; `seg == 0xFF` = an
+ * arithmetic failure (reads `t[0]`).
+ */
+export interface CurvePos {
+    seg: number;
+    num: number;
+    den: number;
+}
+/** `CURVE_POS_FAIL`: a failed computation; {@link curveValue} reads `t[0]` (launch, κ 0.5, λ 1x). */
+export declare const CURVE_POS_FAIL: Readonly<CurvePos>;
+/**
+ * The curve position of depth `d` (atoms). An anchor is met when `d >= anchor`, the anchor is not saturated (`u64::MAX`, D-L1) and not 0; a
+ * depth of 0 meets nothing. Interpolation is on log2: `num = log2(d) - log2(lo)`, `den = log2(hi) - log2(lo)` (Q.16), capped `num <= den`,
+ * so the value is EXACTLY the table at every anchor. A saturated or non-increasing next anchor gives `den = 0` (flat at the lower value).
+ * A depth outside u64 (never on chain) fails closed to {@link CURVE_POS_FAIL}. Port of `growth_v19::curve_pos` (bit-exact).
+ *
+ * @param d             Depth (collateral atoms).
+ * @param thresholdsE6  Thresholds (atoms, {@link tierThresholdsE6}).
+ * @returns {@link CurvePos}.
+ * @example
+ * ```ts
+ * curvePos(50_000n, [25_000n, 100_000n, 500_000n]); // { seg: 2, num: 65_536, den: 131_072 } (half-way in log2)
+ * ```
+ */
+export declare function curvePos(d: bigint, thresholdsE6: Triple<bigint>): CurvePos;
+/**
+ * The curve value of a 4-entry table (index = tier) at a position: `t[0]` below anchor 0 (and on {@link CURVE_POS_FAIL}), `t[3]` at or past T3,
+ * else floor-interpolated between the two neighbouring entries. A decreasing pair (never produced) reads the smaller value. Never above
+ * `max(t)`. Port of `growth_v19::curve_value` (bit-exact: the Rust u64 / u128 products are exact, so one bigint form covers both).
+ *
+ * @param p  {@link curvePos}.
+ * @param t  4-entry table (u64 values).
+ * @returns The value.
+ * @example
+ * ```ts
+ * curveValue({ seg: 2, num: 65_536, den: 131_072 }, [500n, 500n, 1_000n, 2_000n]); // 750n (7.5x)
+ * ```
+ */
+export declare function curveValue(p: CurvePos, t: readonly [bigint, bigint, bigint, bigint]): bigint;
+/**
+ * `curveValue(curvePos(d, th), t)`. Port of `growth_v19::curve_u64`.
+ *
+ * @param d             Depth (atoms).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param t             4-entry table.
+ * @returns The curve value at `d`.
+ * @example
+ * ```ts
+ * curveU64(200_000n, [25_000n, 100_000n, 500_000n], [500n, 500n, 1_000n, 2_000n]); // 1_430n (14.30x)
+ * ```
+ */
+export declare function curveU64(d: bigint, thresholdsE6: Triple<bigint>, t: readonly [bigint, bigint, bigint, bigint]): bigint;
+/**
+ * The venue depth the curve reads: a DEX reading as is; a keeper-attested one clamped to the anchor of `m = attestedMaxTierEff` (`T_m`, where
+ * the curve equals `L_m`, so it never exceeds `L_m`); no source: 0. Port of `growth_v19::venue_depth_capped` (continuous leverage: the cap
+ * is the anchor itself, `T_m`, no longer `T_{m+1} - 1`).
  *
  * @param effectiveDepthE6       The usable depth (0 when absent).
  * @param depthSourceByte        Byte 44.
  * @param thresholdsE6           Thresholds (atoms).
  * @param attestedMaxTierStored  Byte 45.
- * @returns Depth for the venue ramp.
+ * @returns Depth for the venue curve.
  * @example
  * ```ts
- * venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, [25_000n, 100_000n, 500_000n], 0); // 99_999n
+ * venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, [25_000n, 100_000n, 500_000n], 0); // 25_000n (default max tier 1: exactly L1)
  * ```
  */
 export declare function venueDepthCapped(effectiveDepthE6: bigint, depthSourceByte: number, thresholdsE6: Triple<bigint>, attestedMaxTierStored: number): bigint;
-/** The smoothed growth dials (`growth_v19::SmoothDials`). */
+/** The growth dials (`growth_v19::SmoothDials`), on the continuous curve. */
 export interface SmoothDials {
-    /** Leverage signal x100 = min(ramp_L(venue), ramp_L(book)) (BEFORE the volatility term). */
+    /** Leverage signal x100 = min(curve_L(venue), curve_L(book)) (BEFORE the volatility term). */
     lSignalX100: number;
-    /** κ (bps of the cap depth). */
+    /** κ (bps of the cap depth) = min(curve_κ(venue), curve_κ(book)). */
     kappaBps: number;
-    /** λ_depth (bps). */
+    /** λ_depth (bps) = min(curve_λ(venue), curve_λ(book)). */
     lambdaDepthBps: number;
 }
 /**
- * The smoothed dials at a (venue, book) depth pair: each is `min(ramp(venue), ramp(book))` over the market's table, so never looser than the step
- * values at `min(venue tier, book tier)`. Port of `growth_v19::smooth_dials`.
+ * The dials at a (venue, book) depth pair plus the venue-only leverage curve value (the push writer's fall-only upper bound, `>= lSignalX100`).
+ * Each dial is `min(curve(venue), curve(book))` (= the curve at the smaller depth). Port of `growth_v19::smooth_dials_and_venue_l`.
+ *
+ * @param venueDepthE6  {@link venueDepthCapped}.
+ * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param lTableX100    `[L0..L3]` ({@link tierLeverage}).
+ * @returns `{ dials, venueLX100 }`.
+ * @example
+ * ```ts
+ * smoothDialsAndVenueL(600_000n, 50_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]);
+ * // { dials: { lSignalX100: 750, kappaBps: 10_000, lambdaDepthBps: 15_000 }, venueLX100: 2_000 }
+ * ```
+ */
+export declare function smoothDialsAndVenueL(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): {
+    dials: SmoothDials;
+    venueLX100: number;
+};
+/**
+ * {@link smoothDialsAndVenueL} plus the two curve positions it used, for the continuous stress cap ({@link stressCapCurveX100}): the SIGNAL
+ * position (of the smaller depth, `min(venue, book)`; the curve is monotone, so the curve there is the min of the two curves) and the
+ * VENUE position (the push writer's fall-only bound). Port of `growth_v19::smooth_dials_venue_l_and_pos` (3198539a).
+ *
+ * @param venueDepthE6  {@link venueDepthCapped}.
+ * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param lTableX100    `[L0..L3]`.
+ * @returns `{ dials, venueLX100, pos, venuePos }`.
+ * @example
+ * ```ts
+ * smoothDialsVenueLAndPos(600_000n, 50_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]).pos; // { seg: 2, num: 65_536, den: 131_072 } (the book)
+ * ```
+ */
+export declare function smoothDialsVenueLAndPos(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): {
+    dials: SmoothDials;
+    venueLX100: number;
+    pos: CurvePos;
+    venuePos: CurvePos;
+};
+/**
+ * The dials at a (venue, book) depth pair on the continuous curve (equal to the tier table at each anchor, log-interpolated between them).
+ * Port of `growth_v19::smooth_dials`.
  *
  * @param venueDepthE6  {@link venueDepthCapped}.
  * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
@@ -1068,10 +1176,42 @@ export interface SmoothDials {
  * @returns Dials.
  * @example
  * ```ts
- * smoothDials(110_000n, 600_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // { lSignalX100: 700, kappaBps: 10_000, lambdaDepthBps: 14_000 }
+ * smoothDials(110_000n, 600_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // { lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 }
  * ```
  */
 export declare function smoothDials(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): SmoothDials;
+/**
+ * The smallest depth (atoms) at which the leverage curve reaches `targetX100`, or `null` when it never does (above `t[3]` or a flat /
+ * saturated segment). Display helper for "Nx at $D pool depth"; monotone search over the bit-exact {@link curveU64}, so the answer is exactly
+ * what the program reads (not an approximation of it).
+ *
+ * @param targetX100    Leverage x100 to reach.
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param lTableX100    `[L0..L3]`.
+ * @returns Depth (atoms), `0n` when `t[0]` already reaches it, or `null`.
+ * @example
+ * ```ts
+ * curveDepthForLeverageX100(750, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]); // 50_000n
+ * ```
+ */
+export declare function curveDepthForLeverageX100(targetX100: number, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): bigint | null;
+/**
+ * LEGACY (removed from the program by continuous leverage, `e699d7da`): round 3 item 5's 25% tier ramp. NOT what the program reads any
+ * more; kept only so the parity suite can prove a stale mirror is caught (negative control). Do not use.
+ *
+ * @deprecated Use {@link curveU64}.
+ * @param d      Depth (atoms).
+ * @param th     Thresholds (atoms).
+ * @param table  4-entry table.
+ * @returns The old ramped value.
+ * @example
+ * ```ts
+ * tierRampU64(110_000n, [25_000n, 100_000n, 500_000n], [500n, 500n, 1_000n, 2_000n]); // 700n (the old ramp; the program now reads 1_059n)
+ * ```
+ */
+export declare function tierRampU64(d: bigint, th: Triple<bigint>, table: readonly [bigint, bigint, bigint, bigint]): bigint;
+/** LEGACY: the removed ramp's span divisor. @deprecated The program no longer has it (continuous leverage). */
+export declare const TIER_RAMP_DIV = 4n;
 /** `VOL_EWMA_SHIFT`: EWMA weight 1/16 PER PUSH (not per unit of time; security review F-4). */
 export declare const VOL_EWMA_SHIFT = 4;
 /** `VOL_Z`: z of the volatility term. */
@@ -1219,7 +1359,9 @@ export declare function realAdl(modeLong: number, modeShort: number): boolean;
  */
 export declare function stressLevel(drawOutstanding: boolean, realAdl_: boolean, hlock: boolean): number;
 /**
- * The stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the h-lock.
+ * The STEPPED stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the
+ * h-lock. Since percolator-prog 3198539a no program reader uses it (they read {@link stressCapCurveX100}, equal to this at every anchor); kept
+ * as the reference step (next-tier previews at an anchor, tests).
  * Port of `growth_v19::stress_cap_x100`.
  * @param stress  Level 0..3.
  * @param tier    Combined tier (step).
@@ -1231,6 +1373,24 @@ export declare function stressLevel(drawOutstanding: boolean, realAdl_: boolean,
  * ```
  */
 export declare function stressCapX100(stress: number, tier: number, table: readonly [number, number, number, number]): number;
+/**
+ * The graded stress cap on the CONTINUOUS curve (x100): the leverage curve read `s` segments down at the SAME fractional position. Level 0:
+ * none (`0xffff`); the h-lock (>= 3): launch; a draw (1) / real ADL (2) at segment 1..3 with `seg - 1 >= s`: `table[seg-1-s] +
+ * floor((table[seg-s] - table[seg-1-s]) * num / den)`; at or past T3: `table[3 - s]`; below that (incl. below anchor 0 and
+ * {@link CURVE_POS_FAIL}): `table[0]`. Equal to the stepped {@link stressCapX100} at every anchor, continuous in depth, never above the
+ * unstressed curve. What every program reader uses since percolator-prog 3198539a (the gate at the signal position, the push writer at
+ * the venue position). Port of `growth_v19::stress_cap_curve_x100` (bit-exact).
+ *
+ * @param stress  Level 0..3 ({@link stressLevel}).
+ * @param p       Curve position ({@link curvePos}; the signal position for the gate).
+ * @param table   `[L0..L3]`.
+ * @returns Cap x100.
+ * @example
+ * ```ts
+ * stressCapCurveX100(STRESS_DRAW, curvePos(200_000n, [25_000n, 100_000n, 500_000n]), [500, 500, 1_000, 2_000]); // 715 (the stepped cap: 500)
+ * ```
+ */
+export declare function stressCapCurveX100(stress: number, p: CurvePos, table: readonly [number, number, number, number]): number;
 /** `RENT_SNAPSHOT_FALL_SLOTS`: the rent `N_cap` snapshot falls at most 2x per 900 slots. */
 export declare const RENT_SNAPSHOT_FALL_SLOTS = 900n;
 /**
@@ -1456,8 +1616,9 @@ export interface NextUnlock {
     /** `ratchet`: the same in whole minutes, rounded up (display "next step in about N min"). */
     etaMinutes?: number;
     /**
-     * Controller round item 5: the pool depth (whole collateral tokens) at which this tier's leverage is reached IN FULL. Leverage ramps linearly
-     * from the tier below at {@link NextUnlock.depthUsd} up to the tier's value here (`min(1.25 * T, next threshold)`).
+     * The pool depth (whole collateral tokens, rounded up) at which this tier's leverage is reached IN FULL. Continuous leverage (`e699d7da`): the
+     * curve equals the tier's table value exactly at its threshold, so this is the threshold itself (it was the end of round 3's 25% ramp);
+     * below it the leverage is already log-interpolated toward this value ({@link curveDepthForLeverageX100} for any intermediate value).
      */
     fullDepthUsd?: number;
 }
@@ -1490,17 +1651,19 @@ export interface GrowthCeilingView {
     ceilingX100: number;
     /** Controller round: the graded stress level used (0 none, 1 draw, 2 real ADL, 3 h-lock). */
     stress: number;
-    /** {@link stressCapX100} at the combined tier (`0xffff` = none). */
+    /** The graded stress cap in force: {@link stressCapCurveX100} at the signal position (`0xffff` = none; equals the stepped cap at anchors). */
     stressCapX100: number;
-    /** Item 5: the smoothed dials (κ / λ_depth feed the capacity; `lSignalX100` is BEFORE the volatility term). Step values at tier 0 off the clamp. */
+    /** The dials on the continuous curve (κ / λ_depth feed the capacity; `lSignalX100` is BEFORE the volatility term). Tier-0 values off the clamp. */
     dials: SmoothDials;
+    /** The venue-only leverage curve value x100 (the push writer's fall-only upper bound, `>= dials.lSignalX100`); 0 off the clamp. */
+    venueLX100: number;
     /** Item 6: `L_vol` x100, or `null` without volatility data (the signal then falls back to launch). */
     lVolX100: number | null;
     /** The leverage signal the target reads: `min(dials.lSignalX100, L_vol)` (launch with no volatility data). */
     lSignalX100: number;
     /** The record has volatility data but no {@link GrowthVolInputs} were passed: the view failed closed to launch. */
     volInputsMissing: boolean;
-    /** Item 5: the venue depth the ramps read ({@link venueDepthCapped}). */
+    /** The venue depth the curve reads ({@link venueDepthCapped}). */
     venueDepthE6: bigint;
     /** Item 4: the time-weighted window minimum (atoms), `null` without history. */
     depthTwMinE6: bigint | null;
@@ -1512,7 +1675,7 @@ export interface GrowthCeilingView {
 /**
  * Derive tier, ceiling and next unlock for one asset, exactly as the wrapper's gate does (`growth_g8_ctx_view` + `growth_ceiling_x100`,
  * percolator-prog `666df893`): usable depth = `min(fresh, rate-limited last good, window minimum)`; `tier = min(venue, book)` (step tiers, for
- * graduation and the stress cap); the smoothed dials `min(ramp(venue), ramp(book))`; the leverage signal capped by `L_vol` (launch with no volatility
+ * graduation and the stress cap); the dials `min(curve(venue), curve(book))` on the continuous curve (`e699d7da`); the leverage signal capped by `L_vol` (launch with no volatility
  * data); the graded stress cap; `ceiling = min(stored, target)` on a clamp-enforced market.
  *
  * @param g          Decoded growth record.
