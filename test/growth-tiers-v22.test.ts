@@ -433,42 +433,55 @@ describe("growthCeilingView: explainer worked examples (tiered 20x meme market, 
     const v = view(g(dex(8_000n)), BAND, NOW, 10_000n * M, false);
     expect([v.tier, v.venueTier, v.bookTier, v.ceilingX100, v.targetX100, v.graduationOn]).toEqual([0, 0, 0, 500, 500, false]);
     // next: tier 1 needs $25k depth and $25k backing; 5x is the table's L1 = launch, so no gain -> tier 2 (10x) is the first that raises it
-    // controller round item 5: 10x starts ramping at $100k and is reached in full at $125k (T2 + 25%)
-    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 125_000 });
+    // continuous leverage (e699d7da): the curve reaches 10x exactly AT T2 ($100k); between T1 and T2 it is already log-interpolated toward it
+    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 100_000 });
   });
-  it("tier 1: depth $30k, backing $40k -> 5x; 10x needs both at $100k", () => {
+  it("tier 1: depth $30k, backing $40k -> target 5.65x on the curve (stored 5x climbs); 10x in full needs both at $100k", () => {
     const v = view(g(dex(30_000n)), BAND, NOW, 40_000n * M, false);
-    expect([v.tier, v.ceilingX100]).toEqual([1, 500]);
-    expect(v.nextUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 125_000 });
+    // continuous leverage: min(venue $30k, book $40k) = $30k sits log2(1.2)/2 of the way from T1 (5x) to T2 (10x): 5x + 5x * 0.1315 = 5.65x
+    expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([1, 565, 500]);
+    expect(v.dials).toEqual({ lSignalX100: 565, kappaBps: 10_000, lambdaDepthBps: 11_315 });
+    expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 565, etaSlots: 8_000n, etaMinutes: 54 });
+    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 100_000 });
   });
-  it("tier 2: depth $150k, backing $120k -> target 9x on the ramp, ceiling climbs +1x per hour; ETA in minutes", () => {
+  it("tier 2: depth $150k, backing $120k -> target 11.13x on the curve, ceiling climbs +1x per hour; ETA in minutes", () => {
     const v = view(g(dex(150_000n)), BAND, NOW, 120_000n * M, false);
-    // item 5 ramps: venue $150k is past T2's ramp ($125k) -> 10x; book $120k is on it -> 5x + 5x * 20/25 = 9x; target = min = 9x
-    expect([v.tier, v.venueTier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([2, 2, 2, 900, 500]);
-    expect(v.dials).toEqual({ lSignalX100: 900, kappaBps: 10_000, lambdaDepthBps: 18_000 });
-    expect([v.lVolX100, v.lSignalX100, v.stress, v.volInputsMissing]).toEqual([2_000, 900, STRESS_NONE, false]);
+    // continuous leverage: min(venue $150k, book $120k) = $120k on [T2 $100k, T3 $500k]: 10x + 10x * log2(1.2)/log2(5) = 11.13x;
+    // κ 1 -> 2 and λ_depth 2x -> 3x interpolate the same way
+    expect([v.tier, v.venueTier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([2, 2, 2, 1_113, 500]);
+    expect(v.dials).toEqual({ lSignalX100: 1_113, kappaBps: 11_132, lambdaDepthBps: 21_132 });
+    expect([v.lVolX100, v.lSignalX100, v.stress, v.volInputsMissing]).toEqual([2_000, 1_113, STRESS_NONE, false]);
     // stored ceil 500 stamped at slot 0: next step allowed at slot 9000, now 1000 -> 8000 slots = 3200 s = 53.3 min -> 54
     expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 600, etaSlots: 8_000n, etaMinutes: 54 });
-    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 3, depthUsd: 500_000, backingUsd: 500_000, thresholdUsd: 500_000, leverageX100: 2_000, fullDepthUsd: 625_000 });
+    expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 3, depthUsd: 500_000, backingUsd: 500_000, thresholdUsd: 500_000, leverageX100: 2_000, fullDepthUsd: 500_000 });
     // once the ceiling reached 8x the step is 9x
     const v8 = view(g(dex(150_000n, { ceil: 800, ceilSlot: 500n })), BAND, NOW, 120_000n * M, false);
     expect(v8.ceilingX100).toBe(800);
     expect(v8.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 900, etaSlots: 8_500n, etaMinutes: 57 });
-    // stored above the target: in force = min(stored, target) = 9x, only the tier requirement is left
+    // stored 10x is below the 11.13x target: in force 10x, the next step is +1x (11x)
     const v10 = view(g(dex(150_000n, { ceil: 1_000 })), BAND, NOW, 120_000n * M, false);
-    expect(v10.ceilingX100).toBe(900);
-    expect(v10.nextUnlock.kind).toBe("both");
+    expect(v10.ceilingX100).toBe(1_000);
+    expect(v10.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 1_100, etaSlots: 8_000n, etaMinutes: 54 });
+    // stored above the target: in force = min(stored, target) = 11.13x, only the tier requirement is left
+    const v12 = view(g(dex(150_000n, { ceil: 1_200 })), BAND, NOW, 120_000n * M, false);
+    expect(v12.ceilingX100).toBe(1_113);
+    expect(v12.nextUnlock.kind).toBe("both");
   });
-  it("backing falls to $90k at hour 3: tier drops to 1 and the cap goes straight to 5x", () => {
+  it("backing falls: the target follows the curve down at once (to $90k: 9.62x, the 8x ceiling holds; to $20k: launch 5x)", () => {
+    // continuous leverage: book $90k reads 5x + 5x * log2(3.6)/2 = 9.62x (the step table dropped to 5x here); the stored 8x is below it
     const v = view(g(dex(150_000n, { ceil: 800 })), BAND, NOW, 90_000n * M, false);
-    expect([v.tier, v.bookTier, v.ceilingX100]).toEqual([1, 1, 500]);
-    expect(v.nextUnlock).toEqual({ kind: "backing", tier: 2, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000 });
+    expect([v.tier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([1, 1, 962, 800]);
+    expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 900, etaSlots: 8_000n, etaMinutes: 54 });
+    expect(v.nextTierUnlock).toEqual({ kind: "backing", tier: 2, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000 });
+    // below T1 graduation is off: the cap goes straight to launch
+    const v20 = view(g(dex(150_000n, { ceil: 800 })), BAND, NOW, 20_000n * M, false);
+    expect([v20.tier, v20.bookTier, v20.targetX100, v20.ceilingX100]).toEqual([0, 0, 500, 500]);
   });
-  it("tier 3 major: depth $700k backing $600k -> 18x target on the book ramp", () => {
+  it("tier 3 major: depth $700k backing $600k -> 20x target (both past T3); backing $300k -> 16.82x", () => {
     const v = view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 600_000n * M, false);
-    // book $600k on T3's ramp ($500k..$625k): 10x + 10x * 100/125 = 18x; venue $700k past it: 20x
-    expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([3, 1_800, 1_000]);
-    expect(view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 625_000n * M, false).targetX100).toBe(2_000);
+    // continuous leverage: the curve equals L3 from T3 ($500k) on; the round-3 ramp still read 18x at $600k
+    expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([3, 2_000, 1_000]);
+    expect(view(g(dex(700_000n, { ceil: 1_000 })), BAND, NOW, 300_000n * M, false).targetX100).toBe(1_682); // ledger table: 16.82x at $300k
     expect(v.nextUnlock.kind).toBe("ratchet");
   });
   it("a market built for 5x never graduates, whatever its depth", () => {
@@ -481,16 +494,17 @@ describe("growthCeilingView: explainer worked examples (tiered 20x meme market, 
     expect([v.venueTier, v.bookTier, v.tier, v.targetX100]).toEqual([1, 3, 1, 500]);
     expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthUsd: 100_000, leverageX100: 1_000, needsOnChainDepth: true });
     expect(v.nextTierUnlock.backingUsd).toBeUndefined();
-    expect(v.venueDepthE6).toBe(T2 - 1n); // the attested ramp is clamped below T2
+    expect(v.venueDepthE6).toBe(T1); // continuous leverage: the attested depth is clamped to the anchor T1, where the curve is exactly L1
+    expect(v.venueLX100).toBe(500);
     const v3 = view(g(dex(700_000n, { ...att, attested: 3 })), BAND, NOW, 600_000n * M, false);
-    expect([v3.venueTier, v3.tier, v3.targetX100]).toEqual([3, 3, 1_800]);
+    expect([v3.venueTier, v3.tier, v3.targetX100]).toEqual([3, 3, 2_000]);
   });
   it("per-market thresholds and leverage drive tier and target", () => {
     // thresholds $5k / $20k / $100k, leverage 6x / 8x / 12x
     const o = dex(25_000n, { th: [5_000, 20_000, 100_000], lv: [600, 800, 1_200], lTier: 2_000 });
     const v = view(g(o), BAND, NOW, 30_000n * M, false);
-    // $25k is exactly T2's ramp end (20k + 5k) and the book $30k is past it: the full 8x
-    expect([v.tier, v.targetX100]).toEqual([2, 800]);
+    // continuous leverage: $25k on [T2 $20k, T3 $100k] (8x -> 12x): 8x + 4x * log2(1.25)/log2(5) = 8.55x
+    expect([v.tier, v.targetX100]).toEqual([2, 855]);
     expect(v.nextTierUnlock).toMatchObject({ tier: 3, depthUsd: 100_000, leverageX100: 1_200 });
   });
   it("backing needed grows when lambda is below 1x (book capacity = C_m * min(lambda, 1x))", () => {
@@ -767,10 +781,11 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
     expect(v.effectiveDepthE6).toBe(25_000n * M);
     // tier 2 needs $100k: 25k -> 50k at slot 9,063 (window opens 63 + 9,000 after stamp 0) -> 100k at 18,087 (stamp 141): 17,087 slots from slot 1000
     expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_087n, depthEtaMinutes: 114 });
-    // capacity follows the usable depth, not the fresh one; item 5: at exactly T1 the kappa ramp starts at the tier-0 value 0.5
+    // capacity follows the usable depth, not the fresh one; continuous leverage: at exactly T1 the κ curve reads its anchor value 1.0
+    // (it rose from 0.5 at T1/4), so the depth cap is the full $25k (the round-3 ramp read 0.5 there: $12.5k)
     const q = quoteMaxLeverage(qin(g(o), 600_000n * M), "long");
     expect(q.capDepthE6).toBe(25_000n * M);
-    expect(q.nCapQ).toBe(12_500n * M);
+    expect(q.nCapQ).toBe(25_000n * M);
   });
   it("ratchet kind: usable depth already supports a higher target -> the +1x step ETA", () => {
     const o = dex(150_000n, { lastGood: 150_000n * M, ceil: 500 });

@@ -3,7 +3,8 @@
  * tests, vector for vector. Each `describe` names the Rust test it ports:
  *  - `r3_item7_rent_snapshot_and_min_leg`   (rent snapshot smoothing, bind guard)
  *  - `r3_item6_vol_term`                    (volatility sample / EWMA / isqrt F-8 / sigma / L_vol / flags)
- *  - `r3_item5_tier_ramp`                   (tier ramp, venue cap, smooth dials, step == dials at a tier)
+ *  - `contlev_curve_unit`                   (continuous leverage e699d7da: log2 Q.16, curve, venue cap, dials, step == dials at a tier;
+ *                                            replaces `r3_item5_tier_ramp`, removed from the wrapper with the ramp)
  *  - `r3_item4_window_primitives`           (time-weighted depth window)
  *  - `g8_target_ceiling_ratchet_and_force_down` stress part (stress cap / level / real ADL)
  *  - `g8_wl2_same_slot_push_is_not_a_second_sample` window part (no fresh sample: window untouched)
@@ -12,7 +13,8 @@
 import { describe, it, expect } from "vitest";
 import {
   rentSnapshotSmooth, rentStamp64Of, bandMinLegFitsDepth, volSampleX100, volUpdateX100, VOL_VAR_SEED_X100, sigmaHBps, isqrtCeil, lVolX100,
-  lSignalWithVol, growthFlagsOk, tierRampU64, venueDepthCapped, smoothDials, DEPTH_SOURCE, nCapG8Q, lambdaDepthBps, kappaDepthBps,
+  lSignalWithVol, growthFlagsOk, venueDepthCapped, smoothDials, DEPTH_SOURCE, log2Q16, curveU64, curveValue, curvePos, CURVE_POS_FAIL,
+  smoothDialsAndVenueL, KAPPA_TABLE_BPS, LAMBDA_DEPTH_TABLE_BPS, depthTierFor, nCapG8Q, lambdaDepthBps, kappaDepthBps,
   DEPTH_TW_BUCKET_SLOTS, DEPTH_TW_ABSENT, DEPTH_TW_EMPTY, depthTwUpdate, depthTwMinAtoms, depthTwFull, depthTwWindowOk, depthTokensFloor,
   stressCapX100, stressLevel, realAdl, tierLeverage, STRESS_NONE, STRESS_DRAW, STRESS_ADL, STRESS_HLOCK, depthPushUpdate,
   ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_LEN, decodeAssetGrowthRecordV19, growthLVolX100, growthCeilingView,
@@ -98,36 +100,59 @@ describe("Rust r3_item6_vol_term", () => {
   });
 });
 
-describe("Rust r3_item5_tier_ramp", () => {
+describe("Rust contlev_curve_unit (continuous leverage, e699d7da; replaces r3_item5_tier_ramp)", () => {
   const th: [bigint, bigint, bigint] = [25_000n, 100_000n, 500_000n];
   const l: [bigint, bigint, bigint, bigint] = [500n, 500n, 1_000n, 2_000n];
-  it("below T1, and the step value past each ramp", () => {
-    expect(tierRampU64(0n, th, l)).toBe(500n);
-    expect(tierRampU64(24_999n, th, l)).toBe(500n);
-    expect(tierRampU64(99_999n, th, l)).toBe(500n);
-    expect(tierRampU64(125_000n, th, l)).toBe(1_000n); // T2 + 25%: the table value
-    expect(tierRampU64(499_999n, th, l)).toBe(1_000n);
-    expect(tierRampU64(625_000n, th, l)).toBe(2_000n);
-    expect(tierRampU64((1n << 64n) - 1n, th, l)).toBe(2_000n);
+  const U64_MAX = (1n << 64n) - 1n;
+  it("log2 Q.16: exact integer part, exact at powers of two, null at 0", () => {
+    expect(log2Q16(0n)).toBeNull();
+    expect(log2Q16(1n)).toBe(0);
+    expect(log2Q16(2n)).toBe(1 << 16);
+    expect(log2Q16(3n)).toBe(103_872); // floor(log2(3) * 2^16)
+    expect(log2Q16(1_024n)).toBe(10 << 16);
+    expect(log2Q16(U64_MAX)).toBe(63 * 65_536 + 0xffff);
   });
-  it("on the ramp: linear from the tier below (never the step's higher value)", () => {
-    expect(tierRampU64(100_000n, th, l)).toBe(500n); // AT T2: the value just below (continuous)
-    expect(tierRampU64(110_000n, th, l)).toBe(700n); // T2 + 10%: 5x + 5x * 0.4
-    expect(tierRampU64(124_999n, th, l)).toBe(999n);
+  it("below anchor 0 (T1 / 4) and past T3: the end values; AT each anchor: exactly the table", () => {
+    expect(curveU64(0n, th, l)).toBe(500n);
+    expect(curveU64(6_249n, th, l)).toBe(500n);
+    expect(curveU64(U64_MAX, th, l)).toBe(2_000n);
+    expect(curveU64(25_000n, th, l)).toBe(500n);
+    expect(curveU64(100_000n, th, l)).toBe(1_000n);
+    expect(curveU64(500_000n, th, l)).toBe(2_000n);
   });
-  it("a ramp capped at a close next threshold", () => {
-    expect(tierRampU64(110n, [100n, 120n, 1_000n], [1n, 2n, 3n, 4n])).toBe(1n); // floor of 1 + 1 * 10/20
-    expect(tierRampU64(119n, [100n, 120n, 1_000n], [1n, 2n, 3n, 4n])).toBe(1n);
-    expect(tierRampU64(120n, [100n, 120n, 1_000n], [1n, 2n, 3n, 4n])).toBe(2n); // next ramp starts at the table value
+  it("between anchors: log-interpolated (the step table reads 5x / 5x / 10x here)", () => {
+    expect(curveU64(50_000n, th, l)).toBe(750n); // half-way in log between $25k and $100k: 7.5x
+    expect(curveU64(99_999n, th, l)).toBe(999n);
+    expect(curveU64(110_000n, th, l)).toBe(1_059n);
+    expect(curveU64(200_000n, th, l)).toBe(1_430n);
   });
-  it("venue cap: attested (default tier 1) clamps to T2 - 1 -> never above L1", () => {
-    expect(venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, th, 0)).toBe(99_999n);
+  it("κ rises 0.5 -> 1 between T1 / 4 and T1 (no doubling at T1); λ_depth 1.5x at $50k", () => {
+    expect(curveU64(6_250n, th, KAPPA_TABLE_BPS)).toBe(5_000n);
+    expect(curveU64(10_000n, th, KAPPA_TABLE_BPS)).toBe(6_695n);
+    expect(curveU64(24_999n, th, KAPPA_TABLE_BPS)).toBe(9_999n);
+    expect(curveU64(25_000n, th, KAPPA_TABLE_BPS)).toBe(10_000n);
+    expect(curveU64(50_000n, th, LAMBDA_DEPTH_TABLE_BPS)).toBe(15_000n);
+  });
+  it("fail closed: saturated next anchor flat at the lower value; non-increasing pair flat; CURVE_POS_FAIL reads t[0]", () => {
+    expect(curveU64(U64_MAX - 1n, [25_000n, U64_MAX, U64_MAX], l)).toBe(500n);
+    expect(curveU64(U64_MAX, [25_000n, U64_MAX, U64_MAX], l)).toBe(500n);
+    expect(curveU64(U64_MAX, [U64_MAX, U64_MAX, U64_MAX], l)).toBe(500n);
+    expect(curveU64(150n, [100n, 100n, 1_000n], [1n, 2n, 3n, 4n])).toBe(3n);
+    expect(curveValue(CURVE_POS_FAIL, l)).toBe(500n);
+    expect(curvePos(1n << 64n, th)).toEqual({ seg: 0xff, num: 0, den: 0 }); // outside u64 (never on chain): fail closed
+  });
+  it("venue cap: attested (default max tier 1) clamps to the anchor T1 -> exactly L1", () => {
+    expect(venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, th, 0)).toBe(25_000n);
+    expect(venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, th, 2)).toBe(100_000n);
+    expect(venueDepthCapped(20_000n, DEPTH_SOURCE.Attested, th, 1)).toBe(20_000n);
     expect(venueDepthCapped(600_000n, DEPTH_SOURCE.OnChainPool, th, 0)).toBe(600_000n);
     expect(venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, th, 3)).toBe(600_000n);
     expect(venueDepthCapped(600_000n, DEPTH_SOURCE.None, th, 3)).toBe(0n);
   });
-  it("the dials: min of the two ramps", () => {
-    expect(smoothDials(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ lSignalX100: 700, kappaBps: 10_000, lambdaDepthBps: 14_000 });
+  it("the dials: min of the two curves; the venue-only value for the fall-only writer", () => {
+    expect(smoothDialsAndVenueL(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 }, venueLX100: 1_059 });
+    expect(smoothDialsAndVenueL(600_000n, 50_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 750, kappaBps: 10_000, lambdaDepthBps: 15_000 }, venueLX100: 2_000 });
+    expect(smoothDials(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 });
   });
   it("the step functions are the dials at a tier (n_cap_g8_q == n_cap_g8_q_dials)", () => {
     for (let t = 0; t <= 3; t++) {
@@ -136,12 +161,15 @@ describe("Rust r3_item5_tier_ramp", () => {
       expect(dials, `tier ${t}`).toBe(step);
     }
   });
-  it("never looser than the step table, monotone (grid)", () => {
-    for (let d = 0n; d <= 700_000n; d += 1_000n) {
-      const v = tierRampU64(d, th, l);
-      const tier = d >= th[2] ? 3 : d >= th[1] ? 2 : d >= th[0] ? 1 : 0;
-      expect(v <= l[tier]!, `d=${d}`).toBe(true);
-      if (d > 0n) expect(v >= tierRampU64(d - 1_000n, th, l), `monotone at ${d}`).toBe(true);
+  it("monotone, within [t[0], t[3]], equal to the step at each anchor (grid)", () => {
+    let prev = 0n;
+    for (let d = 0n; d <= 700_000n; d += 500n) {
+      const v = curveU64(d, th, l);
+      expect(v >= l[0] && v <= l[3], `d=${d}`).toBe(true);
+      expect(v >= prev, `monotone at ${d}`).toBe(true);
+      const tier = depthTierFor(d, th);
+      expect(v >= l[tier]!, `never below the step at ${d}`).toBe(true);
+      prev = v;
     }
   });
 });
