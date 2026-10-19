@@ -103,7 +103,7 @@ fn main() {
     ];
     let mut out = String::new();
     out.push_str("{\n");
-    out.push_str(&format!("\"meta\":{{\"source\":\"percolator-prog growth_v19 (curve_pos / curve_value / log2_q16 / smooth_dials_and_venue_l / venue_depth_capped / n_cap_g8_q_dials / growth_matcher_caps_g8_dials)\",\"wrapper_commit\":\"{}\",\"generator\":\"wt-v22-contlev-port/curve-fixtures\"}},\n", commit));
+    out.push_str(&format!("\"meta\":{{\"source\":\"percolator-prog growth_v19 (curve_pos / curve_value / log2_q16 / smooth_dials_and_venue_l / smooth_dials_venue_l_and_pos / stress_cap_curve_x100 / venue_depth_capped / n_cap_g8_q_dials / growth_matcher_caps_g8_dials)\",\"wrapper_commit\":\"{}\",\"generator\":\"wt-v22-contlev-port/curve-fixtures\"}},\n", commit));
     // tables
     out.push_str("\"tables\":{");
     out.push_str(&tables.iter().map(|(n, t)| format!("\"{}\":[{}]", n, t.iter().map(|x| s(*x)).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(","));
@@ -184,6 +184,44 @@ fn main() {
                     rows.push(format!("[{},{},{},{},{}]", ci, src, amt, s(e), s(g::venue_depth_capped(e, src, *th, amt))));
                 }
             }
+        }
+    }
+    out.push_str(&rows.join(","));
+    // continuous stress cap (3198539a): stress_cap_curve_x100 at the curve position of each depth, every stress level, every L table;
+    // plus the signal / venue positions smooth_dials_venue_l_and_pos hands it
+    out.push_str("],\n\"stress_cap\":[");
+    let mut rows = Vec::new();
+    for (ci, (_, th)) in configs.iter().enumerate() {
+        let ds = depths_for(*th, &mut r);
+        for li in 0..ltabs.len() {
+            for _ in 0..40 {
+                let d = ds[r.below(ds.len() as u64) as usize];
+                let p = g::curve_pos(d, *th);
+                let caps: Vec<String> = (0u8..=4).map(|st| g::stress_cap_curve_x100(st, p, ltabs[li]).to_string()).collect();
+                rows.push(format!("[{},{},{},{}]", ci, li, s(d), caps.join(",")));
+            }
+        }
+        // every anchor +-1 with the default table: the cap is continuous there
+        for &a in g::curve_anchors(*th).iter() {
+            for d in [a.saturating_sub(1), a, a.saturating_add(1)] {
+                let p = g::curve_pos(d, *th);
+                let caps: Vec<String> = (0u8..=4).map(|st| g::stress_cap_curve_x100(st, p, ltabs[0]).to_string()).collect();
+                rows.push(format!("[{},{},{},{}]", ci, 0, s(d), caps.join(",")));
+            }
+        }
+    }
+    let fp: Vec<String> = (0u8..=4).map(|st| g::stress_cap_curve_x100(st, g::CURVE_POS_FAIL, ltabs[0]).to_string()).collect();
+    rows.push(format!("[-1,0,\"fail\",{}]", fp.join(",")));
+    out.push_str(&rows.join(","));
+    out.push_str("],\n\"dial_pos\":[");
+    let mut rows = Vec::new();
+    for (ci, (_, th)) in configs.iter().enumerate() {
+        let ds = depths_for(*th, &mut r);
+        for _ in 0..60 {
+            let v = ds[r.below(ds.len() as u64) as usize];
+            let b = ds[r.below(ds.len() as u64) as usize];
+            let (d, vl, ps, pv) = g::smooth_dials_venue_l_and_pos(v, b, *th, ltabs[0]);
+            rows.push(format!("[{},{},{},{},{},{},{},{},{},{},{},{},{}]", ci, s(v), s(b), d.l_signal_x100, d.kappa_bps, d.lambda_depth_bps, vl, ps.seg, ps.num, ps.den, pv.seg, pv.num, pv.den));
         }
     }
     out.push_str(&rows.join(","));

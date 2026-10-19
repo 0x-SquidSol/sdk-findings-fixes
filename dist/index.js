@@ -6916,6 +6916,12 @@ function smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1
     venueLX100: Number(curveValue(pv, lt))
   };
 }
+function smoothDialsVenueLAndPos(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
+  const { dials, venueLX100 } = smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002);
+  const pv = curvePos(venueDepthE6, thresholdsE6);
+  const pb = curvePos(bookDepthE62, thresholdsE6);
+  return { dials, venueLX100, pos: venueDepthE6 <= bookDepthE62 ? pv : pb, venuePos: pv };
+}
 function smoothDials(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
   return smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002).dials;
 }
@@ -7019,6 +7025,13 @@ function stressCapX100(stress, tier, table) {
   if (stress >= STRESS_HLOCK) return table[0];
   const t = tier > GROWTH_MAX_TIER ? GROWTH_MAX_TIER : tier;
   return table[Math.max(t - stress, 0)];
+}
+function stressCapCurveX100(stress, p, table) {
+  if (stress === STRESS_NONE) return 65535;
+  if (stress >= STRESS_HLOCK) return table[0];
+  const t = [BigInt(table[0]), BigInt(table[1]), BigInt(table[2]), BigInt(table[3])];
+  const shifted = p.seg === 4 ? { seg: 4 - stress, num: 0, den: 0 } : p.seg >= 1 && p.seg <= 3 && p.seg > stress ? { seg: p.seg - stress, num: p.num, den: p.den } : { seg: 0, num: 0, den: 0 };
+  return Number(curveValue(shifted, t));
 }
 function stressOf(stress) {
   return typeof stress === "boolean" ? stress ? STRESS_HLOCK : STRESS_NONE : stress;
@@ -7143,13 +7156,13 @@ function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
   const tier = clamp ? combinedTier(venue, book) : 0;
   const grad = graduationOn(clamp, bandBps, tier);
   const venueD = clamp ? venueDepthCapped(eff, dsByte, thresholds, g.attestedMaxTier) : 0n;
-  const dv8 = clamp ? smoothDialsAndVenueL(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
+  const dv8 = clamp ? smoothDialsVenueLAndPos(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
   const dials = dv8 !== null ? dv8.dials : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
   const venueLX100 = dv8 !== null ? dv8.venueLX100 : 0;
   const volInputsMissing = clamp && g.volHasData === true && vol === void 0;
   const lVol = clamp && vol !== void 0 ? growthLVolX100(g, vol) : null;
   const lSignal = clamp ? lSignalWithVol(dials.lSignalX100, lVol, table[0]) : 0;
-  const sCap = clamp ? stressCapX100(st, tier, table) : 65535;
+  const sCap = dv8 !== null ? stressCapCurveX100(st, dv8.pos, table) : 65535;
   const target = targetCeilingX100(grad, st, g.lLaunchX100, g.lTierX100, lSignal, sCap);
   const launch = Math.min(g.lLaunchX100, g.lTierX100);
   const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
@@ -18821,6 +18834,7 @@ export {
   slabDataSizeV1,
   smoothDials,
   smoothDialsAndVenueL,
+  smoothDialsVenueLAndPos,
   stakeDeadLp,
   stakeGroupAProxyAccounts,
   stakeGroupBProxyAccounts,
@@ -18834,6 +18848,7 @@ export {
   staleResolveErrorContextV22,
   staleResolveStatusV22,
   stickyDepthE6,
+  stressCapCurveX100,
   stressCapX100,
   stressLevel,
   stripLighthouseFromTransaction,

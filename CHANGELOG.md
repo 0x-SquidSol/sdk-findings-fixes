@@ -1,3 +1,9 @@
+## 9.0.0-candidate: v2.2 continuous stress cap (percolator-prog `feat/v22-continuous-leverage` @ 3198539a)
+
+- **Added:** `stressCapCurveX100(stress, pos, table)` (the leverage curve read `s` segments down at the same fractional position; equal to the stepped cap at every anchor) and `smoothDialsVenueLAndPos` (dials + the signal / venue curve positions). Bit-exact ports of `stress_cap_curve_x100` / `smooth_dials_venue_l_and_pos`.
+- **Changed (values):** `growthCeilingView` (so `quoteMaxLeverage`) caps the target under a draw / real ADL with the continuous cap at the signal position, as the gate does since 3198539a (e.g. a draw at $200k on the default table: 7.15x, the stepped cap read 5x). `stressCapX100` is kept as the reference step.
+- **Parity:** the fixture is regenerated at 3198539a with two new sections (2,969 stress-cap rows x 5 levels incl. anchors +-1 and `CURVE_POS_FAIL`; 840 dial / position rows): 0 mismatches; the stepped cap mismatches 995 of 5,936 draw / ADL cells. Every e699d7da section (log2, curve, dials, venue cap) is byte-identical at 3198539a.
+
 ## 9.0.0-candidate: v2.2 continuous leverage / capacity curve (percolator-prog `feat/v22-continuous-leverage` @ e699d7da)
 
 Mirrors `src/growth_v19.rs` at e699d7da BIT-EXACTLY (bigint): leverage, κ and λ_depth are ONE continuous curve of depth, log2-interpolated between the anchors `[T1/4, T1, T2, T3]`, equal to the tier table AT every anchor (e.g. 7.5x at $50k on the default 5x / 10x / 20x table, where the step read 5x and the round-3 ramp 5x). No IDL, wire or layout change; the VALUES the program reads changed, so every consumer that shows or uses the target / capacity must take this release.
@@ -6,7 +12,6 @@ Mirrors `src/growth_v19.rs` at e699d7da BIT-EXACTLY (bigint): leverage, κ and �
 - **Changed (values):** `smoothDials` reads the curve (was `min` of 25% ramps); `venueDepthCapped` clamps an attested depth to the anchor `T_m` (was `T_{m+1} - 1`; same L_m cap); `growthCeilingView` / `quoteMaxLeverage` / `nCapG8Q` / `growthMatcherCapsG8` follow (`GrowthCeilingView.venueLX100` added; `NextUnlock.fullDepthUsd` is now the threshold itself).
 - **Deprecated (kept only as the parity suite's negative control):** `tierRampU64`, `TIER_RAMP_DIV`. The program no longer has them.
 - **Parity:** `test/growth-curve-parity.test.ts` against `test/fixtures/growth-curve-parity.json`, emitted by `scripts/growth-curve-parity` calling the wrapper's own functions: 3,771 log2 inputs, 8,969 depths x 9 tables over 14 threshold configs (every anchor +-1..3, T1/4, powers of two, saturated / non-increasing / T1 < 4), 2,800 (venue, book) dial pairs, 1,386 venue caps, 1,000 N_cap / matcher-cap compositions: 0 mismatches. The old ramp mirror mismatches 28,493 / 80,721 curve values and 1,179 / 2,800 dial pairs.
-- **Pending:** a continuous `stress_cap_x100` is being built on the wrapper branch; `stressCapX100` is still the discrete "s tiers down" form of e699d7da.
 
 ## 9.0.0-candidate: Position NFT layout v3 (S1-2 incarnation binding, percolator-nft 95dcece) - DO NOT MERGE before the S1-2 program fix is approved and merged
 

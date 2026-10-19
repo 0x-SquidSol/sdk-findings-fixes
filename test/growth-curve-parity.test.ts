@@ -1,7 +1,9 @@
 /**
  * Continuous leverage / capacity curve: BIT-EXACT parity against the REAL wrapper functions
- * (percolator-prog `feat/v22-continuous-leverage` @ e699d7da, `src/growth_v19.rs`: `log2_q16`, `curve_pos`, `curve_value`,
- * `smooth_dials_and_venue_l`, `venue_depth_capped`, `n_cap_g8_q_dials`, `growth_matcher_caps_g8_dials`).
+ * (percolator-prog `feat/v22-continuous-leverage` @ 3198539a, `src/growth_v19.rs`: `log2_q16`, `curve_pos`, `curve_value`,
+ * `smooth_dials_and_venue_l`, `smooth_dials_venue_l_and_pos`, `stress_cap_curve_x100`, `venue_depth_capped`, `n_cap_g8_q_dials`,
+ * `growth_matcher_caps_g8_dials`). 3198539a = e699d7da's curve + the continuous stress cap; every curve / dial / venue-cap output is
+ * byte-identical between the two commits (the fixture sections were diffed).
  *
  * Fixture: test/fixtures/growth-curve-parity.json, emitted by scripts/growth-curve-parity (a crate that depends on the
  * wrapper by path and calls its functions; nothing is re-implemented on the Rust side). Coverage: every anchor, anchor +-1..3,
@@ -9,7 +11,7 @@
  * (incl. saturated, non-increasing, T1 < 4 so anchor 0 is 0) x 9 tables (L tables, κ, λ_depth, non-monotone, a > 2^32 span).
  *
  * Negative controls (in-suite): the removed round-3 25% ramp ({@link tierRampU64}) and the round-2 step table must FAIL the
- * same parity check with many mismatches.
+ * same parity check with many mismatches; the stepped stress cap must FAIL the continuous one.
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -24,6 +26,9 @@ import {
   curveValue,
   depthTierFor,
   growthMatcherCapsG8,
+  stressCapCurveX100,
+  stressCapX100,
+  smoothDialsVenueLAndPos,
   log2Q16,
   nCapG8Q,
   smoothDials,
@@ -44,6 +49,8 @@ interface Fx {
   dials: (string | number)[][];
   venue_cap: (string | number)[][];
   ncap: (string | number | null)[][];
+  stress_cap: (string | number)[][];
+  dial_pos: (string | number)[][];
 }
 const FX = JSON.parse(readFileSync(new URL("./fixtures/growth-curve-parity.json", import.meta.url), "utf8")) as Fx;
 const tableNames = Object.keys(FX.tables);
@@ -74,9 +81,9 @@ function curveMismatches(f: (d: bigint, th: Triple<bigint>, t: Tab) => bigint): 
   return { n, total, first };
 }
 
-describe("growth curve parity (wrapper e699d7da)", () => {
+describe("growth curve parity (wrapper 3198539a)", () => {
   it("pins the wrapper commit the fixture came from", () => {
-    expect(FX.meta.wrapper_commit).toBe("e699d7da");
+    expect(FX.meta.wrapper_commit).toBe("3198539a");
   });
 
   it("log2Q16 equals log2_q16 at every probed input", () => {
@@ -214,6 +221,50 @@ describe("growth curve parity (wrapper e699d7da)", () => {
     expect(curveDepthForLeverageX100(2_001, th, lt)).toBeNull();
     // 7.5x is first reached a hair below $50k (Q.16 log2 granularity): 49,999.642592 tokens
     expect(curveDepthForLeverageX100(750, th, lt)).toBe(49_999_642_592n);
+  });
+
+  it("stressCapCurveX100 equals stress_cap_curve_x100 at every (depth, stress level 0..4, L table), incl. anchors +-1 and CURVE_POS_FAIL", () => {
+    let bad = 0;
+    let first = "";
+    for (const r of FX.stress_cap) {
+      const lt = FX.l_tables[r[1] as number]!;
+      const p = r[2] === "fail" ? CURVE_POS_FAIL : curvePos(BigInt(r[2] as string), th3(FX.curve[r[0] as number]!.th));
+      for (let st = 0; st <= 4; st++) {
+        const got = stressCapCurveX100(st, p, lt);
+        if (String(got) !== String(r[3 + st])) { bad++; if (!first) first = `cfg ${r[0]} d=${r[2]} s=${st}: ${got} vs ${r[3 + st]}`; }
+      }
+    }
+    expect(FX.stress_cap.length).toBeGreaterThan(2_500);
+    expect(first).toBe("");
+    expect(bad).toBe(0);
+  });
+
+  it("smoothDialsVenueLAndPos equals smooth_dials_venue_l_and_pos (dials, venue L, signal and venue positions)", () => {
+    let bad = 0;
+    for (const r of FX.dial_pos) {
+      const th = th3(FX.curve[r[0] as number]!.th);
+      const o = smoothDialsVenueLAndPos(BigInt(r[1] as string), BigInt(r[2] as string), th, FX.l_tables[0]!);
+      const got = [o.dials.lSignalX100, o.dials.kappaBps, o.dials.lambdaDepthBps, o.venueLX100, o.pos.seg, o.pos.num, o.pos.den, o.venuePos.seg, o.venuePos.num, o.venuePos.den];
+      if (JSON.stringify(got) !== JSON.stringify(r.slice(3))) bad++;
+    }
+    expect(FX.dial_pos.length).toBeGreaterThan(500);
+    expect(bad).toBe(0);
+  });
+
+  it("NEGATIVE CONTROL: the stepped stress cap (stressCapX100 at the depth tier) FAILS the continuous stress-cap parity", () => {
+    let bad = 0;
+    for (const r of FX.stress_cap) {
+      if (r[2] === "fail") continue;
+      const d = BigInt(r[2] as string);
+      const th = th3(FX.curve[r[0] as number]!.th);
+      const lt = FX.l_tables[r[1] as number]!;
+      for (let st = 1; st <= 2; st++) if (String(stressCapX100(st, depthTierFor(d, th), lt)) !== String(r[3 + st])) bad++;
+    }
+    expect(bad).toBeGreaterThan(900); // 995 of 5,936 (draw, ADL) cells at 3198539a: wherever the position is strictly between two anchors
+    // $200k under a draw on the default table: the curve one segment down reads 7.15x; the stepped cap read 5x
+    const th: Triple<bigint> = [25_000_000_000n, 100_000_000_000n, 500_000_000_000n];
+    expect(stressCapCurveX100(1, curvePos(200_000_000_000n, th), [500, 500, 1_000, 2_000])).toBe(715);
+    expect(stressCapX100(1, 2, [500, 500, 1_000, 2_000])).toBe(500);
   });
 
   it("NEGATIVE CONTROL: the removed 25% ramp and the round-2 step table FAIL the same parity check", () => {

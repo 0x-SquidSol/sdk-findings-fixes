@@ -1145,6 +1145,27 @@ export declare function smoothDialsAndVenueL(venueDepthE6: bigint, bookDepthE6: 
     venueLX100: number;
 };
 /**
+ * {@link smoothDialsAndVenueL} plus the two curve positions it used, for the continuous stress cap ({@link stressCapCurveX100}): the SIGNAL
+ * position (of the smaller depth, `min(venue, book)`; the curve is monotone, so the curve there is the min of the two curves) and the
+ * VENUE position (the push writer's fall-only bound). Port of `growth_v19::smooth_dials_venue_l_and_pos` (3198539a).
+ *
+ * @param venueDepthE6  {@link venueDepthCapped}.
+ * @param bookDepthE6   {@link bookDepthE6} of the bound LP (0 without `C_m`).
+ * @param thresholdsE6  Thresholds (atoms).
+ * @param lTableX100    `[L0..L3]`.
+ * @returns `{ dials, venueLX100, pos, venuePos }`.
+ * @example
+ * ```ts
+ * smoothDialsVenueLAndPos(600_000n, 50_000n, [25_000n, 100_000n, 500_000n], [500, 500, 1_000, 2_000]).pos; // { seg: 2, num: 65_536, den: 131_072 } (the book)
+ * ```
+ */
+export declare function smoothDialsVenueLAndPos(venueDepthE6: bigint, bookDepthE6: bigint, thresholdsE6: Triple<bigint>, lTableX100: readonly [number, number, number, number]): {
+    dials: SmoothDials;
+    venueLX100: number;
+    pos: CurvePos;
+    venuePos: CurvePos;
+};
+/**
  * The dials at a (venue, book) depth pair on the continuous curve (equal to the tier table at each anchor, log-interpolated between them).
  * Port of `growth_v19::smooth_dials`.
  *
@@ -1338,7 +1359,9 @@ export declare function realAdl(modeLong: number, modeShort: number): boolean;
  */
 export declare function stressLevel(drawOutstanding: boolean, realAdl_: boolean, hlock: boolean): number;
 /**
- * The stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the h-lock.
+ * The STEPPED stress cap on the target x100: none (`0xffff`) at level 0; `table[max(tier - s, 0)]` for s = 1 (draw) / 2 (ADL); `table[0]` under the
+ * h-lock. Since percolator-prog 3198539a no program reader uses it (they read {@link stressCapCurveX100}, equal to this at every anchor); kept
+ * as the reference step (next-tier previews at an anchor, tests).
  * Port of `growth_v19::stress_cap_x100`.
  * @param stress  Level 0..3.
  * @param tier    Combined tier (step).
@@ -1350,6 +1373,24 @@ export declare function stressLevel(drawOutstanding: boolean, realAdl_: boolean,
  * ```
  */
 export declare function stressCapX100(stress: number, tier: number, table: readonly [number, number, number, number]): number;
+/**
+ * The graded stress cap on the CONTINUOUS curve (x100): the leverage curve read `s` segments down at the SAME fractional position. Level 0:
+ * none (`0xffff`); the h-lock (>= 3): launch; a draw (1) / real ADL (2) at segment 1..3 with `seg - 1 >= s`: `table[seg-1-s] +
+ * floor((table[seg-s] - table[seg-1-s]) * num / den)`; at or past T3: `table[3 - s]`; below that (incl. below anchor 0 and
+ * {@link CURVE_POS_FAIL}): `table[0]`. Equal to the stepped {@link stressCapX100} at every anchor, continuous in depth, never above the
+ * unstressed curve. What every program reader uses since percolator-prog 3198539a (the gate at the signal position, the push writer at
+ * the venue position). Port of `growth_v19::stress_cap_curve_x100` (bit-exact).
+ *
+ * @param stress  Level 0..3 ({@link stressLevel}).
+ * @param p       Curve position ({@link curvePos}; the signal position for the gate).
+ * @param table   `[L0..L3]`.
+ * @returns Cap x100.
+ * @example
+ * ```ts
+ * stressCapCurveX100(STRESS_DRAW, curvePos(200_000n, [25_000n, 100_000n, 500_000n]), [500, 500, 1_000, 2_000]); // 715 (the stepped cap: 500)
+ * ```
+ */
+export declare function stressCapCurveX100(stress: number, p: CurvePos, table: readonly [number, number, number, number]): number;
 /** `RENT_SNAPSHOT_FALL_SLOTS`: the rent `N_cap` snapshot falls at most 2x per 900 slots. */
 export declare const RENT_SNAPSHOT_FALL_SLOTS = 900n;
 /**
@@ -1610,7 +1651,7 @@ export interface GrowthCeilingView {
     ceilingX100: number;
     /** Controller round: the graded stress level used (0 none, 1 draw, 2 real ADL, 3 h-lock). */
     stress: number;
-    /** {@link stressCapX100} at the combined tier (`0xffff` = none). */
+    /** The graded stress cap in force: {@link stressCapCurveX100} at the signal position (`0xffff` = none; equals the stepped cap at anchors). */
     stressCapX100: number;
     /** The dials on the continuous curve (κ / λ_depth feed the capacity; `lSignalX100` is BEFORE the volatility term). Tier-0 values off the clamp. */
     dials: SmoothDials;
