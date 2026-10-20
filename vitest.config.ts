@@ -66,6 +66,7 @@ export default defineConfig({
       "test/stake-account-lists-processor.test.ts", "test/stake-withdraw-quote.test.ts",
       "test/workflow-pinning-349.test.ts",
       "test/deps-advisories.test.ts",
+      "test/init-matcher-ctx-range.test.ts",
     ],
   },
 });

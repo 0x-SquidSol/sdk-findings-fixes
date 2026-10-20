@@ -3531,10 +3531,10 @@ export function encodeInitMatcherCtx(args: InitMatcherCtxArgs): Uint8Array {
   const data = concatBytes(
     encU8(83),                           // IX_TAG.InitMatcherCtx = 83
     encU8(args.kind),
-    new Uint8Array(new Uint32Array([args.tradingFeeBps]).buffer),   // u32 LE
-    new Uint8Array(new Uint32Array([args.baseSpreadBps]).buffer),   // u32 LE
-    new Uint8Array(new Uint32Array([args.maxTotalBps]).buffer),     // u32 LE
-    new Uint8Array(new Uint32Array([args.impactKBps]).buffer),      // u32 LE
+    encU32(args.tradingFeeBps),   // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.baseSpreadBps),   // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.maxTotalBps),     // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.impactKBps),      // u32 LE (range-checked: AUD-S3-A5)
     encU128(args.liquidityNotionalE6),   // u128 LE
     encU128(args.maxFillAbs),            // u128 LE
     encU128(args.maxInventoryAbs),       // u128 LE
