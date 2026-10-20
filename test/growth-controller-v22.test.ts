@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import {
   rentSnapshotSmooth, rentStamp64Of, bandMinLegFitsDepth, volSampleX100, volUpdateX100, VOL_VAR_SEED_X100, sigmaHBps, isqrtCeil, lVolX100,
   lSignalWithVol, growthFlagsOk, venueDepthCapped, smoothDials, DEPTH_SOURCE, log2Q16, curveU64, curveValue, curvePos, CURVE_POS_FAIL,
-  smoothDialsAndVenueL, KAPPA_TABLE_BPS, LAMBDA_DEPTH_TABLE_BPS, depthTierFor, nCapG8Q, lambdaDepthBps, kappaDepthBps,
+  smoothDialsAndVenueL, curveLagU64, curvePosLag, KAPPA_TABLE_BPS, LAMBDA_DEPTH_TABLE_BPS, depthTierFor, nCapG8Q, lambdaDepthBps, kappaDepthBps,
   DEPTH_TW_BUCKET_SLOTS, DEPTH_TW_ABSENT, DEPTH_TW_EMPTY, depthTwUpdate, depthTwMinAtoms, depthTwFull, depthTwWindowOk, depthTokensFloor,
   stressCapX100, stressLevel, realAdl, tierLeverage, STRESS_NONE, STRESS_DRAW, STRESS_ADL, STRESS_HLOCK, depthPushUpdate,
   ASSET_GROWTH_FIELD_OFF, ASSET_GROWTH_DEPTH_FIELD_OFF, ASSET_GROWTH_LEN, decodeAssetGrowthRecordV19, growthLVolX100, growthCeilingView,
@@ -149,10 +149,25 @@ describe("Rust contlev_curve_unit (continuous leverage, e699d7da; replaces r3_it
     expect(venueDepthCapped(600_000n, DEPTH_SOURCE.Attested, th, 3)).toBe(600_000n);
     expect(venueDepthCapped(600_000n, DEPTH_SOURCE.None, th, 3)).toBe(0n);
   });
-  it("the dials: min of the two curves; the venue-only value for the fall-only writer", () => {
-    expect(smoothDialsAndVenueL(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 }, venueLX100: 1_059 });
-    expect(smoothDialsAndVenueL(600_000n, 50_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 750, kappaBps: 10_000, lambdaDepthBps: 15_000 }, venueLX100: 2_000 });
-    expect(smoothDials(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ lSignalX100: 1_059, kappaBps: 10_592, lambdaDepthBps: 20_592 });
+  it("the dials: min of the two curves (κ / λ_depth on the LAGGING curve, 21b8ccfd M-1); the venue-only value for the fall-only writer", () => {
+    expect(smoothDialsAndVenueL(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 1_059, kappaBps: 10_000, lambdaDepthBps: 10_592 }, venueLX100: 1_059 });
+    expect(smoothDialsAndVenueL(600_000n, 50_000n, th, [500, 500, 1_000, 2_000])).toEqual({ dials: { lSignalX100: 750, kappaBps: 7_500, lambdaDepthBps: 10_000 }, venueLX100: 2_000 });
+    expect(smoothDials(110_000n, 600_000n, th, [500, 500, 1_000, 2_000])).toEqual({ lSignalX100: 1_059, kappaBps: 10_000, lambdaDepthBps: 10_592 });
+  });
+  it("the lagging κ / λ_depth curve (Rust unit test, 21b8ccfd): t[0] up to T1, each step value at the NEXT anchor, top segment [T3, 4·T3)", () => {
+    expect(curveLagU64(24_999n, th, KAPPA_TABLE_BPS)).toBe(5_000n);
+    expect(curveLagU64(25_000n, th, KAPPA_TABLE_BPS)).toBe(5_000n);
+    expect(curveLagU64(50_000n, th, KAPPA_TABLE_BPS)).toBe(7_500n);
+    expect(curveLagU64(100_000n, th, KAPPA_TABLE_BPS)).toBe(10_000n);
+    expect(curveLagU64(500_000n, th, KAPPA_TABLE_BPS)).toBe(10_000n);
+    expect(curveLagU64(1_000_000n, th, KAPPA_TABLE_BPS)).toBe(15_000n);
+    expect(curveLagU64(2_000_000n, th, KAPPA_TABLE_BPS)).toBe(20_000n);
+    expect(curveLagU64(50_000n, th, LAMBDA_DEPTH_TABLE_BPS)).toBe(10_000n);
+    expect(curveLagU64(200_000n, th, LAMBDA_DEPTH_TABLE_BPS)).toBe(14_306n);
+    expect(curveLagU64(U64_MAX, th, LAMBDA_DEPTH_TABLE_BPS)).toBe(30_000n);
+    // a saturating 4·T3 (T3 > u64::MAX / 4): flat at t[2] past T3, fail closed
+    expect(curveLagU64(U64_MAX - 1n, [25_000n, 100_000n, U64_MAX / 2n], KAPPA_TABLE_BPS)).toBe(10_000n);
+    expect(curvePosLag(CURVE_POS_FAIL, 1n, th)).toEqual({ seg: 0xff, num: 0, den: 0 });
   });
   it("the step functions are the dials at a tier (n_cap_g8_q == n_cap_g8_q_dials)", () => {
     for (let t = 0; t <= 3; t++) {

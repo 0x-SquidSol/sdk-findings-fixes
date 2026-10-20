@@ -6891,6 +6891,37 @@ function curveValue(p, t) {
 function curveU64(d, thresholdsE6, t) {
   return curveValue(curvePos(d, thresholdsE6), t);
 }
+var KAPPA_LAG_TOP_MUL = 4n;
+function curvePosLag(lead, d, thresholdsE6) {
+  switch (lead.seg) {
+    case 1:
+    case 2:
+    case 3:
+      return { seg: lead.seg - 1, num: lead.num, den: lead.den };
+    case 4: {
+      const lo = thresholdsE6[2];
+      const prod = lo * KAPPA_LAG_TOP_MUL;
+      const hi = prod > U64_MAX2 ? U64_MAX2 : prod;
+      if (hi === U64_MAX2 || hi <= lo) return { seg: 3, num: 0, den: 0 };
+      if (d >= hi) return { seg: 4, num: 0, den: 0 };
+      const ld = log2Q16(d);
+      const llo = log2Q16(lo);
+      const lhi = log2Q16(hi);
+      if (ld === null || llo === null || lhi === null) return { ...CURVE_POS_FAIL };
+      const num = ld - llo;
+      const den = lhi - llo;
+      if (num < 0 || den < 0) return { ...CURVE_POS_FAIL };
+      return { seg: 3, num: num < den ? num : den, den };
+    }
+    case 0:
+      return { seg: 0, num: 0, den: 0 };
+    default:
+      return { ...CURVE_POS_FAIL };
+  }
+}
+function curveLagU64(d, thresholdsE6, t) {
+  return curveValue(curvePosLag(curvePos(d, thresholdsE6), d, thresholdsE6), t);
+}
 function venueDepthCapped(effectiveDepthE62, depthSourceByte, thresholdsE6, attestedMaxTierStored) {
   const src = depthSourceOf(depthSourceByte);
   if (src === DEPTH_SOURCE.OnChainPool) return effectiveDepthE62;
@@ -6905,22 +6936,22 @@ function venueDepthCapped(effectiveDepthE62, depthSourceByte, thresholdsE6, atte
 function smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
   const pv = curvePos(venueDepthE6, thresholdsE6);
   const pb = curvePos(bookDepthE62, thresholdsE6);
-  const m2 = (t) => {
-    const a = curveValue(pv, t);
-    const b = curveValue(pb, t);
+  const qv = curvePosLag(pv, venueDepthE6, thresholdsE6);
+  const qb = curvePosLag(pb, bookDepthE62, thresholdsE6);
+  const m2 = (p, q, t) => {
+    const a = curveValue(p, t);
+    const b = curveValue(q, t);
     return a < b ? a : b;
   };
   const lt = [BigInt(lTableX1002[0]), BigInt(lTableX1002[1]), BigInt(lTableX1002[2]), BigInt(lTableX1002[3])];
   return {
-    dials: { lSignalX100: Number(m2(lt)), kappaBps: Number(m2(KAPPA_TABLE_BPS)), lambdaDepthBps: Number(m2(LAMBDA_DEPTH_TABLE_BPS)) },
+    dials: {
+      lSignalX100: Number(m2(pv, pb, lt)),
+      kappaBps: Number(m2(qv, qb, KAPPA_TABLE_BPS)),
+      lambdaDepthBps: Number(m2(qv, qb, LAMBDA_DEPTH_TABLE_BPS))
+    },
     venueLX100: Number(curveValue(pv, lt))
   };
-}
-function smoothDialsVenueLAndPos(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
-  const { dials, venueLX100 } = smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002);
-  const pv = curvePos(venueDepthE6, thresholdsE6);
-  const pb = curvePos(bookDepthE62, thresholdsE6);
-  return { dials, venueLX100, pos: venueDepthE6 <= bookDepthE62 ? pv : pb, venuePos: pv };
 }
 function smoothDials(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002) {
   return smoothDialsAndVenueL(venueDepthE6, bookDepthE62, thresholdsE6, lTableX1002).dials;
@@ -7156,13 +7187,13 @@ function growthCeilingView(g, bandBps, nowSlot, cM, stress, vol) {
   const tier = clamp ? combinedTier(venue, book) : 0;
   const grad = graduationOn(clamp, bandBps, tier);
   const venueD = clamp ? venueDepthCapped(eff, dsByte, thresholds, g.attestedMaxTier) : 0n;
-  const dv8 = clamp ? smoothDialsVenueLAndPos(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
+  const dv8 = clamp ? smoothDialsAndVenueL(venueD, clamp && cM !== null ? bookD : 0n, thresholds, table) : null;
   const dials = dv8 !== null ? dv8.dials : { lSignalX100: 0, kappaBps: Number(KAPPA_TABLE_BPS[0]), lambdaDepthBps: Number(LAMBDA_DEPTH_TABLE_BPS[0]) };
   const venueLX100 = dv8 !== null ? dv8.venueLX100 : 0;
   const volInputsMissing = clamp && g.volHasData === true && vol === void 0;
   const lVol = clamp && vol !== void 0 ? growthLVolX100(g, vol) : null;
   const lSignal = clamp ? lSignalWithVol(dials.lSignalX100, lVol, table[0]) : 0;
-  const sCap = dv8 !== null ? stressCapCurveX100(st, dv8.pos, table) : 65535;
+  const sCap = clamp ? stressCapX100(st, tier, table) : 65535;
   const target = targetCeilingX100(grad, st, g.lLaunchX100, g.lTierX100, lSignal, sCap);
   const launch = Math.min(g.lLaunchX100, g.lTierX100);
   const stored = g.ceilX100 === 0 ? launch : g.ceilX100;
@@ -17804,6 +17835,7 @@ export {
   IX_TAG_P2B_EARN,
   IX_TAG_P3,
   IX_TAG_V22,
+  KAPPA_LAG_TOP_MUL,
   KAPPA_TABLE_BPS,
   KIND_BACKING_DOMAIN_LEDGER_P2B,
   KIND_VAULT_LP_EXT_P2B,
@@ -18279,7 +18311,9 @@ export {
   creatorFeeVestedP2b,
   curveAnchors,
   curveDepthForLeverageX100,
+  curveLagU64,
   curvePos,
+  curvePosLag,
   curveU64,
   curveValue,
   cushionLockedP2b,
@@ -18834,7 +18868,6 @@ export {
   slabDataSizeV1,
   smoothDials,
   smoothDialsAndVenueL,
-  smoothDialsVenueLAndPos,
   stakeDeadLp,
   stakeGroupAProxyAccounts,
   stakeGroupBProxyAccounts,

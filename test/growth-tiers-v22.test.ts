@@ -438,18 +438,19 @@ describe("growthCeilingView: explainer worked examples (tiered 20x meme market, 
   });
   it("tier 1: depth $30k, backing $40k -> target 5.65x on the curve (stored 5x climbs); 10x in full needs both at $100k", () => {
     const v = view(g(dex(30_000n)), BAND, NOW, 40_000n * M, false);
-    // continuous leverage: min(venue $30k, book $40k) = $30k sits log2(1.2)/2 of the way from T1 (5x) to T2 (10x): 5x + 5x * 0.1315 = 5.65x
+    // continuous leverage: min(venue $30k, book $40k) = $30k sits log2(1.2)/2 of the way from T1 (5x) to T2 (10x): 5x + 5x * 0.1315 = 5.65x;
+    // κ / λ_depth LAG (21b8ccfd M-1): the same fraction one segment down, κ 0.5 -> 1 (0.5657), λ_depth 1x -> 1x (never looser than the step)
     expect([v.tier, v.targetX100, v.ceilingX100]).toEqual([1, 565, 500]);
-    expect(v.dials).toEqual({ lSignalX100: 565, kappaBps: 10_000, lambdaDepthBps: 11_315 });
+    expect(v.dials).toEqual({ lSignalX100: 565, kappaBps: 5_657, lambdaDepthBps: 10_000 });
     expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 565, etaSlots: 8_000n, etaMinutes: 54 });
     expect(v.nextTierUnlock).toEqual({ kind: "both", tier: 2, depthUsd: 100_000, backingUsd: 100_000, thresholdUsd: 100_000, leverageX100: 1_000, fullDepthUsd: 100_000 });
   });
   it("tier 2: depth $150k, backing $120k -> target 11.13x on the curve, ceiling climbs +1x per hour; ETA in minutes", () => {
     const v = view(g(dex(150_000n)), BAND, NOW, 120_000n * M, false);
     // continuous leverage: min(venue $150k, book $120k) = $120k on [T2 $100k, T3 $500k]: 10x + 10x * log2(1.2)/log2(5) = 11.13x;
-    // κ 1 -> 2 and λ_depth 2x -> 3x interpolate the same way
+    // κ / λ_depth LAG (21b8ccfd M-1): the same fraction one segment down, κ 1 -> 1 (1.0), λ_depth 1x -> 2x (1.1132x)
     expect([v.tier, v.venueTier, v.bookTier, v.targetX100, v.ceilingX100]).toEqual([2, 2, 2, 1_113, 500]);
-    expect(v.dials).toEqual({ lSignalX100: 1_113, kappaBps: 11_132, lambdaDepthBps: 21_132 });
+    expect(v.dials).toEqual({ lSignalX100: 1_113, kappaBps: 10_000, lambdaDepthBps: 11_132 });
     expect([v.lVolX100, v.lSignalX100, v.stress, v.volInputsMissing]).toEqual([2_000, 1_113, STRESS_NONE, false]);
     // stored ceil 500 stamped at slot 0: next step allowed at slot 9000, now 1000 -> 8000 slots = 3200 s = 53.3 min -> 54
     expect(v.nextUnlock).toEqual({ kind: "ratchet", leverageX100: 600, etaSlots: 8_000n, etaMinutes: 54 });
@@ -532,6 +533,19 @@ describe("growthCeilingView: explainer worked examples (tiered 20x meme market, 
     const a = view(g(o), BAND, NOW, 625_000n * M, STRESS_ADL);
     expect([a.stressCapX100, a.targetX100, a.ceilingX100]).toEqual([500, 500, 500]);
     expect(view(g(o), BAND, NOW, 625_000n * M, STRESS_NONE).ceilingX100).toBe(2_000);
+  });
+  it("graded stress BETWEEN anchors is STEPPED (21b8ccfd M-2): a draw at $200k / $300k / $400k cuts a stored 20x to 5x at once", () => {
+    // wrapper contlev_m2_draw_keeps_the_stepped_stress_cap: unstressed 14.30x / 16.82x / 18.61x; under a draw base caf062bd's stepped 5x
+    // (3198539a's continuous cap read 7.15x / 8.41x / 9.30x: the negative control)
+    for (const [usd, un] of [[200_000n, 1_430], [300_000n, 1_682], [400_000n, 1_861]] as const) {
+      const o = dex(usd, { ceil: 2_000 });
+      const n = view(g(o), BAND, NOW, usd * M, STRESS_NONE);
+      expect([n.tier, n.targetX100, n.ceilingX100], `$${usd} unstressed`).toEqual([2, un, un]);
+      const d = view(g(o), BAND, NOW, usd * M, STRESS_DRAW);
+      expect([d.stressCapX100, d.targetX100, d.ceilingX100], `$${usd} draw`).toEqual([500, 500, 500]);
+      const a = view(g(o), BAND, NOW, usd * M, STRESS_ADL);
+      expect([a.stressCapX100, a.targetX100, a.ceilingX100], `$${usd} ADL`).toEqual([500, 500, 500]);
+    }
   });
   it("volatility (item 6): no data -> launch; seed variance over H = 1,200 caps a 20x market at 17.48x; inputs missing -> launch", () => {
     const o = dex(700_000n, { ceil: 2_000 });
@@ -781,11 +795,11 @@ describe("R2-M1: the usable depth is min(fresh, rate-limited last good) (Rust r2
     expect(v.effectiveDepthE6).toBe(25_000n * M);
     // tier 2 needs $100k: 25k -> 50k at slot 9,063 (window opens 63 + 9,000 after stamp 0) -> 100k at 18,087 (stamp 141): 17,087 slots from slot 1000
     expect(v.nextTierUnlock).toMatchObject({ kind: "depth", tier: 2, depthRateLimited: true, depthEtaSlots: 17_087n, depthEtaMinutes: 114 });
-    // capacity follows the usable depth, not the fresh one; continuous leverage: at exactly T1 the κ curve reads its anchor value 1.0
-    // (it rose from 0.5 at T1/4), so the depth cap is the full $25k (the round-3 ramp read 0.5 there: $12.5k)
+    // capacity follows the usable depth, not the fresh one; the LAGGING κ (21b8ccfd M-1) reads 0.5 at exactly T1 (it reaches 1.0 at T2),
+    // so the depth cap is $12.5k, never looser than the round-2 step (3198539a's leading κ read 1.0 there: $25k)
     const q = quoteMaxLeverage(qin(g(o), 600_000n * M), "long");
     expect(q.capDepthE6).toBe(25_000n * M);
-    expect(q.nCapQ).toBe(25_000n * M);
+    expect(q.nCapQ).toBe(12_500n * M);
   });
   it("ratchet kind: usable depth already supports a higher target -> the +1x step ETA", () => {
     const o = dex(150_000n, { lastGood: 150_000n * M, ceil: 500 });
