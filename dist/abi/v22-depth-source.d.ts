@@ -77,7 +77,7 @@ export declare function deriveDepthSourceV22(programId: PublicKey, market: Publi
 export declare function encodeSetDepthSourceV22(op: 0 | 1, assetIndex: number, marketId: bigint | string): Uint8Array;
 /** The clear form of tag 123 (`op = 0`, asset 0, generation 0: a stale pin of a reused slot can always be cleared). */
 export declare function encodeClearDepthSourceV22(assetIndex?: number, marketId?: bigint | string): Uint8Array;
-/** Tag 123 accounts, common part `[0..4]` (the clear form carries only these). */
+/** Tag 123 accounts, common part `[0..4]` (the clear form carries only these). The market is WRITABLE (F-3: op 1 sets / op 0 clears `DEPTH_DEX_PINNED`). */
 export declare const ACCOUNTS_SET_DEPTH_SOURCE_V22: readonly AccountSpec[];
 /** Tag 123 op 1 tail `[5..9]`: the pool, its two vaults and the two mints ("base" = the market's asset). */
 export declare const ACCOUNTS_SET_DEPTH_SOURCE_POOL_TAIL_V22: readonly AccountSpec[];

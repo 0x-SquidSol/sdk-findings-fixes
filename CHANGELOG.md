@@ -1,3 +1,11 @@
+## 9.0.0-candidate: v2.2 DEATH F-3 DEX pin (percolator-prog #564, `fix/v22-f1-f3-wrapper` @ 4db44b69) - couples with prog #564; merge only when the RC2 wrapper ships
+
+- **Changed (wire, account meta):** tag 123 `SetDepthSource` now requires the market WRITABLE (both ops; `expect_writable(market_ai)`). `ACCOUNTS_SET_DEPTH_SOURCE_V22[2]` is writable, so `buildSetDepthSourceIxV22` / `buildClearDepthSourceIxV22` follow. A read-only market is refused by the new wrapper.
+- **Added:** `DEPTH_DEX_PINNED` (byte 44 bit 6), `depthDexPinned(byte)`, `isDexPinned(record)`, `depthPushModeAllowed(byte, mode | null)` (port of `depth_push_mode_allowed`: mode 1 on a pinned asset is refused whole with 129 `DepthSourceInvalid`, mark included; 35 B / mode 0 / mode 2 unchanged), `AssetGrowthV19.depthDexPinned`, and SEC-RC L-1 `depthTwLayoutOk(flags, window)`.
+- **Changed (values):** `depthSourceByteOk` accepts bit 6 (0x40), as the wrapper's validator does at 4db44b69.
+- Error 129 `DepthSourceInvalid` was already mapped; its comment now names the F-3 refusal. No new error code, no layout change.
+- Fixture `test/fixtures/v22-f3-dex-pin-records.json`: four growth records produced by LiteSVM on the canonical .so (sha256 7bdadf4a...).
+
 ## 9.0.0-candidate: v2.2 contlev3, security review M-1 / M-2 (percolator-prog `feat/v22-continuous-leverage` @ 21b8ccfd)
 
 - **Added:** `curvePosLag(lead, d, thresholds)`, `curveLagU64`, `KAPPA_LAG_TOP_MUL` (4): bit-exact ports of `curve_pos_lag` / `curve_lag_u64`. κ and λ_depth follow a LAGGING curve on the anchors `[T1, T2, T3, 4·T3]`: `t[0]` below T1, each step value reached at the NEXT anchor, so never looser than the round-2 step (N_cap <= the caf062bd base everywhere).

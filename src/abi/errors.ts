@@ -651,6 +651,8 @@ export const PERCOLATOR_ERRORS: Record<number, ErrorInfo> = {
     hint: "The price update carried an invalid liquidity reading.",
   },
   // v2.2 growth round 2 (R2.1 item 4, dex-depth branch): SetDepthSource (123) refused, or PushAuthMark depth mode 2 with no / a cleared / a non-matching pin.
+  // v2.2 DEATH F-3 (wrapper 4db44b69): also a PushAuthMark depth mode 1 (keeper-attested) on a DEX-pinned asset (byte 44 bit 6,
+  // DEPTH_DEX_PINNED; log `g8_depth_refused_attested_on_dex_pin`). The whole push is refused, mark included: resend with mode 2 / 0 or 35 B.
   129: {
     name: "DepthSourceInvalid",
     hint: "The pool reading for this market was not accepted. Check that the pinned pool and its vaults are the ones supplied.",

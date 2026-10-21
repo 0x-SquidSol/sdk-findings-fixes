@@ -1343,14 +1343,14 @@ function encodeInitMatcherCtx(args) {
     encU8(83),
     // IX_TAG.InitMatcherCtx = 83
     encU8(args.kind),
-    new Uint8Array(new Uint32Array([args.tradingFeeBps]).buffer),
-    // u32 LE
-    new Uint8Array(new Uint32Array([args.baseSpreadBps]).buffer),
-    // u32 LE
-    new Uint8Array(new Uint32Array([args.maxTotalBps]).buffer),
-    // u32 LE
-    new Uint8Array(new Uint32Array([args.impactKBps]).buffer),
-    // u32 LE
+    encU32(args.tradingFeeBps),
+    // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.baseSpreadBps),
+    // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.maxTotalBps),
+    // u32 LE (range-checked: AUD-S3-A5)
+    encU32(args.impactKBps),
+    // u32 LE (range-checked: AUD-S3-A5)
     encU128(args.liquidityNotionalE6),
     // u128 LE
     encU128(args.maxFillAbs),
@@ -5170,6 +5170,8 @@ var PERCOLATOR_ERRORS = {
     hint: "The price update carried an invalid liquidity reading."
   },
   // v2.2 growth round 2 (R2.1 item 4, dex-depth branch): SetDepthSource (123) refused, or PushAuthMark depth mode 2 with no / a cleared / a non-matching pin.
+  // v2.2 DEATH F-3 (wrapper 4db44b69): also a PushAuthMark depth mode 1 (keeper-attested) on a DEX-pinned asset (byte 44 bit 6,
+  // DEPTH_DEX_PINNED; log `g8_depth_refused_attested_on_dex_pin`). The whole push is refused, mark included: resend with mode 2 / 0 or 35 B.
   129: {
     name: "DepthSourceInvalid",
     hint: "The pool reading for this market was not accepted. Check that the pinned pool and its vaults are the ones supplied."
@@ -6345,6 +6347,7 @@ function decodeAssetGrowthRecordV19(rec) {
     depthSource: rec[D.depthSource] & DEPTH_SOURCE_MASK,
     depthEver: (rec[D.depthSource] & DEPTH_EVER) !== 0,
     depthPrevReal: (rec[D.depthSource] & DEPTH_PREV_REAL) !== 0,
+    depthDexPinned: (rec[D.depthSource] & DEPTH_DEX_PINNED) !== 0,
     attestedMaxTier: rec[D.attestedMaxTier],
     collateralDecimalsP1: rec[D.collateralDecimalsP1],
     collateralDecimals: collateralDecimalsOf(rec[D.collateralDecimalsP1]),
@@ -6445,6 +6448,7 @@ var DEPTH_SOURCE_MASK = 3;
 var DEPTH_EVER = 128;
 var DEPTH_PREV_REAL = 4;
 var DEPTH_MODE = Object.freeze({ None: 0, Attested: 1, OnChainDex: 2 });
+var DEPTH_DEX_PINNED = 64;
 var GROWTH_USD_ATOMS = 1000000n;
 var TIER_THRESHOLD_DEFAULT_USD = Object.freeze([25e3, 1e5, 5e5]);
 var TIER_THRESHOLD_FLOOR_USD = Object.freeze([5e3, 2e4, 1e5]);
@@ -6470,7 +6474,16 @@ function depthEver(depthSourceByte) {
   return (depthSourceByte & DEPTH_EVER) !== 0;
 }
 function depthSourceByteOk(depthSourceByte) {
-  return (depthSourceByte & ~(DEPTH_SOURCE_MASK | DEPTH_PREV_REAL | DEPTH_EVER) & 255) === 0 && depthSourceOf(depthSourceByte) <= DEPTH_SOURCE.OnChainPool;
+  return (depthSourceByte & ~(DEPTH_SOURCE_MASK | DEPTH_PREV_REAL | DEPTH_DEX_PINNED | DEPTH_EVER) & 255) === 0 && depthSourceOf(depthSourceByte) <= DEPTH_SOURCE.OnChainPool;
+}
+function depthDexPinned(depthSourceByte) {
+  return (depthSourceByte & DEPTH_DEX_PINNED) !== 0;
+}
+function isDexPinned(record) {
+  return record !== null && record.depthDexPinned;
+}
+function depthPushModeAllowed(depthSourceByte, mode) {
+  return !(depthDexPinned(depthSourceByte) && mode === DEPTH_MODE.Attested);
 }
 function effectiveDepthE6(depthE6, depthPrevE6, depthSlot, nowSlot) {
   if (depthE6 === 0n || depthPrevE6 === 0n) return 0n;
@@ -6610,6 +6623,9 @@ function depthTwMinAtoms(w2, unitAtoms) {
 function depthTwWindowOk(w2) {
   if (w2.bucketP1 === 0) return w2.curTokens === 0 && w2.prevTokens === 0;
   return w2.curTokens !== DEPTH_TW_ABSENT && BigInt(w2.bucketP1) <= DEPTH_TW_BUCKET_RING;
+}
+function depthTwLayoutOk(flags, w2) {
+  return w2.bucketP1 === 0 || (flags & GROWTH_FLAG_R3_LAYOUT) !== 0;
 }
 function depthTwFull(w2) {
   return w2.bucketP1 !== 0 && w2.prevTokens !== DEPTH_TW_ABSENT;
@@ -8576,7 +8592,8 @@ function encodeClearDepthSourceV22(assetIndex = 0, marketId = 0n) {
 var ACCOUNTS_SET_DEPTH_SOURCE_V22 = [
   { name: "upgradeAuthority", signer: true, writable: true },
   { name: "programData", signer: false, writable: false },
-  { name: "market", signer: false, writable: false },
+  // v2.2 DEATH F-3 (wrapper 4db44b69, `expect_writable(market_ai)`, both ops): tag 123 writes the pin bit into the growth record.
+  { name: "market", signer: false, writable: true },
   { name: "depthSource", signer: false, writable: true },
   { name: "systemProgram", signer: false, writable: false }
 ];
@@ -17737,6 +17754,7 @@ export {
   DEPTH_AMM_PROGRAMS_V22,
   DEPTH_ATTESTED_MAX_TIER,
   DEPTH_BOOTSTRAP_DIV,
+  DEPTH_DEX_PINNED,
   DEPTH_EVER,
   DEPTH_MAX_AGE_SLOTS,
   DEPTH_MODE,
@@ -18364,8 +18382,10 @@ export {
   depositJuniorAccounts,
   depthCapQ,
   depthCapQKappa,
+  depthDexPinned,
   depthEver,
   depthNotionalCapE6,
+  depthPushModeAllowed,
   depthPushUpdate,
   depthRateLimited,
   depthRiseStamp,
@@ -18376,6 +18396,7 @@ export {
   depthTokensFloor,
   depthTwBucketP1,
   depthTwFull,
+  depthTwLayoutOk,
   depthTwMinAtoms,
   depthTwUpdate,
   depthTwWindowOk,
@@ -18708,6 +18729,7 @@ export {
   isBackingBucketExpirable,
   isBankruptcyHlockActive,
   isClosedMarketTombstone,
+  isDexPinned,
   isFeatureAccountActive,
   isLighthouseError,
   isLighthouseFailureInLogs,

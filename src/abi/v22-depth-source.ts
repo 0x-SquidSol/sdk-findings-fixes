@@ -88,11 +88,12 @@ export function encodeClearDepthSourceV22(assetIndex = 0, marketId: bigint | str
   return encodeSetDepthSourceV22(0, assetIndex, marketId);
 }
 
-/** Tag 123 accounts, common part `[0..4]` (the clear form carries only these). */
+/** Tag 123 accounts, common part `[0..4]` (the clear form carries only these). The market is WRITABLE (F-3: op 1 sets / op 0 clears `DEPTH_DEX_PINNED`). */
 export const ACCOUNTS_SET_DEPTH_SOURCE_V22: readonly AccountSpec[] = [
   { name: "upgradeAuthority", signer: true, writable: true },
   { name: "programData", signer: false, writable: false },
-  { name: "market", signer: false, writable: false },
+  // v2.2 DEATH F-3 (wrapper 4db44b69, `expect_writable(market_ai)`, both ops): tag 123 writes the pin bit into the growth record.
+  { name: "market", signer: false, writable: true },
   { name: "depthSource", signer: false, writable: true },
   { name: "systemProgram", signer: false, writable: false },
 ] as const;

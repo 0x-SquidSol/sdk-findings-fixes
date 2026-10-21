@@ -176,6 +176,11 @@ export interface AssetGrowthV19 {
     depthEver: boolean;
     /** Byte 44 bit 2 `DEPTH_PREV_REAL`: the sample before the stored one was a real reading (a 0 included), not an absent one. */
     depthPrevReal: boolean;
+    /**
+     * v2.2 DEATH F-3: byte 44 bit 6 {@link DEPTH_DEX_PINNED}: the asset's depth is pinned to an on-chain DEX pool (tag 123 op 1, or any
+     * PushAuthMark mode-2 reading). While set, a mode-1 (keeper-attested) push is refused whole with 129 `DepthSourceInvalid`, mark included.
+     */
+    depthDexPinned: boolean;
     /** R2.1: highest venue tier keeper-attested depth may earn (45; 0 = protocol default 1, max 3). */
     attestedMaxTier: number;
     /** v2.2 G8: last pushed +-2% depth, USD e6 (collateral 6 decimals). 0 when absent. */
@@ -403,6 +408,13 @@ export declare const DEPTH_MODE: Readonly<{
     readonly Attested: 1;
     readonly OnChainDex: 2;
 }>;
+/**
+ * `DEPTH_DEX_PINNED` (byte 44 bit 6, v2.2 DEATH F-3 / SEC-RC L-2): the asset's depth is PINNED to an on-chain DEX pool. Set by tag 123
+ * `SetDepthSource` op 1 and by every PushAuthMark mode-2 reading; cleared only by tag 123 op 0 (or on the old asset when a pin is replaced).
+ * Survives every depth / graduation write and the I-1 reset. Not a source bit ({@link depthSourceOf} masks it out). While set, a mode-1
+ * (keeper-attested) depth is refused with 129 `DepthSourceInvalid` and NOTHING is written, the mark included.
+ */
+export declare const DEPTH_DEX_PINNED = 64;
 /** One whole USD of 6-decimal collateral, in atoms. */
 export declare const GROWTH_USD_ATOMS = 1000000n;
 /** Protocol-default tier thresholds, whole USD of +-2% depth (T1, T2, T3): what a stored 0 means. */
@@ -442,8 +454,60 @@ export type Triple<T> = readonly [T, T, T];
 export declare function depthSourceOf(depthSourceByte: number): number;
 /** Whether `DEPTH_EVER` is set. */
 export declare function depthEver(depthSourceByte: number): boolean;
-/** Record validator: only bits 0-1 (source <= 2), bit 2 ({@link DEPTH_PREV_REAL}) and bit 7 may be set. */
+/**
+ * Record validator: only bits 0-1 (source <= 2), bit 2 ({@link DEPTH_PREV_REAL}), bit 6 ({@link DEPTH_DEX_PINNED}) and bit 7 may be set.
+ * Port of `growth_v19::depth_source_byte_ok` (wrapper 4db44b69).
+ *
+ * @param depthSourceByte  Byte 44 of the growth record.
+ * @returns Whether the program accepts it.
+ * @example
+ * ```ts
+ * depthSourceByteOk(0xc6); // true (DEX | PREV_REAL | PINNED | EVER)
+ * depthSourceByteOk(0x08); // false (bits 3-5 must be 0)
+ * ```
+ */
 export declare function depthSourceByteOk(depthSourceByte: number): boolean;
+/**
+ * Whether byte 44 carries {@link DEPTH_DEX_PINNED}. Port of `growth_v19::depth_dex_pinned`.
+ *
+ * @param depthSourceByte  Byte 44 of the growth record.
+ * @returns `true` while the asset's depth is pinned to its DEX pool.
+ * @example
+ * ```ts
+ * depthDexPinned(0xc6); // true
+ * depthDexPinned(0x86); // false
+ * ```
+ */
+export declare function depthDexPinned(depthSourceByte: number): boolean;
+/**
+ * Whether a decoded growth record is DEX-pinned (a mode-1 push on it is refused whole with 129). `null` (growth off) is never pinned: the
+ * wrapper's tag 123 writes no bit there and the push guard only runs on a growth record.
+ *
+ * @param record  A decoded record ({@link decodeAssetGrowthRecordV19} / {@link decodeAssetGrowthV19}), or `null` for growth off.
+ * @returns `true` iff the record exists and its pin bit is set.
+ * @example
+ * ```ts
+ * const g = decodeAssetGrowthV19(marketData, 0);
+ * const mode = isDexPinned(g) ? DEPTH_MODE.OnChainDex : DEPTH_MODE.Attested;
+ * ```
+ */
+export declare function isDexPinned(record: Pick<AssetGrowthV19, "depthDexPinned"> | null): boolean;
+/**
+ * F-3: may a PushAuthMark carrying depth `mode` (`null` = the 35-byte form, no depth) land on an asset whose byte 44 is `depthSourceByte`?
+ * Everything is allowed except a keeper-attested depth (mode 1) on a DEX-pinned asset. Port of `growth_v19::depth_push_mode_allowed`.
+ * (Any mode other than 0 / 1 / 2 is refused earlier, with 128 `DepthInputInvalid`; this predicate does not model that.)
+ *
+ * @param depthSourceByte  Byte 44 of the growth record.
+ * @param mode             The 44-byte form's `depth_mode`, or `null` for the 35-byte form.
+ * @returns `false` exactly when the wrapper would refuse the push with 129 for the pin.
+ * @example
+ * ```ts
+ * depthPushModeAllowed(0x41, DEPTH_MODE.Attested); // false
+ * depthPushModeAllowed(0x41, DEPTH_MODE.OnChainDex); // true
+ * depthPushModeAllowed(0x41, null); // true (35 B)
+ * ```
+ */
+export declare function depthPushModeAllowed(depthSourceByte: number, mode: number | null): boolean;
 /**
  * Effective depth: `min(depth, depthPrev)` (a one-push spike buys nothing), and 0 (absent) when either read is 0, the last push
  * is older than {@link DEPTH_MAX_AGE_SLOTS}, or `depthSlot` is after `now` (fail closed). Port of `effective_depth_e6`.
@@ -702,6 +766,20 @@ export declare function depthTwMinAtoms(w: DepthWindow, unitAtoms: bigint): bigi
  * ```
  */
 export declare function depthTwWindowOk(w: DepthWindow): boolean;
+/**
+ * SEC-RC L-1: a depth window (bucket code != 0) exists only in the round-3 layout (`flags` bit 0). The wrapper refuses a record with flags 0
+ * and a window (`validate_asset_growth`). Port of `growth_v19::depth_tw_layout_ok` (wrapper 4db44b69).
+ *
+ * @param flags  Byte 39.
+ * @param w      The record's depth window.
+ * @returns Whether the program accepts the combination.
+ * @example
+ * ```ts
+ * depthTwLayoutOk(0, { curTokens: 5, prevTokens: DEPTH_TW_ABSENT, bucketP1: 3 }); // false
+ * depthTwLayoutOk(GROWTH_FLAG_R3_LAYOUT, { curTokens: 5, prevTokens: DEPTH_TW_ABSENT, bucketP1: 3 }); // true
+ * ```
+ */
+export declare function depthTwLayoutOk(flags: number, w: DepthWindow): boolean;
 /**
  * Whether the window spans a full adjacent bucket pair (a RISE of the rate-limited depth needs it). Port of `depth_tw_full`.
  * @param w  Window.
