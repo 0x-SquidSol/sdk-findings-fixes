@@ -46,4 +46,18 @@ describe("quoteStakeWithdrawNowV5", () => {
     expect(one.maxLpNow > 0n).toBe(true);
     expect(collateralForLpV5(one.maxLpNow, pool.totalLpSupply, 10_960_000n + 5_480_000n)! >= 1n).toBe(true);
   });
+  it("FGSFL devnet 2026-10-20: a stale units snapshot (60M) after a -30M loss over-quotes; clamping to the live free reading (30M = Σ domain withdraw capacity) matches what the program paid", () => {
+    const p = { totalDeposited: 20_000_000n, totalWithdrawn: 0n, totalFlushed: 10_000_000n, totalReturned: 0n, totalFeesEarned: 960_000n, realizedJuniorLoss: 0n, totalLpSupply: 20_000_000n };
+    const u = { unitsStake: 10_000_000n, unitsTotal: 60_000_000n };
+    const stale = quoteStakeWithdrawNowV5(p, u, 60_000_000n, 10_960_000n, 19_999_000n)!;
+    expect(stale.maxCollateralNow).toBe(10_960_000n); // what the old call said
+    const live = quoteStakeWithdrawNowV5(p, u, 60_000_000n, 10_960_000n, 19_999_000n, 30_000_000n)!;
+    // deployed = 10M * 30M / 60M = 5.0M (the program log said deployed 5000000); the on-chain payout for 10,458,016 LP was 8,345,496
+    expect(collateralForLpV5(10_458_016n, p.totalLpSupply, 10_960_000n + 5_000_000n)).toBe(8_345_496n);
+    expect(live.deferred).toBe(live.redeemable - live.maxCollateralNow);
+    expect(live.redeemable).toBeLessThan(stale.redeemable);
+    // a live reading ABOVE the snapshot never raises the quote (stale-low is only conservative)
+    const up = quoteStakeWithdrawNowV5(p, u, 36_540_000n, 10_960_000n, 19_999_000n, 90_000_000n)!;
+    expect(up.redeemable).toBe(quoteStakeWithdrawNowV5(p, u, 36_540_000n, 10_960_000n, 19_999_000n)!.redeemable);
+  });
 });
