@@ -58,7 +58,7 @@ describe("record decoder (bytes 44, 45, 80, 88, 96, 108)", () => {
     expect([g.depthSource, g.depthEver, g.depthPrevReal]).toEqual([1, true, true]);
     expect(depthSourceOf(0x81)).toBe(1);
     expect(depthEver(0x81) && !depthEver(0x01)).toBe(true);
-    expect([depthSourceByteOk(0x82), depthSourceByteOk(0x03), depthSourceByteOk(0x04), depthSourceByteOk(0x85), depthSourceByteOk(0x40), depthSourceByteOk(0x08)]).toEqual([true, false, true, true, false, false]);
+    expect([depthSourceByteOk(0x82), depthSourceByteOk(0x03), depthSourceByteOk(0x04), depthSourceByteOk(0x85), depthSourceByteOk(0x40), depthSourceByteOk(0x08)]).toEqual([true, false, true, true, true, false]); // 0x40 = DEPTH_DEX_PINNED (F-3, wrapper 4db44b69): accepted since #564
   });
 });
 

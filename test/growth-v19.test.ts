@@ -88,7 +88,7 @@ describe("AssetGrowthV19 decoder", () => {
     const common = {
       ceilSlot: 123_456_789n, lambdaBps: 10_000, lLaunchX100: 550, lTierX100: 1_000, ceilX100: 550,
       kinkBps: 5_000, rGapBps: 500, version: 1, utilFeeMaxBps: 777, rentKinkBps: 0, rentNCapQ: 0n,
-      depthSource: 0, depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthEver: false, depthPrevReal: false, attestedMaxTier: 0, collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseSlot64: 0, depthLastGoodE6: 0n, depthLastGoodSlot: 0n, tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0], // v2.2 G8: zero in a growth-1 record
+      depthSource: 0, depthE6: 0n, depthSlot: 0n, depthPrevE6: 0n, depthEver: false, depthPrevReal: false, depthDexPinned: false, attestedMaxTier: 0, collateralDecimalsP1: 0, collateralDecimals: 6, depthRiseSlot64: 0, depthLastGoodE6: 0n, depthLastGoodSlot: 0n, tierThresholdUsd: [0, 0, 0], tierLeverageX100: [0, 0, 0], // v2.2 G8: zero in a growth-1 record
     };
     expect(g).toEqual({
       ...common, flags: 0, cLaunchAtoms: 5_000_000_000n, r3Layout: false, volHasData: false, volVarX100: 0, rentStamp64: 0,
