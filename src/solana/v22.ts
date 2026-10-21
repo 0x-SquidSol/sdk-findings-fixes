@@ -605,7 +605,9 @@ export function withInsuranceUnitsTailV22(base: TransactionInstruction, units: P
  *
  * @param m           Market context (`lpPortfolio` required).
  * @param cranker     Signer.
- * @param mode        0 DRAW, 1 RESTORE, 2 PROPOSE.
+ * @param mode        0 DRAW, 1 RESTORE, 2 PROPOSE, 3 RESTORE-FROM-PNL (repays the vault LP's
+ *                    unconverted source-backed profit first; see encodeInsuranceBackstopDrawV22
+ *                    for the W4-4 note that a mode-3 error must fall back to mode 1).
  * @param maxAmount   Cap in atoms.
  * @param extraTail   Leg feed accounts and `["g9_feeds"]` (read-only).
  * @returns Instruction.
@@ -614,7 +616,7 @@ export function withInsuranceUnitsTailV22(base: TransactionInstruction, units: P
  * const propose = buildInsuranceBackstopDrawIxV22(m, keeper, 2, 0n, legFeeds);
  * ```
  */
-export function buildInsuranceBackstopDrawIxV22(m: MarketV22, cranker: PublicKey, mode: 0 | 1 | 2, maxAmount: bigint, extraTail: readonly PublicKey[] = []): TransactionInstruction {
+export function buildInsuranceBackstopDrawIxV22(m: MarketV22, cranker: PublicKey, mode: 0 | 1 | 2 | 3, maxAmount: bigint, extraTail: readonly PublicKey[] = []): TransactionInstruction {
   if (!m.lpPortfolio) throw new Error("tag 111 needs the bound vault LP portfolio (m.lpPortfolio)");
   const [registry] = deriveLpVaultRegistry(m.programId, m.market);
   const metas = buildAccountMetas(ACCOUNTS_INSURANCE_BACKSTOP_DRAW_V22, {

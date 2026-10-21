@@ -67,6 +67,7 @@ export default defineConfig({
       "test/workflow-pinning-349.test.ts",
       "test/deps-advisories.test.ts",
       "test/init-matcher-ctx-range.test.ts",
+      "test/sdk421-backstop-mode3.test.ts",
     ],
   },
 });
