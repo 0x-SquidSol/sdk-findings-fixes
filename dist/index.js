@@ -4133,8 +4133,9 @@ function collateralForLpV5(lpAmount, totalLpSupply, poolValue) {
   const c = lpAmount * (poolValue + 1n) / (totalLpSupply + 1n);
   return c > U64_MAX_V5 ? null : c;
 }
-function quoteStakeWithdrawNowV5(pool, insUnits, exitInsurance, vaultBalance, userLp) {
-  const v = stakePoolValue(pool, insUnits, exitInsurance, vaultBalance);
+function quoteStakeWithdrawNowV5(pool, insUnits, exitInsurance, vaultBalance, userLp, liveInsurance) {
+  const exit = liveInsurance !== void 0 && liveInsurance < exitInsurance ? liveInsurance : exitInsurance;
+  const v = stakePoolValue(pool, insUnits, exit, vaultBalance);
   if (!v || v.withdrawableNow === void 0) return null;
   const redeemable = collateralForLpV5(userLp, pool.totalLpSupply, v.total);
   if (redeemable === null) return null;
@@ -8036,7 +8037,7 @@ var P4_FLAG_INS_UNITS_REQUIRED_V22 = 1;
 var P4_FLAG_EXIT_REQUIRES_LOSS_CURRENT_V22 = 1 << 2;
 var INS_UNIT_CLASS_STAKE_V22 = 0;
 var INS_UNIT_CLASS_CREATOR_V22 = 1;
-var BackstopMode = Object.freeze({ Draw: 0, Restore: 1, Propose: 2 });
+var BackstopMode = Object.freeze({ Draw: 0, Restore: 1, Propose: 2, RestoreFromPnl: 3 });
 var SEEDS_V22 = Object.freeze({
   bondTranche: "bond_tranche",
   bondPosition: "bond",
@@ -8166,7 +8167,7 @@ function encodeBondExecuteWithdrawV22(minOut, sourceDomain) {
   return concatBytes(encU8(IX_TAG_V22.BondExecuteWithdraw), encU64(minOut), encU16(sourceDomain));
 }
 function encodeInsuranceBackstopDrawV22(mode, maxAmount) {
-  intIn2("mode", mode, 0, 2);
+  intIn2("mode", mode, 0, 3);
   bigIn("maxAmount", maxAmount, U1283);
   return concatBytes(encU8(IX_TAG_V22.InsuranceBackstopDraw), encU8(mode), encU128(maxAmount));
 }
